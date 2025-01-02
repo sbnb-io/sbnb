@@ -1,0 +1,19 @@
+#!/bin/bash
+set -euxo pipefail
+
+# Prepare dev env within container
+
+export DEBIAN_FRONTEND=noninteractive
+
+# Install some useful packages
+apt-get update -y \
+        && apt-get install -y \
+        build-essential vim tmux file \
+        cpio unzip rsync wget bc \
+        dosfstools git apt-file systemd net-tools \
+        sudo pciutils parted fio nvme-cli smartmontools \
+        ipmitool yamllint jq sysstat strace curl libelf-dev ncurses-dev \
+        exuberant-ctags iputils-ping dnsutils mc docker.io
+
+# Finally start tmux for fellow developers
+tmux new-session -A -s main
