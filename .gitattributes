@@ -1,0 +1,1 @@
+board/sbnb/sbnb/rootfs-overlay/usr/lib/firmware/ filter=lfs diff=lfs merge=lfs -text
