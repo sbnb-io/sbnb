@@ -97,5 +97,11 @@ Happy developing! Contributions are encouraged and appreciated!
 
 - **Internal Architecture** – See the diagram below for the internal structure of sbnb Linux.
 ![Sbnb Architecture](images/sbnb-architecture.png)
+ 
+
 - **Network Diagram** – This diagram depicts the network configuration, showing Sbnb Linux servers connecting to the public Internet via ISP links and NAT. The servers form an overlay network across the public Internet using secure tunnels powered by Tailscale.
 ![Sbnb Network Diagram](images/sbnb-network-diagram.png)
+ 
+
+- **Confidential Computing (CC) Network Diagram** – The diagram below demonstrates how a Virtual Machine (VM) owner can verify and trust a VM running on an Sbnb server in an untrusted location by leveraging AMD SEV-SNP’s remote attestation mechanism.
+![Sbnb Confidential Computing (CC) Network Diagram](images/sbnb-cc-network.png)
