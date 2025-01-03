@@ -62,7 +62,7 @@ Sbnb Linux is a revolutionary minimalist Linux distribution designed to boot bar
     ```bash
     sbnb-dev-env.sh
     ```
-    This will transition your environment from the minimalist setup to a full Docker container running Ubuntu, preloaded with useful development tools.
+    This will transition your environment from the minimalist setup to a full Docker container running Debian/Ubuntu, preloaded with useful development tools.
 
 ## Build sbnb Image Yourself
 
@@ -97,7 +97,7 @@ Happy developing! Contributions are encouraged and appreciated!
 - **Remote Access** – A Tailscale tunnel is established during boot, allowing remote access. The Tailscale key is specified in the `sbnb.conf` file.
 - **Confidential Computing** – The sbnb Linux kernel supports Confidential Computing (CC) with the latest CPU and Secure Processor microcode updates applied at boot. Currently, only AMD SEV-SNP is supported.
 - **Flexible Environment** – sbnb Linux includes scripts to start Docker containers, allowing users to switch from the minimal environment to distributions like Debian, Ubuntu, CentOS, Alpine, and more.
-- **Developer Mode** – Activate developer mode by running the `sbnb-dev-env.sh` script, which launches an Ubuntu container with various developer tools pre-installed.
+- **Developer Mode** – Activate developer mode by running the `sbnb-dev-env.sh` script, which launches anDebian/Ubuntu container with various developer tools pre-installed.
 
 ### Diagrams:
 
