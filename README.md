@@ -57,6 +57,12 @@ Sbnb Linux is a revolutionary minimalist Linux distribution designed to boot bar
     - After booting, check your server in the **Tailscale machine list**.
 6. **Done!**
     - You can now SSH into the server using Tailscale SSO methods, such as Google Auth.
+7. **Next Steps**
+    - For development and testing, we recommend running the following command after SSH-ing into the server
+    ```bash
+    sbnb-dev-env.sh
+    ```
+    This will transition your environment from the minimalist setup to a full Docker container running Ubuntu, preloaded with useful development tools.
 
 ## Build sbnb Image Yourself
 
