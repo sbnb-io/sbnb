@@ -87,6 +87,7 @@ Happy developing! Contributions are encouraged and appreciated!
 - **Built with Buildroot** – sbnb Linux is created using Buildroot with the br2-external mechanism, keeping sbnb customizations separate for easier maintenance and rolling updates.
 - **Configuration on Boot** – sbnb Linux reads the `sbnb.conf` file from a USB dongle during boot to customize the environment.
 - **Runs in Memory** – sbnb Linux doesn’t install on system disks but runs in memory, similar to liveCDs. A simple power cycle restores the server to its original state, enhancing resilience.
+- **Immutable Design** – Sbnb Linux is an immutable, read-only Unified Kernel Image (UKI), enabling straightforward image signing and attestation. This design makes the system resistant to corruption or tampering ("unbreakable").
 - **Remote Access** – A Tailscale tunnel is established during boot, allowing remote access. The Tailscale key is specified in the `sbnb.conf` file.
 - **Confidential Computing** – The sbnb Linux kernel supports Confidential Computing (CC) with the latest CPU and Secure Processor microcode updates applied at boot. Currently, only AMD SEV-SNP is supported.
 - **Flexible Environment** – sbnb Linux includes scripts to start Docker containers, allowing users to switch from the minimal environment to distributions like Debian, Ubuntu, CentOS, Alpine, and more.
@@ -95,4 +96,6 @@ Happy developing! Contributions are encouraged and appreciated!
 ### Diagrams:
 
 - **Internal Architecture** – See the diagram below for the internal structure of sbnb Linux.
-- **Network Structure** – The diagram below illustrates the network setup with multiple sbnb Linux servers.
+![Sbnb Architecture](images/sbnb-architecture.png)
+- **Network Diagram** – This diagram depicts the network configuration, showing Sbnb Linux servers connecting to the public Internet via ISP links and NAT. The servers form an overlay network across the public Internet using secure tunnels powered by Tailscale.
+![Sbnb Network Diagram](images/sbnb-network-diagram.png)
