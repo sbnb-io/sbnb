@@ -2,15 +2,61 @@
 
 Sbnb Linux is a revolutionary minimalist Linux distribution designed to boot bare-metal servers and enable remote connections through fast tunnels. It is ideal for environments ranging from home labs to distributed data centers. Sbnb Linux is simplified, automated, and resilient to power outages, supporting confidential computing to ensure secure operations in untrusted locations.
 
-## How to Run Your Server
+## How to Boot Your Server into Sbnb Linux
 
-- Download the sbnb raw image.
-- Write the image to a USB dongle.
-- Add your Tailscale key to the USB dongle.
-- Plug the USB dongle into your server and power it on.
-- Check your server in the Tailscale machine list.
-
-You can now SSH into your server using Tailscale SSO methods like Google Auth.
+1. **Download the `sbnb.raw` image**
+    - Head to the **Release** section of this repository and download the `sbnb.raw` image.
+2. **Write the Image to a USB Flash Drive**
+    - The following steps are for macOS, but they can be adapted for Linux or Windows.
+    - **Identify the USB flash drive:**
+        
+        Run the command:
+        
+        ```bash
+        diskutil list
+        ```
+        
+        Look for an entry like `/dev/disk4 (external, physical)`.
+        
+        ⚠️ **Warning:** This process will erase all data on the USB drive. Verify the disk size carefully to avoid overwriting the wrong device.
+        
+    - **Write the `sbnb.raw` image to the USB drive:**
+        
+        ```bash
+        sudo diskutil unmountDisk /dev/disk4
+        dd if=sbnb.raw of=/dev/disk4
+        ```
+        
+        Replace `/dev/disk4` with the correct disk number from the previous step.
+        
+3. **Add Your Tailscale Key to the USB Drive**
+    - Create a mount point and mount the USB drive:
+        
+        ```bash
+        mkdir sbnb
+        sudo mount -t msdos /dev/disk4s1 sbnb
+        ```
+        
+    - Add your Tailscale key to the drive:Replace **`tskey-auth-KEY`** with your actual Tailscale key. For instructions on generating a key, visit [tailscale.com](https://tailscale.com/).
+        
+        ```bash
+        echo "tskey-auth-KEY" > sbnb/sbnb-tskey.txt
+        ```
+        
+    - Unmount the USB drive:
+        
+        ```bash
+        sudo diskutil unmountDisk /dev/disk4
+        ```
+        
+4. **Boot the Server**
+    - Insert the USB drive into your server and power it on.
+    - You may need to select the USB flash drive as the first boot device in your BIOS/UEFI settings if another operating system is installed or if network boot is enabled.
+    - Booting may take **5 to 10 minutes**, depending on your server’s BIOS configuration.
+5. **Verify the Server on Tailscale**
+    - After booting, check your server in the **Tailscale machine list**.
+6. **Done!**
+    - You can now SSH into the server using Tailscale SSO methods, such as Google Auth.
 
 ## Build sbnb Image Yourself
 
