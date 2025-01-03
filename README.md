@@ -5,7 +5,7 @@ Sbnb Linux is a revolutionary minimalist Linux distribution designed to boot bar
 ## How to Boot Your Server into Sbnb Linux
 
 1. **Download the `sbnb.raw` image**
-    - Head to the **Release** section of this repository and download the `sbnb.raw` image.
+    - Head to the **Release** section of this repository and download the `sbnb.raw` image (182 MB).
 2. **Write the Image to a USB Flash Drive**
     - The following steps are for macOS, but they can be adapted for Linux or Windows.
     - **Identify the USB flash drive:**
