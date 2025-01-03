@@ -15,9 +15,23 @@ You can now SSH into your server using Tailscale SSO methods like Google Auth.
 ## Build sbnb Image Yourself
 
 - Clone this repository.
+```
+git clone https://github.com/sbnb-io/sbnb.git
+cd sbnb
+git submodule init
+git submodule update
+```
 - Start the build process.
+```
+cd buildroot
+make BR2_EXTERNAL=.. sbnb_defconfig
+make -j $(nproc)
+```
+- After a successful build, the following files will be generated:
+    - **`output/images/sbnb.efi`** – A UEFI bootable Sbnb image in Unified Kernel Image (UKI) format. This file integrates the Linux kernel, kernel arguments (cmdline), and initramfs into a single image.
+    - **`output/images/sbnb.raw`** – A disk image ready to be written directly to a USB flash drive for server booting. It features a GPT partition table and a bootable VFAT partition containing the UEFI bootable image (`sbnb.efi`).
 
-Happy developing! Contributions are welcome!
+Happy developing! Contributions are encouraged and appreciated!
 
 ## Architecture and Technical Details
 
