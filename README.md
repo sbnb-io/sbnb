@@ -64,6 +64,16 @@ Sbnb Linux is a revolutionary minimalist Linux distribution designed to boot bar
     ```
     This will transition your environment from the minimalist setup to a full Docker container running Debian/Ubuntu, preloaded with useful development tools.
 
+## Running the "Hello World" Example on Sbnb Linux
+
+After connecting to Sbnb Linux via SSH, you can easily run an Ubuntu container that prints "Hello, World!" by executing the following command:
+
+```
+docker run ubuntu echo "Hello, World!"
+```
+
+Congratulations! Your Sbnb Linux environment is now up and running. We're excited to see what you'll create next!
+
 ## Build sbnb Image Yourself
 
 - Clone this repository.
