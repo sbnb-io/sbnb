@@ -85,6 +85,17 @@ make -j $(nproc)
 
 Happy developing! Contributions are encouraged and appreciated!
 
+## How to Start Customer Workloads on Sbnb Linux  
+
+Sbnb Linux provides several options for running customer workloads, depending on the use case and security requirements:  
+
+| **Option**                                   | **Description**                                                                                                                                                       | **Recommended For**                                                                                          |  
+|---------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------|  
+| **Minimalist Environment**                   | Run workloads directly on the base Sbnb Linux environment. Suitable for lightweight system services like observability or monitoring.                                   | System services (e.g., monitoring). Not recommended for regular customer workloads.                          |  
+| **Docker Container**                         | Launch Docker containers on top of the minimalist environment. Supports various distributions like Ubuntu, Fedora, and Alpine.                                          | Development or testing in trusted environments (e.g., home labs).                                             |  
+| **Confidential Computing Virtual Machine**   | Start a Confidential Computing VM (CC VM) to run production workloads. Encrypts memory and CPU states, with remote attestation to ensure code integrity.                 | Production workloads, especially in untrusted or remote environments.                                         |  
+
+
 ## Architecture and Technical Details
 
 ### Key Points:
