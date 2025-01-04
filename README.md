@@ -72,6 +72,12 @@ After connecting to Sbnb Linux via SSH, you can easily run an Ubuntu container t
 docker run ubuntu echo "Hello, World!"
 ```
 
+If successful, you should see output similar to the image below:
+
+ 
+![Sbnb Hello World Example](images/sbnb-hello-world.png)
+
+
 Congratulations! Your Sbnb Linux environment is now up and running. We're excited to see what you'll create next!
 
 ## Build sbnb Image Yourself
