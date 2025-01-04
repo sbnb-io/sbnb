@@ -2,6 +2,18 @@
 
 Sbnb Linux is a revolutionary minimalist Linux distribution designed to boot bare-metal servers and enable remote connections through fast tunnels. It is ideal for environments ranging from home labs to distributed data centers. Sbnb Linux is simplified, automated, and resilient to power outages, supporting confidential computing to ensure secure operations in untrusted locations.
 
+## Use Cases
+
+The diagram below illustrates the concept of Sbnb Linux, where servers connect to the public Internet through ISP links and NAT. These servers create an overlay network across the public Internet using secure tunnels, powered by Tailscale, resulting in a flat, addressable space.
+
+![Sbnb Network Diagram](images/sbnb-network-diagram.png)
+ 
+
+The next diagram illustrates how a Virtual Machine (VM) owner can verify and establish trust in a VM running on an Sbnb server located in an untrusted physical environment. This is achieved by leveraging AMD SEV-SNP’s remote attestation mechanism. This approach enables the creation of distributed data centers with servers deployed in diverse, untrusted locations such as residences, warehouses, mining farms, shipping containers, colocation facilities, or remote sites near renewable energy sources.
+
+![Sbnb Confidential Computing (CC) Network Diagram](images/sbnb-cc-network.png)
+
+
 ## How to Boot Your Server into Sbnb Linux
 
 1. **Download the `sbnb.raw` image**
@@ -130,15 +142,9 @@ Sbnb Linux provides several options for starting customer jobs, depending on the
 - **Regular Update Cadence** – Sbnb Linux follows a predictable update schedule. Updates are treated as routine operations rather than disruptive events, ensuring the system stays protected against newly discovered vulnerabilities.
 - **Firmware Updates** – Sbnb Linux applies the latest CPU and Security Processor microcode updates at every boot. BIOS updates can also be applied during the update process, keeping the entire system up to date.
 
-### Diagrams:
+### Internal Architecture
 
-- **Internal Architecture** – See the diagram below for the internal structure of sbnb Linux.
+See the diagram below for the internal structure of sbnb Linux.
+
 ![Sbnb Architecture](images/sbnb-architecture.png)
- 
 
-- **Network Diagram** – This diagram depicts the network configuration, showing Sbnb Linux servers connecting to the public Internet via ISP links and NAT. The servers form an overlay network across the public Internet using secure tunnels powered by Tailscale.
-![Sbnb Network Diagram](images/sbnb-network-diagram.png)
- 
-
-- **Confidential Computing (CC) Network Diagram** – The diagram below demonstrates how a Virtual Machine (VM) owner can verify and trust a VM running on an Sbnb server in an untrusted location by leveraging AMD SEV-SNP’s remote attestation mechanism.
-![Sbnb Confidential Computing (CC) Network Diagram](images/sbnb-cc-network.png)
