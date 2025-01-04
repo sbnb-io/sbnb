@@ -1,0 +1,8 @@
+config BR2_PACKAGE_SEVCTL
+	bool "sevctl"
+	depends on BR2_PACKAGE_HOST_RUSTC_TARGET_ARCH_SUPPORTS
+	select BR2_PACKAGE_HOST_RUSTC
+	help
+	  Administrative utility for AMD SEV
+
+	  https://github.com/virtee/sevctl.git

@@ -1,0 +1,8 @@
+config BR2_PACKAGE_SNPGUEST
+	bool "snpguest"
+	depends on BR2_PACKAGE_HOST_RUSTC_TARGET_ARCH_SUPPORTS
+	select BR2_PACKAGE_HOST_RUSTC
+	help
+	  A CLI tool for interacting with SEV-SNP guest environment
+
+	  https://github.com/virtee/snpguest.git

@@ -1,0 +1,2 @@
+source "$BR2_EXTERNAL_SBNB_PATH/package/sevctl/Config.in"
+source "$BR2_EXTERNAL_SBNB_PATH/package/snpguest/Config.in"
