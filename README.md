@@ -87,13 +87,14 @@ Happy developing! Contributions are encouraged and appreciated!
 
 ## How to Start Customer Workloads on Sbnb Linux  
 
-Sbnb Linux provides several options for running customer workloads, depending on the use case and security requirements:  
+Sbnb Linux provides several options for starting customer jobs, depending on the environment and security requirements.  
 
-| **Option**                                   | **Description**                                                                                                                                                       | **Recommended For**                                                                                          |  
-|---------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------|  
-| **Minimalist Environment**                   | Run workloads directly on the base Sbnb Linux environment. Suitable for lightweight system services like observability or monitoring.                                   | System services (e.g., monitoring). Not recommended for regular customer workloads.                          |  
-| **Docker Container**                         | Launch Docker containers on top of the minimalist environment. Supports various distributions like Ubuntu, Fedora, and Alpine.                                          | Development or testing in trusted environments (e.g., home labs).                                             |  
-| **Confidential Computing Virtual Machine**   | Start a Confidential Computing VM (CC VM) to run production workloads. Encrypts memory and CPU states, with remote attestation to ensure code integrity.                 | Production workloads, especially in untrusted or remote environments.                                         |  
+| Option | Description | Recommended Use | Example Link |  
+|--------|-------------|-----------------|--------------|  
+| **Run Directly on Minimalist Environment** | Execute jobs directly on the lightweight Sbnb Linux environment. Suitable for system services like observability or monitoring. | Not recommended for regular jobs. Use for system services. | [Example: Tailscale Tunnel Startup](/board/sbnb/sbnb/rootfs-overlay/usr/lib/systemd/system/tailscaled.service) |
+| **Docker Container** | Launch Docker containers (Ubuntu, Fedora, Alpine, etc.) on top of the minimalist environment. This approach powers the `sbnb-dev-env.sh` script to create a full development environment. | Recommended for trusted environments (e.g., home labs). | [Example: Development Environment](/board/sbnb/sbnb/rootfs-overlay/usr/sbin/sbnb-dev-env.sh) |
+| **Run Regular Virtual Machine (VM)** | Start a standard VM to run full-featured OS like Windows or other Linux distributions. | Recommended for trusted environments (e.g., home labs). | [Detailed Documentation](/README-VM.md) |
+| **Confidential Computing Virtual Machine (CC VM)** | Start a CC VM to run production workloads securely. Encrypts memory and CPU states, enabling remote attestation to ensure code integrity. | Recommended for production environments. | [Detailed Documentation](/README-CC.md) |
 
 
 ## Architecture and Technical Details
