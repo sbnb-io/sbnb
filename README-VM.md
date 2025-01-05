@@ -53,7 +53,13 @@
     Start the VM using the downloaded image and generated ISO:
     
     ```
-    qemu-system-x86_64 -accel kvm -hda vm-instance.img -cdrom seed.iso -nographic -m 1G -smp 2 -cpu host
+    qemu-system-x86_64 \
+        -accel kvm \
+        -hda vm-instance.img \
+        -cdrom seed.iso \
+        -nographic \
+        -m 4G \
+        -smp 2 -cpu host
     
     ```
     
