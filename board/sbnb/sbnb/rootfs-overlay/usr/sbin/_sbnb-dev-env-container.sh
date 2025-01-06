@@ -17,4 +17,4 @@ apt-get update -y \
         genisoimage
 
 # Finally start tmux for fellow developers
-tmux new-session -A -s main
+tmux new-session -A -s sbnb
