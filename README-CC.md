@@ -31,10 +31,9 @@ Run the following command to check SEV-SNP status:
 sevctl ok
 ```
 
-If SEV-SNP is enabled, the command will return an OK messages.
+![sevctl: Confidential Computing (CC) SEV-SNP is enabled](images/sevctl.png)
 
-
-Errors indicate missing BIOS configurations or unsupported CPUs.
+If SEV-SNP is enabled, the command will show a `PASS` messages. Errors indicate missing BIOS configurations or unsupported CPU.
 
 ### 3. Run Docker Container with Required Tools
 
@@ -100,6 +99,10 @@ Note: If you're interested, check out this [link](https://github.com/sbnb-io/sbn
 It simplifies the remote attestation process for Confidential Computing (CC) VMs.
 
 Example output for successful attestation:
+
+![Confidential Computing (CC) SEV-SNP is attested](images/remote-attestation.png)
+
+Below is the same output, duplicated as text for reference.
 
 ```
 # docker run -it sbnb/remote-attestation remote-attestation.sh root@100.83.253.96
