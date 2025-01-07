@@ -9,6 +9,6 @@ RUN apt-get update && apt-get install -y curl git build-essential \
 
 # Prepare the final container with binary artifacts
 FROM debian:sid
-RUN apt-get update && apt-get install -y ca-certificates
+RUN apt-get update && apt-get install -y ca-certificates ssh-client figlet
 COPY --from=build /snpguest/target/release/snpguest /sbin/snpguest
-COPY verify-attestation-report.sh /sbin/verify-attestation-report.sh
+COPY remote-attestation.sh /sbin/remote-attestation.sh
