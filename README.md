@@ -40,7 +40,7 @@ The next diagram illustrates how a Virtual Machine (VM) owner can verify and est
 ## How to Boot Your Server into Sbnb Linux
 
 1. **Download the `sbnb.raw` image**
-    - Head to the **Release** section of this repository and download the `sbnb.raw` image (182 MB).
+    - Head to the [Releases](https://github.com/sbnb-io/sbnb/releases) section of this repository and download the `sbnb.raw` image (~200 MB).
 2. **Write the Image to a USB Flash Drive**
     - The following steps are for macOS, but they can be adapted for Linux or Windows.
     - **Identify the USB flash drive:**
