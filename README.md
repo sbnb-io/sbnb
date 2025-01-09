@@ -8,6 +8,17 @@ Sbnb Linux is a revolutionary minimalist Linux distribution designed to boot bar
     - For example, take a look at this [Reddit post](https://www.reddit.com/r/homelab/comments/1hmnnwg/built_a_powerful_and_silent_amd_epyc_home_server/) where we built a powerful and quiet AMD EPYC 3rd Gen home server together with my kids.
 - **USB Flash Drive** for booting.
     - Any standard USB flash drive with at least 512MB capacity will work. Please note that all existing data on the drive will be overwritten.
+Thank you for the feedback, and I apologize for the unclear wording.
+
+### Quick Overview: The Core Use Case of Sbnb Linux
+In summary, the bare metal server boots into a minimal Linux environment consisting of a Linux kernel with Tailscale and the Docker container engine.
+
+From there, you can run the following command to execute any Linux distribution (as long as it has a Docker container, which includes almost all distributions):
+```
+docker run --privileged -it -v /root:/root -v /dev:/dev --net=host ubuntu:24.04 bash
+```
+
+You can replace `ubuntu:24.04` with `centos`, `alpine`, or any other distribution of your choice.
 
 ### Key Points:
 
@@ -23,18 +34,6 @@ Sbnb Linux is a revolutionary minimalist Linux distribution designed to boot bar
 - **Regular Update Cadence** – Sbnb Linux follows a predictable update schedule. Updates are treated as routine operations rather than disruptive events, ensuring the system stays protected against newly discovered vulnerabilities.
 - **Firmware Updates** – Sbnb Linux applies the latest CPU and Security Processor microcode updates at every boot. BIOS updates can also be applied during the update process, keeping the entire system up to date.
 - **Built with Buildroot** – sbnb Linux is created using Buildroot with the br2-external mechanism, keeping sbnb customizations separate for easier maintenance and rolling updates.
-
-
-## Use Cases
-
-The diagram below illustrates the concept of Sbnb Linux, where servers connect to the public Internet through ISP links and NAT. These servers create an overlay network across the public Internet using secure tunnels, powered by Tailscale, resulting in a flat, addressable space.
-
-![Sbnb Network Diagram](images/sbnb-network-diagram.png)
- 
-
-The next diagram illustrates how a Virtual Machine (VM) owner can verify and establish trust in a VM running on an Sbnb server located in an untrusted physical environment. This is achieved by leveraging AMD SEV-SNP’s remote attestation mechanism. This approach enables the creation of distributed data centers with servers deployed in diverse, untrusted locations such as residences, warehouses, mining farms, shipping containers, colocation facilities, or remote sites near renewable energy sources.
-
-![Sbnb Confidential Computing (CC) Network Diagram](images/sbnb-cc-network.png)
 
 
 ## How to Boot Your Server into Sbnb Linux
@@ -153,4 +152,16 @@ Sbnb Linux provides several options for starting customer jobs, depending on the
 See the diagram below for the internal structure of sbnb Linux.
 
 ![Sbnb Architecture](images/sbnb-architecture.png)
+
+### Use Cases
+
+The diagram below illustrates the concept of Sbnb Linux, where servers connect to the public Internet through ISP links and NAT. These servers create an overlay network across the public Internet using secure tunnels, powered by Tailscale, resulting in a flat, addressable space.
+
+![Sbnb Network Diagram](images/sbnb-network-diagram.png)
+ 
+
+The next diagram illustrates how a Virtual Machine (VM) owner can verify and establish trust in a VM running on an Sbnb server located in an untrusted physical environment. This is achieved by leveraging AMD SEV-SNP’s remote attestation mechanism. This approach enables the creation of distributed data centers with servers deployed in diverse, untrusted locations such as residences, warehouses, mining farms, shipping containers, colocation facilities, or remote sites near renewable energy sources.
+
+![Sbnb Confidential Computing (CC) Network Diagram](images/sbnb-cc-network.png)
+
 
