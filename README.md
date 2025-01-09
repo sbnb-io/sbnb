@@ -150,6 +150,19 @@ Sbnb Linux provides several options for starting customer jobs, depending on the
 
 ## Architecture and Technical Details
 
+Sbnb Linux is built from source using the Buildroot project. It leverages the [Buildroot br2-external mechanism](https://buildroot.org/downloads/manual/manual.html#outside-br-custom) to keep Sbnb-specific customizations separate, simplifying maintenance and enabling smooth rolling updates.
+
+### Boot Image
+The Linux kernel is compiled and packaged with the command line and initramfs into a single binary called the Unified Kernel Image (UKI). The UKI is a PE/COFF binary, allowing it to be booted by any UEFI BIOS. This makes Sbnb Linux compatible with any modern machine. The total size of the image is approximately 200MB.
+
+### Initramfs Components:
+- BusyBox: Provides a shell and other essential tools.
+- Systemd: Serves as the init system.
+- Tailscale: Pre-installed to establish secure tunnels.
+- Docker Engine: Installed to enable running any container.
+
+This minimal setup is sufficient to boot the system and make the bare metal accessible remotely. From there, users can deploy more advanced software stacks using Docker containers or Virtual Machines, including Confidential Computing VMs.
+
 See the diagram below for the internal structure of sbnb Linux.
 
 ![Sbnb Architecture](images/sbnb-architecture.png)
