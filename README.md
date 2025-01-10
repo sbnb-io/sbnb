@@ -179,3 +179,6 @@ The next diagram illustrates how a Virtual Machine (VM) owner can verify and est
 ![Sbnb Confidential Computing (CC) Network Diagram](images/sbnb-cc-network.png)
 
 
+## Frequently Asked Questions
+### What benefits does it offer compared to using Cloud-init on any distro?
+While it's true that almost any distribution can be minimized, configured to run in-memory, and integrated with Cloud-init or Kickstart, this approach focuses on building a system from the ground up. This avoids the need to strip down a larger, more complex system, eliminating compromises and workarounds typically required in such cases.
