@@ -11,15 +11,15 @@ Sbnb Linux is a revolutionary minimalist Linux distribution designed to boot bar
 Thank you for the feedback, and I apologize for the unclear wording.
 - **[Optional]** If you plan to launch Confidential Computing (CC) Virtual Machines (VMs) on Sbnb Linux, ensure that your CPU supports AMD SEV-SNP technology (available from AMD EPYC Gen 3 CPUs onward). Additionally, enable this feature in the BIOS. For more details, refer to [README-CC.md](https://github.com/sbnb-io/sbnb/blob/main/README-CC.md).
 
-### Quick Overview: The Core Use Case of Sbnb Linux
+### Typical Use Case for Sbnb Linux
 In summary, the bare metal server boots into a minimal Linux environment consisting of a Linux kernel with Tailscale and the Docker container engine.
 
-From there, you can run the following command to execute any Linux distribution (as long as it has a Docker container, which includes almost all distributions):
+From this environment, you can execute any Linux distribution that has a corresponding Docker container (which covers nearly all distributions) using the following command:
 ```
 docker run --privileged -it -v /root:/root -v /dev:/dev --net=host ubuntu:24.04 bash
 ```
 
-You can replace `ubuntu:24.04` with `centos`, `alpine`, or any other distribution of your choice.
+Simply replace `ubuntu:24.04` with the desired distribution, such as `centos`, `alpine`, or any other Docker-supported distribution.
 
 ### Key Points:
 
