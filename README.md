@@ -59,7 +59,7 @@ Simply replace `ubuntu:24.04` with the desired distribution, such as `centos`, `
         
         ```bash
         sudo diskutil unmountDisk /dev/disk4
-        sudo dd if=sbnb.raw of=/dev/disk4
+        sudo dd if=sbnb.raw of=/dev/disk4 status=progress
         ```
         
         Replace `/dev/disk4` with the correct disk number from the previous step.
