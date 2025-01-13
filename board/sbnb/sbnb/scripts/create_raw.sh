@@ -4,8 +4,9 @@ set -euxo pipefail
 
 EFI=sbnb.efi
 IMG_FILE=sbnb.raw
+VHD_FILE=sbnb.vhd
 TMP_DIR=$(mktemp -d)
-FS_SIZE="256M"
+FS_SIZE="512M"
 SBNB_TSKEY="${BR2_EXTERNAL_SBNB_PATH}"/sbnb-tskey.txt
 
 # check if called under root
@@ -38,7 +39,11 @@ umount ${TMP_DIR}
 rm -rf ${TMP_DIR}
 losetup -d ${LOOP}
 
-echo Raw sbnb image for bare metal is ${IMG_FILE}
-
 # Prepare compressed raw image
 gzip -f -k ${IMG_FILE}
+
+# Prepare vhd
+qemu-img convert -f raw -O vpc ${IMG_FILE} ${VHD_FILE}
+
+echo Raw sbnb image for bare metal is ${IMG_FILE}
+echo VHD sbnb image is ${VHD_FILE}

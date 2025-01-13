@@ -5,22 +5,6 @@
 mkdir -p /dev
 mount -t devtmpfs none /dev/
 
-# Display a humble ASCII banner for now, but note to future self: rewrite Linux
-# in JavaScript so we can sprinkle some hilarious animations here.
-cat > /dev/kmsg << EOF
-
-   ____  _           _       _     _                  
-  / ___|| |__  _ __ | |__   | |   (_)_ __  _   ___  __ 
-  \___ \| '_ \| '_ \| '_ \  | |   | | '_ \| | | \ \/ / 
-   ___) | |_) | | | | |_) | | |___| | | | | |_| |>  <  
-  |____/|_.__/|_| |_|_.__/  |_____|_|_| |_|\__,_/_/\_\ 
- 
- 
-  Just an ASCII banner for now.
-  Animations will arrive right after Linux is rewritten in JavaScript.
- 
-EOF
-
 echo "[sbnb] Preparing environment ..." > /dev/kmsg
 mkdir -p /proc
 mkdir -p /sys
