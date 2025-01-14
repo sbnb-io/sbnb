@@ -12,8 +12,7 @@ Thank you for the feedback, and I apologize for the unclear wording.
 - **[Optional]** If you plan to launch Confidential Computing (CC) Virtual Machines (VMs) on Sbnb Linux, ensure that your CPU supports AMD SEV-SNP technology (available from AMD EPYC Gen 3 CPUs onward). Additionally, enable this feature in the BIOS. For more details, refer to [README-CC.md](https://github.com/sbnb-io/sbnb/blob/main/README-CC.md).
 
 ### Typical Use Case for Sbnb Linux
-In summary, the bare metal server boots into a minimal Linux environment consisting of a Linux kernel with Tailscale and the Docker container engine.
-
+- **Run Sbnb Linux on Bare Metal Server** - In summary, the bare metal server boots into a minimal Linux environment consisting of a Linux kernel with Tailscale and the Docker container engine.
 From this environment, you can execute any Linux distribution that has a corresponding Docker container (which covers nearly all distributions) using the following command:
 ```
 docker run --privileged -it -v /root:/root -v /dev:/dev --net=host ubuntu:24.04 bash
@@ -21,7 +20,10 @@ docker run --privileged -it -v /root:/root -v /dev:/dev --net=host ubuntu:24.04 
 
 Simply replace `ubuntu:24.04` with the desired distribution, such as `centos`, `alpine`, or any other Docker-supported distribution.
 
-### Key Points:
+- **Run Sbnb Linux as a VM Guest** - Please refer to the separate document on how to run Sbnb Linux as a VMware Guest: [README-VMWARE.md](https://github.com/sbnb-io/sbnb/blob/main/README-VMWARE.md).
+However, VMware is not a hard requirement. Any VM hypervisor, such as QEMU, can also be used.
+
+### Key Features of Sbnb Linux:
 
 - **Minimalist OS** – Bare metal servers boot into sbnb Linux, a lightweight OS combining a Linux kernel with Docker. The package list is minimal to reduce image size and limit attack vectors from vulnerabilities.
 - **Runs in Memory** – sbnb Linux doesn’t install on system disks but runs in memory, similar to liveCDs. A simple power cycle restores the server to its original state, enhancing resilience.
