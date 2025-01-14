@@ -178,6 +178,15 @@ The next diagram illustrates how a Virtual Machine (VM) owner can verify and est
 
 ![Sbnb Confidential Computing (CC) Network Diagram](images/sbnb-cc-network.png)
 
+## Alternative Linux Distributions with Similar Concepts to Sbnb Linux
+
+If you're interested in exploring the fascinating world of immutable, container-optimized Linux distributions, here are some notable projects worth checking out:
+
+- [Fedora CoreOS](https://fedoraproject.org/coreos/)
+- [Flatcar Container Linux](https://www.flatcar.org/) (acquired by Microsoft)
+- [RancherOS](https://rancher.com/docs/os/v1.x/en/)
+- [Talos Linux](https://www.talos.dev/)
+
 
 ## Frequently Asked Questions
 ### What benefits does it offer compared to using Cloud-init on any distro?
