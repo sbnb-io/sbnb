@@ -106,6 +106,7 @@ After connecting to Sbnb Linux via SSH, you can easily run an Ubuntu container t
 ```
 docker run ubuntu echo "Hello, World!"
 ```
+You can replace `ubuntu` with `centos`, `alpine`, or any other distribution of your choice.
 
 If successful, you should see output similar to the image below:
 
