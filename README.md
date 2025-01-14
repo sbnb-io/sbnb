@@ -182,3 +182,6 @@ The next diagram illustrates how a Virtual Machine (VM) owner can verify and est
 ## Frequently Asked Questions
 ### What benefits does it offer compared to using Cloud-init on any distro?
 While it's true that almost any distribution can be minimized, configured to run in-memory, and integrated with Cloud-init or Kickstart, this approach focuses on building a system from the ground up. This avoids the need to strip down a larger, more complex system, eliminating compromises and workarounds typically required in such cases.
+
+### Will power cycling wipe out the Docker containers you've installed?
+Yes, power cycling will restore the system to a known good baseline state. Sbnb Linux is designed this way to ensure reliability and stability. After a power cycle, automation tools can be used to pull and run the containers again on the node. This design makes Sbnb Linux highly resilient and virtually unbreakable.
