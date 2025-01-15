@@ -7,7 +7,8 @@ set -euxo pipefail
 # 3. Mount VMware shared folder shared by the host and named "sbnb" if we started in a VMware VM
 # 4. Find Tailscale key file "sbnb-tskey.txt"
 # 5. Start Tailscale tunnel
-# 6. Display ASCII banner and hostname/interface IP summary
+# 6. Execute sbnb-cmds.sh if found
+# 7. Display ASCII banner and hostname/interface IP summary
 
 # Function to set unique hostname using platform serial number
 set_hostname() {
@@ -84,9 +85,30 @@ display_banner() {
     } > /dev/kmsg
 }
 
+# Function to find and execute sbnb-cmds.sh
+execute_sbnb_cmds() {
+    local cmd_file=""
+    local search_paths="/mnt/sbnb/sbnb-cmds.sh /mnt/vmware/sbnb-cmds.sh"
+
+    for path in ${search_paths}; do
+        if [ -f "${path}" ]; then
+            cmd_file="${path}"
+            break
+        fi
+    done
+
+    if [ -n "${cmd_file}" ]; then
+        echo "[sbnb] Executing commands from ${cmd_file}"
+        sh "${cmd_file}"
+    else
+        echo "[sbnb] No sbnb-cmds.sh file found!"
+    fi
+}
+
 # Main script execution
 set_hostname
 mount_sbnb_usb
 mount_vmware_shared_folder
 start_tailscale
+execute_sbnb_cmds
 display_banner
