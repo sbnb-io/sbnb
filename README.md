@@ -42,7 +42,10 @@ However, VMware is not a hard requirement. Any VM hypervisor, such as QEMU, can 
 ## How to Boot Your Server into Sbnb Linux
 
 1. **Download the `sbnb.raw` image**
-    - Head to the [Releases](https://github.com/sbnb-io/sbnb/releases) section of this repository and download the `sbnb.raw` image (~200 MB).
+    - Head to the [Releases](https://github.com/sbnb-io/sbnb/releases) section of this repository and download the `sbnb.raw.gz` image (~250 MB). Decompress it using the command:
+        ```
+        gzip -d sbnb.raw.gz
+        ```
 2. **Write the Image to a USB Flash Drive**
     - The following steps are for macOS, but they can be adapted for Linux or Windows.
     - **Identify the USB flash drive:**
