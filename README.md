@@ -185,6 +185,7 @@ The next diagram illustrates how a Virtual Machine (VM) owner can verify and est
 If you're interested in exploring the fascinating world of immutable, container-optimized Linux distributions, here are some notable projects worth checking out:
 
 - [Fedora CoreOS](https://fedoraproject.org/coreos/)
+- [Bottlerocket OS](https://github.com/bottlerocket-os/bottlerocket)
 - [Flatcar Container Linux](https://www.flatcar.org/) (acquired by Microsoft)
 - [RancherOS](https://rancher.com/docs/os/v1.x/en/)
 - [Talos Linux](https://www.talos.dev/)
