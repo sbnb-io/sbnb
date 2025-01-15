@@ -121,6 +121,15 @@ If successful, you should see output similar to the image below:
 
 Congratulations! Your Sbnb Linux environment is now up and running. We're excited to see what you'll create next!
 
+## Sbnb Linux Instance Customization
+
+The `sbnb-cmds.sh` file introduces a powerful way to customize Sbnb Linux instances during boot. By placing a custom shell script named `sbnb-cmds.sh` on a USB flash drive or another supported configuration source, you can define commands and behaviors to be executed under the BusyBox shell during the boot process. 
+
+This feature is ideal for automating tasks, configuring system settings, or running services at startup.
+
+For more details, refer to [README-CUSTOMIZATION.md](README-CUSTOMIZATION.md).
+
+
 ## How to Start Customer Workloads on Sbnb Linux  
 
 Sbnb Linux provides several options for starting customer jobs, depending on the environment and security requirements.  
