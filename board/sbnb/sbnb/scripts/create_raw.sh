@@ -6,7 +6,7 @@ EFI=sbnb.efi
 IMG_FILE=sbnb.raw
 VHD_FILE=sbnb.vhd
 TMP_DIR=$(mktemp -d)
-FS_SIZE="512M"
+FS_SIZE="512" # in MB
 SBNB_TSKEY="${BR2_EXTERNAL_SBNB_PATH}"/sbnb-tskey.txt
 
 # check if called under root
@@ -16,7 +16,7 @@ if [ "$EUID" -ne 0 ];then
 fi
 
 # Create vfat image and copy efi binary into it
-dd if=/dev/zero of=${IMG_FILE} bs=${FS_SIZE} count=1
+dd if=/dev/zero of=${IMG_FILE} bs=1M count=${FS_SIZE}
 LOOP=$(losetup --show -f ${IMG_FILE})
 parted -s ${LOOP} mklabel gpt
 parted -s ${LOOP} mkpart sbnb 0% 100%
@@ -24,7 +24,7 @@ parted -s ${LOOP} set 1 boot on
 
 partprobe ${LOOP}
 
-mkfs.vfat ${LOOP}p1
+mkfs.vfat -F 32 ${LOOP}p1
 mount -o loop ${LOOP}p1 ${TMP_DIR}
 mkdir -p ${TMP_DIR}/EFI/Boot/
 cp ${EFI} ${TMP_DIR}/EFI/Boot/bootx64.efi
