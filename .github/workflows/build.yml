@@ -14,6 +14,24 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Output Run ID
+      run: echo ${{ github.run_id }}
+    - name: Output Run Number
+      run: echo ${{ github.run_number }}
+    - name: Output Run Attempt
+      run: echo ${{ github.run_attempt }}
+
+    - name: Install dependencies
+      run: |
+        # Need for /usr/lib/systemd/boot/efi/linuxx64.efi.stub
+        sudo apt-get install -y systemd
+  
+    - name: Buildroot CCache
+      uses: actions/cache@v3
+      with:
+        path: ~/.buildroot-ccache
+        key: buildroot-ccache
+
     - name: git submodule init and update
       run: |
         git submodule init
@@ -28,3 +46,12 @@ jobs:
       run: |
         cd buildroot
         make -j $(nproc)
+        
+    - name: Save sbnb images
+      uses: actions/upload-artifact@v4
+      with:
+        name: sbnb-images
+        path: |
+        buildroot/output/images/sbnb.raw.gz
+          buildroot/output/images/sbnb.vhd
+          buildroot/output/images/sbnb.efi
