@@ -24,10 +24,11 @@ jobs:
     - name: Install dependencies
       run: |
         # Need for /usr/lib/systemd/boot/efi/linuxx64.efi.stub
-        sudo apt-get install -y systemd
+        sudo apt-get install -y systemd-boot-efi
   
     - name: Buildroot CCache
-      uses: actions/cache@v3
+      # Restoring and saving cache using a single action
+      uses: actions/cache@v4
       with:
         path: ~/.buildroot-ccache
         key: buildroot-ccache
