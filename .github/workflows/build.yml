@@ -25,4 +25,6 @@ jobs:
         make BR2_EXTERNAL=.. sbnb_defconfig
 
     - name: Run make
-      run: make -j $(nproc)
+      run: |
+        cd buildroot
+        make -j $(nproc)
