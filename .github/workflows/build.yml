@@ -23,8 +23,8 @@ jobs:
 
     - name: Install dependencies
       run: |
-        # Need for /usr/lib/systemd/boot/efi/linuxx64.efi.stub
-        sudo apt-get install -y systemd-boot-efi
+        # Need for /usr/lib/systemd/boot/efi/linuxx64.efi.stub, qemu-img
+        sudo apt-get install -y systemd-boot-efi qemu-utils
   
     - name: Buildroot CCache
       # Restoring and saving cache using a single action
