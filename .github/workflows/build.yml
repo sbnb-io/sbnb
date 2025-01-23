@@ -35,6 +35,7 @@ jobs:
           ~/.buildroot-ccache
           buildroot/output
         key: buildroot-ccache
+        save-always: true
 
     - name: git submodule init and update
       run: |
