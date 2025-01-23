@@ -1,0 +1,28 @@
+name: Build sbnb
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: git submodule init and update
+      run: |
+        git submodule init
+        git submodule update
+
+    - name: Configure
+      run: |
+        cd buildroot
+        make BR2_EXTERNAL=.. sbnb_defconfig
+
+    - name: Run make
+      run: make -j $(nproc)
