@@ -9,7 +9,7 @@ on:
 jobs:
   build:
 
-    runs-on: ubuntu-large
+    runs-on: ubuntu8
 
     steps:
     - uses: actions/checkout@v4
@@ -27,14 +27,19 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y systemd-boot-efi qemu-utils
   
-    - name: Buildroot Cache
+    - name: Buildroot CCache
       # Restoring and saving cache using a single action
       uses: actions/cache@v4
       with:
-        path: |
-          ~/.buildroot-ccache
-          buildroot/output
+        path: ~/.buildroot-ccache
         key: buildroot-ccache
+
+    - name: Buildroot output/build cache
+      # Restoring and saving cache using a single action
+      uses: actions/cache@v4
+      with:
+        path: buildroot/output/build
+        key: buildroot-output
 
     - name: git submodule init and update
       run: |
