@@ -9,7 +9,7 @@ on:
 jobs:
   build:
 
-    runs-on: ubuntu8
+    runs-on: ubuntu-large
 
     steps:
     - uses: actions/checkout@v4
@@ -39,11 +39,15 @@ jobs:
         path: ~/.buildroot-ccache
         key: buildroot-ccache
 
-    - name: Buildroot output/build cache
+    - name: Buildroot output cache
       # Restoring and saving cache using a single action
       uses: actions/cache@v4
       with:
-        path: buildroot/output/build
+        path: |
+          buildroot/output/build
+          buildroot/output/host
+          buildroot/output/staging
+          buildroot/output/target
         key: buildroot-output
 
     - name: Configure
