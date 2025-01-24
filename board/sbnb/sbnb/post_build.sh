@@ -1,17 +1,10 @@
 #!/bin/bash
 set -euxo pipefail
 
-# Place efi and raw images into buildroot/output/images dir
-pushd ${BINARIES_DIR}
-
-echo Building initramfs with squashfs rootfs inside
-sudo -E "${BR2_EXTERNAL_SBNB_PATH}"/board/sbnb/sbnb/scripts/create_initramfs.sh
-
-# TODO: avoid calling sudo
-echo Building sbnb.efi uefi uki image
-sudo -E "${BR2_EXTERNAL_SBNB_PATH}"/board/sbnb/sbnb/scripts/create_efi.sh
-
-echo Building sbnb.raw bootable image
-sudo -E "${BR2_EXTERNAL_SBNB_PATH}"/board/sbnb/sbnb/scripts/create_raw.sh
-
-popd
+# Add Sbnb Linux build version to /etc/os-release using the current date and GitHub run number.
+DATE=$(date +%Y.%m.%d)
+RUN_NUMBER=${GITHUB_RUN_NUMBER:-00}
+IMAGE_VERSION="${DATE}-${RUN_NUMBER}"
+OS_RELEASE="${TARGET_DIR}/etc/os-release"
+echo "IMAGE_ID=sbnb-linux" >> "${OS_RELEASE}"
+echo "IMAGE_VERSION=${IMAGE_VERSION}" >> "${OS_RELEASE}"
