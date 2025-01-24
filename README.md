@@ -1,4 +1,4 @@
-🚀 Stay ahead - subscribe to our [newsletter](https://sbnb.io/)!
+🚀 Stay ahead - [subscribe](https://sbnb.io/) to our newsletter!
 
 ## Sbnb Linux
 
