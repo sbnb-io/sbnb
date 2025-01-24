@@ -210,3 +210,5 @@ While it's true that almost any distribution can be minimized, configured to run
 
 ### Will power cycling wipe out the Docker containers you've installed?
 Yes, power cycling will restore the system to a known good baseline state. Sbnb Linux is designed this way to ensure reliability and stability. After a power cycle, automation tools can be used to pull and run the containers again on the node. This design makes Sbnb Linux highly resilient and virtually unbreakable.
+
+🚀 Stay ahead - [subscribe](https://sbnb.io/) to our newsletter!
