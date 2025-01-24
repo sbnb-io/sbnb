@@ -204,7 +204,6 @@ If you're interested in exploring the fascinating world of immutable, container-
 - [RancherOS](https://rancher.com/docs/os/v1.x/en/)
 - [Talos Linux](https://www.talos.dev/)
 
-
 ## Frequently Asked Questions
 ### What benefits does it offer compared to using Cloud-init on any distro?
 While it's true that almost any distribution can be minimized, configured to run in-memory, and integrated with Cloud-init or Kickstart, this approach focuses on building a system from the ground up. This avoids the need to strip down a larger, more complex system, eliminating compromises and workarounds typically required in such cases.
