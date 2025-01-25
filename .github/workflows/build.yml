@@ -72,4 +72,3 @@ jobs:
           buildroot/output/images/sbnb.raw.gz
           buildroot/output/images/sbnb.vhd
           buildroot/output/images/sbnb.efi
-          /usr/lib/systemd/boot/efi/linuxx64.efi.stub
