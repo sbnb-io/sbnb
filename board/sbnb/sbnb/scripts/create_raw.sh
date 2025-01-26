@@ -24,7 +24,7 @@ parted -s ${LOOP} set 1 boot on
 
 partprobe ${LOOP}
 
-mkfs.vfat -F 32 ${LOOP}p1
+mkfs.vfat -F 32 -n sbnb ${LOOP}p1
 mount -o loop ${LOOP}p1 ${TMP_DIR}
 mkdir -p ${TMP_DIR}/EFI/Boot/
 cp ${EFI} ${TMP_DIR}/EFI/Boot/bootx64.efi
