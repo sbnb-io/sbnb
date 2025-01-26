@@ -144,6 +144,7 @@ Sbnb Linux provides several options for starting customer jobs, depending on the
 | **Confidential Computing Virtual Machine (CC VM)** | Start a CC VM to run production workloads securely. Encrypts memory and CPU states, enabling remote attestation to ensure code integrity. | Recommended for production environments. | [Detailed Documentation](/README-CC.md) |
 
 ## Build sbnb Image Yourself
+To build the Sbnb Linux image, it is recommended to use Ubuntu 24.04 as the development environment.
 
 - Clone this repository.
 ```
