@@ -20,16 +20,13 @@ set_hostname() {
     hostname "sbnb-${SERIAL}"
 }
 
-# Function to mount sbnb USB flash identified by PARTLABEL="sbnb" or LABEL="sbnb"
+# Function to mount sbnb USB flash identified by PARTLABEL="sbnb" or LABEL="sbnb" (case insensitive)
 mount_sbnb_usb() {
-    SBNB_DEV=$(blkid -t PARTLABEL="sbnb" -o device -l)
-    if [ -z "${SBNB_DEV}" ]; then
-        SBNB_DEV=$(blkid -t LABEL="sbnb" -o device -l)
-    fi
+    SBNB_DEV=$(blkid | grep -i 'LABEL="sbnb"\|PARTLABEL="sbnb"' | awk -F: '{print $1}' | head -n 1) || true
     if [ -n "${SBNB_DEV}" ]; then
         SBNB_MNT="/mnt/sbnb"
-        mkdir -p "${SBNB_MNT}"
-        mount -o ro "${SBNB_DEV}" "${SBNB_MNT}"
+        mkdir -p "${SBNB_MNT}" || true
+        mount -o ro "${SBNB_DEV}" "${SBNB_MNT}" || true
     else
         echo "No device with PARTLABEL or LABEL 'sbnb' found."
     fi
