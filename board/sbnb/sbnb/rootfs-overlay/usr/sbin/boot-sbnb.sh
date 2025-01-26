@@ -3,7 +3,7 @@ set -euxo pipefail
 
 # Sbnb Linux boot script executed by systemd at startup to perform the following tasks:
 # 1. Set a unique hostname using the platform's serial number or a random value if no serial number found
-# 2. Mount sbnb USB flash identified by PARTLABEL="sbnb"
+# 2. Mount sbnb USB flash identified by PARTLABEL="sbnb" or LABEL="sbnb"
 # 3. Mount VMware shared folder shared by the host and named "sbnb" if we started in a VMware VM
 # 4. Find Tailscale key file "sbnb-tskey.txt"
 # 5. Start Tailscale tunnel
@@ -20,12 +20,19 @@ set_hostname() {
     hostname "sbnb-${SERIAL}"
 }
 
-# Function to mount sbnb USB flash identified by PARTLABEL="sbnb"
+# Function to mount sbnb USB flash identified by PARTLABEL="sbnb" or LABEL="sbnb"
 mount_sbnb_usb() {
     SBNB_DEV=$(blkid -t PARTLABEL="sbnb" -o device -l)
-    SBNB_MNT="/mnt/sbnb"
-    mkdir -p "${SBNB_MNT}"
-    mount -o ro "${SBNB_DEV}" "${SBNB_MNT}"
+    if [ -z "${SBNB_DEV}" ]; then
+        SBNB_DEV=$(blkid -t LABEL="sbnb" -o device -l)
+    fi
+    if [ -n "${SBNB_DEV}" ]; then
+        SBNB_MNT="/mnt/sbnb"
+        mkdir -p "${SBNB_MNT}"
+        mount -o ro "${SBNB_DEV}" "${SBNB_MNT}"
+    else
+        echo "No device with PARTLABEL or LABEL 'sbnb' found."
+    fi
 }
 
 # Function to mount VMware shared folder
