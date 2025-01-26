@@ -17,16 +17,23 @@ OUTPUT=sbnb.efi
 # Write the command line to a temporary file
 echo -n "${CMDLINE}" > "${CMDLINE_TMP}"
 
+# Calculate alignment
+align="$(objdump -p "${STUB}" | awk '{ if ($1 == "SectionAlignment"){print $2} }')"
+align=$((16#$align))
+
 # Calculate offsets for sections
-# Based on https://github.com/andreyv/sbupdate/issues/56
 stub_line=$(objdump -h "${STUB}" | tail -2 | head -1)
 stub_size=0x$(echo "$stub_line" | awk '{print $3}')
 stub_offs=0x$(echo "$stub_line" | awk '{print $4}')
 osrel_offs=$((stub_size + stub_offs))
-cmdline_offs=$((osrel_offs + $(stat -c%s "${OS_RELEASE}")))
-splash_offs=$((cmdline_offs + $(stat -c%s "${CMDLINE_TMP}")))
+osrel_offs=$((osrel_offs + align - osrel_offs % align))
+cmdline_offs=$((osrel_offs + $(stat -Lc%s "${OS_RELEASE}")))
+cmdline_offs=$((cmdline_offs + align - cmdline_offs % align))
+splash_offs=$((cmdline_offs + $(stat -Lc%s "${CMDLINE_TMP}")))
+splash_offs=$((splash_offs + align - splash_offs % align))
 linux_offs=$((splash_offs))
-initrd_offs=$((linux_offs + $(stat -c%s "${KERNEL}")))
+initrd_offs=$((linux_offs + $(stat -Lc%s "${KERNEL}")))
+initrd_offs=$((initrd_offs + align - initrd_offs % align))
 
 # Use objcopy to add sections to the EFI stub
 objcopy \
