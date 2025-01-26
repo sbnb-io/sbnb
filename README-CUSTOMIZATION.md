@@ -17,7 +17,7 @@ This feature is ideal for automating tasks, configuring system settings, or runn
 Below is an example of a simple `sbnb-cmds.sh` script:
 
 ```bash
-#!/bin/bash
+#!/bin/sh
 
 # Get the script name
 SCRIPT_NAME="$(basename "$0")"
