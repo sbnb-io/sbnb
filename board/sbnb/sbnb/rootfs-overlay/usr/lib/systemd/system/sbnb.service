@@ -2,7 +2,7 @@
 Description=sbnb
 Wants=network-pre.target
 Wants=dev-disk-by\x2dpartlabel-sbnb.device
-After=tailscaled
+After=tailscaled.service
 After=dev-disk-by\x2dpartlabel-sbnb.device
 
 [Service]
