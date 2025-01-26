@@ -5,10 +5,16 @@ on:
     branches: [ "main" ]
     paths-ignore:
       - '**/README*.md'
+      - 'scripts'
+      - 'configs'
+      - 'containers'
   pull_request:
     branches: [ "main" ]
     paths-ignore:
       - '**/README*.md'
+      - 'scripts'
+      - 'configs'
+      - 'containers'
 
 jobs:
   build:
