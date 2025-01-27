@@ -89,7 +89,7 @@ sudo dd if=$SbnbRawPath of=$selectedDrive bs=1M
 
 # Step 6: Mount the newly written disk
 echo -e "${YELLOW}Mounting disk $selectedDrive...${NC}"
-diskutil mountDisk $selectedDrive
+sudo diskutil mountDisk $selectedDrive
 
 # Step 7: Ensure the ESP partition is mounted to /Volumes/sbnb
 espPath="/Volumes/sbnb"
