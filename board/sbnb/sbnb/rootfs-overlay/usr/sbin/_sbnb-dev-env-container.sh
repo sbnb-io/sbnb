@@ -13,7 +13,7 @@ apt-get update -y \
         dosfstools git apt-file systemd net-tools \
         sudo pciutils parted fio nvme-cli smartmontools \
         ipmitool yamllint jq sysstat strace curl libelf-dev ncurses-dev \
-        exuberant-ctags iputils-ping dnsutils mc docker.io qemu-kvm ovmf \
+        exuberant-ctags iputils-ping bind9-dnsutils mc docker.io qemu-kvm ovmf \
         genisoimage
 
 # Finally start tmux for fellow developers
