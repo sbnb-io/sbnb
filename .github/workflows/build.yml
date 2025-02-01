@@ -75,6 +75,6 @@ jobs:
       with:
         name: sbnb-images
         path: |
-          buildroot/output/images/sbnb.raw.gz
+          buildroot/output/images/sbnb.raw.zip
           buildroot/output/images/sbnb.vhd
-          buildroot/output/images/sbnb.efi
+          buildroot/output/images/sbnb.efi.zip

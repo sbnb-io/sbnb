@@ -39,8 +39,9 @@ umount ${TMP_DIR}
 rm -rf ${TMP_DIR}
 losetup -d ${LOOP}
 
-# Prepare compressed raw image
-gzip -f -k ${IMG_FILE}
+# Prepare compressed images
+zip ${IMG_FILE}.zip ${IMG_FILE}
+zip ${EFI}.zip ${EFI}
 
 # Prepare vhd
 qemu-img convert -f raw -O vpc ${IMG_FILE} ${VHD_FILE}
