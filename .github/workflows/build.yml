@@ -73,7 +73,7 @@ jobs:
     - name: Save sbnb images
       uses: actions/upload-artifact@v4
       with:
-        name: sbnb-images-$IMAGE_VERSION
+        name: sbnb-images-${{ env.IMAGE_VERSION }}
         path: |
           buildroot/output/images/sbnb.raw.zip
           buildroot/output/images/sbnb.vhd
