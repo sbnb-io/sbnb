@@ -58,7 +58,7 @@ c1:00.0 VGA compatible controller [0300]: NVIDIA Corporation GA106 [GeForce RTX 
 c1:00.1 Audio device [0403]: NVIDIA Corporation GA106 High Definition Audio Controller [10de:228e] (rev a1)
 ```
 
-Note the two hex numbers in parentheses, which represent the vendor ID and product ID. Use these hex numbers in the commands below:
+Note the two hex numbers in square brackets, which represent the vendor ID and product ID. Use these hex numbers in the commands below:
 
 ```
 echo 10de 2504 > /sys/bus/pci/drivers/vfio-pci/new_id
