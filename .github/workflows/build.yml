@@ -28,6 +28,8 @@ jobs:
       run: echo ${{ github.run_number }}
     - name: Output Run Attempt
       run: echo ${{ github.run_attempt }}
+    - name: Generate build id
+      run: echo "IMAGE_VERSION=$(date +%Y.%m.%d)-$GITHUB_RUN_NUMBER" >> $GITHUB_ENV
 
     - name: Install dependencies
       run: |
@@ -67,11 +69,11 @@ jobs:
       run: |
         cd buildroot
         make -j $(nproc)
-        
+    
     - name: Save sbnb images
       uses: actions/upload-artifact@v4
       with:
-        name: sbnb-images
+        name: sbnb-images-$IMAGE_VERSION
         path: |
           buildroot/output/images/sbnb.raw.zip
           buildroot/output/images/sbnb.vhd
