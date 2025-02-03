@@ -6,6 +6,13 @@
 - Nvidia GPU installed into PCIe slot
 - Any USB flash drive
 
+## Desired State
+
+The diagram below depicts the final state after following this tutorial. The Nvidia GPU will be attached to the guest Virtual Machine using the low-overhead `vfio-pci` mechanism.
+
+![nvidia-vfio-sbnb-linux](images/nvidia-vfio-sbnb-linux.png)
+
+
 ## Step 1: Prepare a Bootable USB Dongle with SBNB Linux
 
 Attach a USB flash drive to your computer and run the appropriate command below in the terminal:
