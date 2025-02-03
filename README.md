@@ -21,7 +21,7 @@ The diagram below shows how Sbnb Linux boots a bare metal server (host), starts 
 
 ![nvidia-vfio-sbnb-linux](images/nvidia-vfio-sbnb-linux.png)
 
-In summary, the bare metal server boots into a minimal Linux environment consisting of a Linux kernel with Tailscale, Docker container engine, and QEMU VM KVM hypervisor.
+In summary, the bare metal server boots into a minimal Linux environment consisting of a Linux kernel with Tailscale, Docker container engine, and QEMU KVM hypervisor.
 
 From this environment, you can execute any Linux distribution that has a corresponding Docker container (which covers nearly all distributions) using the following command:
 
