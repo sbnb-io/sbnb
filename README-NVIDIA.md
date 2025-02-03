@@ -172,3 +172,19 @@ Sun Feb  2 14:33:40 2025
 
 Now the Nvidia GPU runs properly within the KVM Virtual Machine in PCIe passthrough mode, providing low overhead and ready to handle your workloads.
 
+## Optional Step 9: Run AI ALL with Ollama
+
+Within the started VM, install **Ollama**:
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+Then start the LLM you want. For example, to run **DeepSeek R1**:
+
+```bash
+ollama run deepseek-r1:8b
+```
+
+Ollama will utilize your **Nvidia GPU** for inference, offering much more efficient performance compared to running on the CPU.
+
