@@ -7,12 +7,14 @@ on:
       - '**/README*.md'
       - 'scripts/**'
       - 'containers/**'
+      - 'images/**'
   pull_request:
     branches: [ "main" ]
     paths-ignore:
       - '**/README*.md'
       - 'scripts/**'
       - 'containers/**'
+      - 'images/**'
 
 jobs:
   build:
