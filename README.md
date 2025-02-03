@@ -14,16 +14,31 @@ Thank you for the feedback, and I apologize for the unclear wording.
 - **[Optional]** If you plan to launch Confidential Computing (CC) Virtual Machines (VMs) on Sbnb Linux, ensure that your CPU supports AMD SEV-SNP technology (available from AMD EPYC Gen 3 CPUs onward). Additionally, enable this feature in the BIOS. For more details, refer to [README-CC.md](https://github.com/sbnb-io/sbnb/blob/main/README-CC.md).
 
 # Typical Use Case for Sbnb Linux
-- **Run Sbnb Linux on Bare Metal Server** - In summary, the bare metal server boots into a minimal Linux environment consisting of a Linux kernel with Tailscale and the Docker container engine.
+
+## Use Case 1: Run Sbnb Linux on Bare Metal Server
+
+The diagram below shows how Sbnb Linux boots a bare metal server (host), starts a guest virtual machine, and attaches an Nvidia GPU to the guest using the low-overhead `vfio-pci` mechanism. Read more at this [README-NVIDIA.md](README-NVIDIA.md).
+
+![nvidia-vfio-sbnb-linux](images/nvidia-vfio-sbnb-linux.png)
+
+In summary, the bare metal server boots into a minimal Linux environment consisting of a Linux kernel with Tailscale, Docker container engine, and QEMU VM KVM hypervisor.
+
 From this environment, you can execute any Linux distribution that has a corresponding Docker container (which covers nearly all distributions) using the following command:
+
 ```
 docker run --privileged -it -v /root:/root -v /dev:/dev --net=host ubuntu:24.04 bash
 ```
 
 Simply replace `ubuntu:24.04` with the desired distribution, such as `centos`, `alpine`, or any other Docker-supported distribution.
 
-- **Run Sbnb Linux as a VM Guest** - Please refer to the separate document on how to run Sbnb Linux as a VMware Guest: [README-VMWARE.md](https://github.com/sbnb-io/sbnb/blob/main/README-VMWARE.md).
+Alternatively, you can start a guest virtual machine with virtually any OS.
+
+## Use Case 2: Run Sbnb Linux as a VM Guest
+
+Please refer to the separate document on how to run Sbnb Linux as a VMware guest: [README-VMWARE.md](https://github.com/sbnb-io/sbnb/blob/main/README-VMWARE.md).
+
 However, VMware is not a hard requirement. Any VM hypervisor, such as QEMU, can also be used.
+
 
 # Key Features of Sbnb Linux:
 
