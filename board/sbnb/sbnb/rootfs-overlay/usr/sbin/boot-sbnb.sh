@@ -80,6 +80,8 @@ display_banner() {
         echo "  |____/|_.__/|_| |_|_.__/  |_____|_|_| |_|\__,_/_/\_\\"
         echo ""
         echo "  Welcome to Sbnb Linux!"
+        echo "  Version:" $(. /etc/os-release; echo ${IMAGE_VERSION})
+        echo ""
         echo "  Just an ASCII banner for now."
         echo "  Animations will arrive right after Linux is rewritten in JavaScript."
         echo ""

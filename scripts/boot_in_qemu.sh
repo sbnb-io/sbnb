@@ -14,5 +14,6 @@ qemu-system-x86_64 \
         -cpu host \
         -accel kvm -m 16G -smp 2 \
         -bios /usr/share/ovmf/OVMF.fd \
+        -netdev user,id=n1 -device virtio-net-pci,netdev=n1 \
         -vnc :0 \
         -hda ${IMG_FILE}

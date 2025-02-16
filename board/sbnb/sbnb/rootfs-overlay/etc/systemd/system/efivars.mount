@@ -1,0 +1,11 @@
+[Unit]
+Description=Mount efivars filesystem
+
+[Mount]
+What=/dev/efivars
+Where=/sys/firmware/efi/efivars
+Type=efivarfs
+Options=ro
+
+[Install]
+WantedBy=multi-user.target
