@@ -198,6 +198,20 @@ See the diagram below for the internal structure of sbnb Linux.
 
 ![Sbnb Architecture](images/sbnb-architecture.png)
 
+## Assigning Hostnames Automatically in Sbnb Linux
+During the boot process, Sbnb Linux reads the machine's serial number and assigns the hostname as:
+
+```
+sbnb-${SERIAL}
+```
+
+If no serial number can be read, then a randomly generated string is used instead.
+Once the machine boots and connects to [Tailscale](https://tailscale.com/) (tailnet), it will be identified using the assigned hostname.
+
+![Sbnb Linux: Machine registered in Tailscale (tailnet)](images/serial-number-tailscale.png)
+
+Read more at [README-SERIAL-NUMBER.md](README-SERIAL-NUMBER.md)
+
 ## Use Cases
 
 The diagram below illustrates the concept of Sbnb Linux, where servers connect to the public Internet through ISP links and NAT. These servers create an overlay network across the public Internet using secure tunnels, powered by Tailscale, resulting in a flat, addressable space.
