@@ -74,7 +74,7 @@ Attach a USB flash drive to your computer and run the appropriate command below 
 
 - **For Linux**:
   ```bash
-  bash <(curl -s https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/scripts/install-linux.sh)
+  sh <(curl -s https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/scripts/install-linux.sh)
   ```
 
 The script will:
