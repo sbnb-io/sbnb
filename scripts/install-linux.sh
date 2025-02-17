@@ -75,9 +75,15 @@ fi
 # Unmount the selected disk if it is mounted
 if mount | grep "$selectedDrive" > /dev/null; then
     echo -e "${YELLOW}Unmounting disk $selectedDrive...${NC}"
-    sudo umount ${selectedDrive}*
-else
-    echo -e "${YELLOW}Disk $selectedDrive is not mounted. Skipping unmount.${NC}"
+    mountedPartitions=$(mount | grep "^$selectedDrive" | awk '{print $1}')
+    if [ -n "$mountedPartitions" ]; then
+        for partition in $mountedPartitions; do
+            echo -e "${YELLOW}Unmounting partition $partition...${NC}"
+            sudo umount "$partition"
+        done
+    else
+        echo -e "${YELLOW}No partitions of disk $selectedDrive are mounted. Skipping unmount.${NC}"
+    fi
 fi
 
 # Step 5: Write sbnb.raw to the selected disk
