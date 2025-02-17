@@ -13,18 +13,17 @@ Once the machine boots and connects to [Tailscale](https://tailscale.com/) (tail
 ## Example
 Below are pictures from a test 1U rack-mount machine based on an ASRock motherboard:
 
+### Serial number on the top of the chassis case
 ![Sbnb Linux: Serial number on the top of the chassis case](images/serial-number-chassis.png)
 
-**Serial number on the top of the chassis case**
 
+### Serial number in the ASRock BMC Web User Interface (WebUI)
 ![Sbnb Linux: Serial number in the ASRock BMC Web User Interface (WebUI)](images/serial-number-BMC.png)
 
-**Serial number in the ASRock BMC Web User Interface (WebUI)**
 
+### Serial number retrieved using `dmidecode` on the Linux command line
 ![Sbnb Linux: Serial number retrieved using `dmidecode` on the Linux command line](images/serial-number-dmidecode.png)
 
-**Serial number retrieved using `dmidecode` on the Linux command line**
-
+### Machine registered in Tailscale (tailnet)
 ![Sbnb Linux: Machine registered in Tailscale (tailnet)](images/serial-number-tailscale.png)
 
-**Machine registered in Tailscale (tailnet)**
