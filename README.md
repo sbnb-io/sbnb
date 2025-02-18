@@ -139,14 +139,21 @@ Congratulations! Your Sbnb Linux environment is now up and running. We're excite
 
 # Sbnb Linux Instance Customization
 
-The `sbnb-cmds.sh` file introduces a powerful way to customize Sbnb Linux instances during boot. By placing a custom shell script named `sbnb-cmds.sh` on a USB flash drive or another supported configuration source, you can define commands and behaviors to be executed under the BusyBox shell during the boot process. 
+## Low-Level Customization
+The `sbnb-cmds.sh` file introduces a powerful way to customize Sbnb Linux instances during boot. By placing a custom shell script named `sbnb-cmds.sh` on a USB flash drive or another supported configuration source, you can define commands and behaviors to be executed under the BusyBox shell during the boot process.
 
-This feature is ideal for automating tasks, configuring system settings, or running services at startup.
+This feature is ideal for low-level system configurations like devices, networking, etc.
 
 For more details, refer to [README-CUSTOMIZATION.md](README-CUSTOMIZATION.md).
 
+## High-Level Customization or Workloads
+To start workloads, it's recommended to use an Infrastructure as Code (IaC) approach using Ansible.  
+Please refer to this tutorial where we will start a Docker container on a bare-metal server booted into Sbnb Linux using the Ansible automation tool: [README-ANSIBLE.md](README-ANSIBLE.md).
 
-# How to Start Customer Workloads on Sbnb Linux  
+Days when system administrators manually installed Linux OS and configured services are gone.
+
+
+# Exploring Different Strategies for Launching Customer Workloads on Sbnb Linux  
 
 Sbnb Linux provides several options for starting customer jobs, depending on the environment and security requirements.  
 
