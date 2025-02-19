@@ -19,6 +19,17 @@ echo -e "${BLUE}=========================================${NC}"
 echo -e "${GREEN} Welcome to Sbnb Linux Bootable USB Creation ${NC}"
 echo -e "${BLUE}=========================================${NC}"
 
+# Function to unmount a disk
+unmount_disk() {
+    local disk=$1
+    echo -e "${YELLOW}Unmounting disk $disk...${NC}"
+    if mount | grep "$disk" > /dev/null; then
+        sudo diskutil unmountDisk $disk
+    else
+        echo -e "${YELLOW}Disk $disk is not mounted.${NC}"
+    fi
+}
+
 # Step 1: Find latest release and download sbnb.raw.zip if not provided
 if [ -z "$1" ]; then
     repoUrl="https://api.github.com/repos/sbnb-io/sbnb/releases/latest"
@@ -79,12 +90,10 @@ if [ "$confirmation" != "y" ]; then
 fi
 
 # Unmount the selected disk
-echo -e "${YELLOW}Unmounting disk $selectedDrive...${NC}"
-diskutil unmountDisk $selectedDrive
+unmount_disk $selectedDrive
 
 # Step 5: Write sbnb.raw to the selected disk
 echo -e "${YELLOW}Writing sbnb.raw to disk $selectedDrive...${NC}"
-diskutil unmountDisk $selectedDrive
 sudo dd if=$SbnbRawPath of=$selectedDrive bs=1M
 
 # Step 6: Mount the newly written disk
@@ -123,8 +132,7 @@ else
 fi
 
 # Step 8: Unmount the disk
-echo -e "${YELLOW}Unmounting disk $selectedDrive...${NC}"
-diskutil unmountDisk $selectedDrive
+unmount_disk $selectedDrive
 
 # Step 9: Cleanup temporary directory
 echo -e "${YELLOW}Cleaning up temporary files...${NC}"
