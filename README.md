@@ -56,6 +56,7 @@ However, VMware is not a hard requirement. Any VM hypervisor, such as QEMU, can 
 
 
 # How to Boot Your Server into Sbnb Linux
+Below is a brief guide. For a more detailed installation guide, refer to [README-INSTALL.md](README-INSTALL.md).
 
 ## 1. Prepare a Bootable USB Dongle with Sbnb Linux
 
