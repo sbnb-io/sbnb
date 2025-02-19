@@ -52,6 +52,7 @@ After booting, verify that the server appears in your **Tailscale machine list**
 
 ![Sbnb Linux: Machine registered in Tailscale (tailnet)](images/serial-number-tailscale.png)
 
+For more details on automatic hostname assignments, refer to [README-SERIAL-NUMBER.md](README-SERIAL-NUMBER.md).
 
 ## Done!
 You can now SSH into the server using Tailscale SSO methods, such as **Google Auth**.
