@@ -10,7 +10,6 @@ Sbnb Linux is a revolutionary minimalist Linux distribution designed to boot bar
     - For example, take a look at this [Reddit post](https://www.reddit.com/r/homelab/comments/1hmnnwg/built_a_powerful_and_silent_amd_epyc_home_server/) where we built a powerful and quiet AMD EPYC 3rd Gen home server together with my kids.
 - **USB Flash Drive** for booting.
     - Any standard USB flash drive with at least 512MB capacity will work. Please note that all existing data on the drive will be overwritten.
-Thank you for the feedback, and I apologize for the unclear wording.
 - **[Optional]** If you plan to launch Confidential Computing (CC) Virtual Machines (VMs) on Sbnb Linux, ensure that your CPU supports AMD SEV-SNP technology (available from AMD EPYC Gen 3 CPUs onward). Additionally, enable this feature in the BIOS. For more details, refer to [README-CC.md](https://github.com/sbnb-io/sbnb/blob/main/README-CC.md).
 
 # Typical Use Case for Sbnb Linux
