@@ -11,7 +11,7 @@ Confidential Computing encrypts the memory and CPU states of the virtual machine
 - **Bare Metal Server** with **AMD SEV-SNP** support enabled in BIOS.
     - For example, take a look at this [Reddit post](https://www.reddit.com/r/homelab/comments/1hmnnwg/built_a_powerful_and_silent_amd_epyc_home_server/) where we built a powerful and quiet AMD EPYC 3rd Gen home server together with my kids.
 - **Sbnb Linux Boot**:
-    - Refer to the main **Sbnb Linux** [README](https://github.com/sbnb-io/sbnb/blob/main/README.md) for instructions on how to boot your server into Sbnb Linux.
+    - Refer to the [README-INSTALL.md](README-INSTALL.md) for instructions on how to boot your server into Sbnb Linux.
 
 ## Step-by-step Guide
 
