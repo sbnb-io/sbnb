@@ -1,0 +1,29 @@
+prometheus.remote_write "grafanacloud" {
+  endpoint {
+    url = "GRAFANA_URL"
+
+    basic_auth {
+      username = "GRAFANA_USERNAME"
+      password = "GRAFANA_PASSWORD"
+    }
+  }
+}
+
+prometheus.scrape "linux_node" {
+  targets = prometheus.exporter.unix.node.targets
+  forward_to = [prometheus.remote_write.grafanacloud.receiver]
+  scrape_interval = "60s"
+}
+
+prometheus.exporter.unix "node" {
+  set_collectors = ["cpu", "uname"]
+  enable_collectors = ["cpu", "uname"]
+}
+
+prometheus.scrape "ipmi" {
+  targets = [
+    {"__address__" = "127.0.0.1:9290", "instance" = constants.hostname},
+  ]
+  forward_to = [prometheus.remote_write.grafanacloud.receiver]
+  scrape_interval = "60s"
+}

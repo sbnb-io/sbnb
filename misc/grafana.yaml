@@ -1,0 +1,50 @@
+---
+
+- hosts: sbnb-F6S0R8000719
+  gather_facts: false
+  ignore_unreachable: true
+
+  vars:
+    IPMI_DEV: "/dev/ipmi0"
+
+  tasks:
+    - ping:
+
+    - name: Copy Grafana config
+      copy:
+        src: config.alloy 
+        dest: /etc/config.alloy
+
+    - name: Check if "{{ IPMI_DEV }}" exist
+      stat:
+        path: "{{ IPMI_DEV }}"
+      register: ipmi_dev_exist
+
+    - name: Start a ipmi-exporter container
+      when: ipmi_dev_exist.stat.exists
+      docker_container:
+        name: ipmi-exporter
+        image: prometheuscommunity/ipmi-exporter
+        network_mode: host
+        ports:
+          - 9290:9290
+        user: 0:0
+        devices:
+          - "{{ IPMI_DEV }}:{{ IPMI_DEV }}:rwm"
+
+    - name: Start a Grafana Alloy container
+      docker_container:
+        name: grafana
+        image: grafana/alloy
+        privileged: true
+        network_mode: host
+        # state: absent
+        volumes:
+          - /proc:/proc
+          - /etc/config.alloy:/etc/alloy/config.alloy
+        command: [
+          "run",
+          "--server.http.listen-addr=0.0.0.0:12345",
+          "--storage.path=/var/lib/alloy/data",
+          "/etc/alloy/config.alloy"
+          ]
