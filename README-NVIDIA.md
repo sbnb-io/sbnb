@@ -13,44 +13,22 @@ The diagram below depicts the final state after following this tutorial. The Nvi
 ![nvidia-vfio-sbnb-linux](images/nvidia-vfio-sbnb-linux.png)
 
 
-## Step 1: Prepare a Bootable USB Dongle with SBNB Linux
+### 1. Boot Bare Metal Server into Sbnb Linux
+Boot the Bare Metal server into Sbnb Linux using the instructions in [README-INSTALL.md](README-INSTALL.md). After booting, verify that the server appears in your **Tailscale machine list**.
 
-Attach a USB flash drive to your computer and run the appropriate command below in the terminal:
+![Sbnb Linux: Machine registered in Tailscale (tailnet)](images/serial-number-tailscale.png)
 
-- **For Windows** (execute in PowerShell as Administrator):
-  ```powershell
-  iex ((New-Object System.Net.WebClient).DownloadString('https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/scripts/install-win.ps1'))
-  ```
+For more details on automatic hostname assignments, refer to [README-SERIAL-NUMBER.md](README-SERIAL-NUMBER.md).
 
-- **For Mac**:
-  ```bash
-  bash <(curl -s https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/scripts/install-mac.sh)
-  ```
-
-- **For Linux**:
-  ```bash
-  bash <(curl -s https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/scripts/install-linux.sh)
-  ```
-
-The script will:
-- Download the latest Sbnb Linux image.
-- Flash it onto the selected USB drive.
-- Prompt you to enter your Tailscale key.
-- Allow you to specify custom commands to execute during the Sbnb Linux instance boot.
-
-## Step 2: Boot the Server into SBNB Linux
-
-Boot your server using the prepared USB dongle.
-
-## Step 3: SSH to the Server
+## Step 2: SSH to the Server
 
 Verify that the server appears in your Tailscale machine list and SSH into the server using Tailscale SSO methods, such as Google Auth.
 
-## Step 4: Prepare the Environment
+## Step 3: Prepare the Environment
 
 Execute `sbnb-dev-env.sh`. This will prepare the full environment with QEMU installed.
 
-## Step 5: Attach Nvidia GPU to vfio-pci
+## Step 4: Attach Nvidia GPU to vfio-pci
 
 Run the following command to list Nvidia adapters in the system:
 
@@ -72,7 +50,7 @@ echo 10de 2504 > /sys/bus/pci/drivers/vfio-pci/new_id
 echo 10de 228e > /sys/bus/pci/drivers/vfio-pci/new_id
 ```
 
-## Step 6: Prepare Virtual Machine Configuration
+## Step 5: Prepare Virtual Machine Configuration
 
 Create a `user-data` file for cloud-init. Replace `tskey-auth-KEY` with your actual Tailscale key.
 
@@ -105,7 +83,7 @@ cp noble-server-cloudimg-amd64.img vm-instance.img
 qemu-img resize vm-instance.img 20G
 ```
 
-## Step 7: Launch the Virtual Machine
+## Step 6: Launch the Virtual Machine
 
 Start the VM using the downloaded image and generated ISO, and attach the Nvidia GPU to this VM in PCIe passthrough mode:
 
@@ -123,7 +101,7 @@ qemu-system-x86_64 \
 
 Replace `0000:c1:00` with the actual values of the PCI slot where the Nvidia GPU is attached.
 
-## Step 8: Use Nvidia GPU within the Started VM
+## Step 7: Use Nvidia GPU within the Started VM
 
 Once the VM is started, it will appear in your Tailscale machine list. SSH into it and confirm the Nvidia GPU is showing up on PCIe with `lspci`:
 
@@ -172,7 +150,7 @@ Sun Feb  2 14:33:40 2025
 
 Now the Nvidia GPU runs properly within the KVM Virtual Machine in PCIe passthrough mode, providing low overhead and ready to handle your workloads.
 
-## Optional Step 9: Run AI ALL with Ollama
+## Optional Step 8: Run AI ALL with Ollama
 
 Within the started VM, install **Ollama**:
 
