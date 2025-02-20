@@ -22,17 +22,18 @@ The diagram below shows how Sbnb Linux boots a bare metal server (host), starts 
 
 In summary, the bare metal server boots into a minimal Linux environment consisting of a Linux kernel with Tailscale, Docker container engine, and QEMU KVM hypervisor.
 
-From this environment, you can execute any Linux distribution that has a corresponding Docker container (which covers nearly all distributions) using the following command:
+## Use Case 2: Running Sbnb Linux with Grafana Monitoring on a Bare Metal Server
 
-```
-docker run --privileged -it -v /root:/root -v /dev:/dev --net=host ubuntu:24.04 bash
-```
+Quickly set up a Bare Metal server with CPU temperature, fan speed, and power consumption (Watt) monitoring using Sbnb Linux and **Infrastructure as Code (IaC)**, all visualized through **Grafana**.
 
-Simply replace `ubuntu:24.04` with the desired distribution, such as `centos`, `alpine`, or any other Docker-supported distribution.
+The graph below illustrates a **10-minute CPU stress test** where the CPU load spikes to **100%**, causing the temperature to rise from **40°C to ~80°C**. As a result, the fan speed increases from **8,000 RPM to 18,000 RPM**, and power consumption surges from **50W to 200W**.
 
-Alternatively, you can start a guest virtual machine with virtually any OS.
+![Sbnb Linux: Monitoring CPU Temp, Fan Speed, and Power Consumption with Grafana](images/sbnb-grafana-cpu-temp-power.png)
 
-## Use Case 2: Run Sbnb Linux as a VM Guest
+**Read the step-by-step guide:** [README-GRAFANA.md](README-GRAFANA.md)
+
+
+## Use Case 3: Run Sbnb Linux as a VM Guest
 
 Please refer to the separate document on how to run Sbnb Linux as a VMware guest: [README-VMWARE.md](https://github.com/sbnb-io/sbnb/blob/main/README-VMWARE.md).
 
