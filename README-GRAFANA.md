@@ -79,5 +79,5 @@ sbnb-F6S0R8000719          : ok=5    changed=1    unreachable=0    failed=0    s
 ```
 
 ### 7. Import Grafana Dashboard and Start Monitoring Your Bare Metal Server!
-Import this Grafana dashboard created for simplicity. It displays CPU load and metrics gathered from IPMI, such as various component temperatures, Fan speed, and power consumption in Watts.
+Import [this Grafana dashboard](https://grafana.com/grafana/dashboards/22906-linux-node-overview/) created for simplicity. It displays CPU load and metrics gathered from IPMI, such as various component temperatures, Fan speed, and power consumption in Watts.
 
