@@ -1,6 +1,6 @@
 ---
 
-- hosts: HOSTNAME
+- hosts: "{{ lookup('ansible.builtin.env', 'SBNB_HOSTS') }}"
   gather_facts: false
   ignore_unreachable: true
 
@@ -42,6 +42,10 @@
         volumes:
           - /proc:/proc
           - /etc/config.alloy:/etc/alloy/config.alloy
+        env:
+          GRAFANA_URL: "{{ lookup('ansible.builtin.env', 'GRAFANA_URL') }}"
+          GRAFANA_USERNAME: "{{ lookup('ansible.builtin.env', 'GRAFANA_USERNAME') }}"
+          GRAFANA_PASSWORD: "{{ lookup('ansible.builtin.env', 'GRAFANA_PASSWORD') }}"
         command: [
           "run",
           "--server.http.listen-addr=0.0.0.0:12345",

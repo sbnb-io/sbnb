@@ -1,10 +1,10 @@
 prometheus.remote_write "grafanacloud" {
   endpoint {
-    url = "GRAFANA_URL"
+    url = sys.env("GRAFANA_URL")
 
     basic_auth {
-      username = "GRAFANA_USERNAME"
-      password = "GRAFANA_PASSWORD"
+      username = sys.env("GRAFANA_USERNAME")
+      password = sys.env("GRAFANA_PASSWORD")
     }
   }
 }
