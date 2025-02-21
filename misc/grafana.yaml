@@ -1,6 +1,6 @@
 ---
 
-- hosts: sbnb-F6S0R8000719
+- hosts: HOSTNAME
   gather_facts: false
   ignore_unreachable: true
 
