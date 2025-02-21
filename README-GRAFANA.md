@@ -27,7 +27,6 @@ chmod +x ansible_tailscale_inventory.py
 ```
 
 ### 4. Pull Grafana Alloy Config and Ansible Playbook
-Download a template file `grafana.yaml`:
 ```sh
 curl -O https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/misc/grafana.yaml
 curl -O https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/misc/ansible.cfg
