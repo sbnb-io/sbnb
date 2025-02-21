@@ -26,24 +26,21 @@ curl https://raw.githubusercontent.com/m4wh6k/ansible-tailscale-inventory/refs/h
 chmod +x ansible_tailscale_inventory.py
 ```
 
-### 4. Create a Simple Ansible Playbook
+### 4. Pull Grafana Alloy Config and Ansible Playbook
 Download a template file `grafana.yaml`:
 ```sh
 curl -O https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/misc/grafana.yaml
-```
-
-Replace `hosts: sbnb-F6S0R8000719` with your host.
-
-Download a config file `ansible.cfg`:
-```sh
 curl -O https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/misc/ansible.cfg
+curl -O https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/misc/config.alloy
 ```
 
-### 5. Create Grafana Configuration
+### 5. Set environment variables
 
-Download the template `config.alloy` file:
 ```sh
-curl -O https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/misc/config.alloy
+export SBNB_HOSTS=sbnb-F6S0R8000719
+export GRAFANA_URL="https://prometheus-prod-13-prod-us-east-0.grafana.net/api/prom/push"
+export GRAFANA_USERNAME="1962802"
+export GRAFANA_PASSWORD="glc_<REDACTED>"
 ```
 
 Replace `GRAFANA_URL`, `GRAFANA_USERNAME`, and `GRAFANA_PASSWORD` with your own credentials, which you can obtain from your Grafana Cloud account under:
@@ -52,7 +49,7 @@ Replace `GRAFANA_URL`, `GRAFANA_USERNAME`, and `GRAFANA_PASSWORD` with your own 
 Home -> Connections -> Data sources -> Your Prometheus Data Source -> Authentication
 ```
 
-### 6. Apply Ansible Playbook
+### 6. Run Ansible Playbook
 ```sh
 ansible-playbook -i ./ansible_tailscale_inventory.py grafana.yaml
 ```
