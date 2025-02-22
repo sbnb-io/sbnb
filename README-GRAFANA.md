@@ -81,3 +81,13 @@ sbnb-F6S0R8000719          : ok=5    changed=1    unreachable=0    failed=0    s
 ### 7. Import Grafana Dashboard and Start Monitoring Your Bare Metal Server!
 Import [this Grafana dashboard](https://grafana.com/grafana/dashboards/22906-linux-node-overview/) created for simplicity. It displays CPU load and metrics gathered from IPMI, such as various component temperatures, Fan speed, and power consumption in Watts.
 
+### Bonus: Run CPU Stress Test
+
+The following playbook will run a CPU stress test using sysbench for 10 minutes:
+
+```bash
+curl -O https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/misc/sysbench.yaml
+ansible-playbook -i ./ansible_tailscale_inventory.py sysbench.yaml
+```
+
+As a result, you should see the corresponding graphs in Grafana as shown at the top of this tutorial!
