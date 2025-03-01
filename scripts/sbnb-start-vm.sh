@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # This script is used to start a virtual machine (VM) with specific configurations.
-# The configurations are provided through a JSON file passed as an argument to the script.
-# The script sets up the VM with the specified number of virtual CPUs, memory, hostname, 
+# The configurations can be provided through a JSON file passed as an argument to the script,
+# or through environment variables if no configuration file is provided.
+# The script sets up the VM with the specified number of virtual CPUs, memory, hostname,
 # and other configurations such as attaching GPUs or PCIe devices, and enabling confidential computing.
 # It also downloads the specified VM image, prepares the cloud-init configuration, and starts the VM using QEMU.
 
@@ -24,60 +25,63 @@
 
 set -euxo pipefail
 
-# Default values
-DEFAULT_STORAGE="/mnt/sbnb-data/images"
-DEFAULT_VCPU=2
-DEFAULT_MEM="4G"
-DEFAULT_TSKEY=""
-DEFAULT_HOSTNAME=""
-DEFAULT_ATTACH_GPUS=false
-DEFAULT_ATTACH_PCIE_DEVICES=()
-DEFAULT_CONFIDENTIAL_COMPUTING=false
-DEFAULT_IMAGE_URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
-DEFAULT_IMAGE_SIZE="10G"
-
 # Usage message
 usage() {
-  echo "Usage: $0 -f <path_to_json_config>"
+  echo "Usage: $0 [-f <path_to_json_config>]"
   exit 1
 }
 
 # Parse arguments
-while getopts "f:" opt; do
+CONFIG_FILE=""
+while getopts "f:h" opt; do
   case ${opt} in
     f) CONFIG_FILE=${OPTARG} ;;
+    h) usage ;;
     *) usage ;;
   esac
 done
 
+# Check if CONFIG_FILE is provided, otherwise use environment variables
 if [ -z "${CONFIG_FILE}" ]; then
-  usage
+  echo "No configuration file provided. Using environment variables."
+
+  # Environment variables
+  VCPU=${SBNB_VM_VCPU:-}
+  MEM=${SBNB_VM_MEM:-}
+  TSKEY=${SBNB_VM_TSKEY:-}
+  HOSTNAME=${SBNB_VM_HOSTNAME:-}
+  ATTACH_GPUS=${SBNB_VM_ATTACH_GPUS:-}
+  ATTACH_PCIE_DEVICES=(${SBNB_VM_ATTACH_PCIE_DEVICES:-})
+  CONFIDENTIAL_COMPUTING=${SBNB_VM_CONFIDENTIAL_COMPUTING:-}
+  IMAGE_URL=${SBNB_VM_IMAGE_URL:-}
+  IMAGE_SIZE=${SBNB_VM_IMAGE_SIZE:-}
+else
+  echo "Configuration file provided. Parsing JSON configuration."
+  # Parse JSON configuration
+  VCPU=$(jq -r '.vcpu // empty' ${CONFIG_FILE})
+  MEM=$(jq -r '.mem // empty' ${CONFIG_FILE})
+  TSKEY=$(jq -r '.tskey // empty' ${CONFIG_FILE})
+  HOSTNAME=$(jq -r '.hostname // empty' ${CONFIG_FILE})
+  ATTACH_GPUS=$(jq -r '.attach_gpus // empty' ${CONFIG_FILE})
+  ATTACH_PCIE_DEVICES=($(jq -r '.attach_pcie_devices // empty | .[]' ${CONFIG_FILE}))
+  CONFIDENTIAL_COMPUTING=$(jq -r '.confidential_computing // empty' ${CONFIG_FILE})
+  IMAGE_URL=$(jq -r '.image_url // empty' ${CONFIG_FILE})
+  IMAGE_SIZE=$(jq -r '.image_size // empty' ${CONFIG_FILE})
 fi
+
+# Set default values if variables are empty
+STORAGE="/mnt/sbnb-data/images"
+VCPU=${VCPU:-2}
+MEM=${MEM:-"4G"}
+TSKEY=${TSKEY:-""}
+HOSTNAME=${HOSTNAME:-""}
+ATTACH_GPUS=${ATTACH_GPUS:-false}
+CONFIDENTIAL_COMPUTING=${CONFIDENTIAL_COMPUTING:-false}
+IMAGE_URL=${IMAGE_URL:-"https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"}
+IMAGE_SIZE=${IMAGE_SIZE:-"10G"}
 
 # Install required packages
 apt-get update && apt-get install -y jq xxd pciutils curl genisoimage
-
-# Parse JSON configuration
-VCPU=$(jq -r '.vcpu // empty' ${CONFIG_FILE})
-MEM=$(jq -r '.mem // empty' ${CONFIG_FILE})
-TSKEY=$(jq -r '.tskey // empty' ${CONFIG_FILE})
-HOSTNAME=$(jq -r '.hostname // empty' ${CONFIG_FILE})
-ATTACH_GPUS=$(jq -r '.attach_gpus // empty' ${CONFIG_FILE})
-ATTACH_PCIE_DEVICES=($(jq -r '.attach_pcie_devices // empty | .[]' ${CONFIG_FILE}))
-CONFIDENTIAL_COMPUTING=$(jq -r '.confidential_computing // empty' ${CONFIG_FILE})
-IMAGE_URL=$(jq -r '.image_url // empty' ${CONFIG_FILE})
-IMAGE_SIZE=$(jq -r '.image_size // empty' ${CONFIG_FILE})
-
-# Set default values if variables are empty
-STORAGE=${DEFAULT_STORAGE}
-VCPU=${VCPU:-$DEFAULT_VCPU}
-MEM=${MEM:-$DEFAULT_MEM}
-TSKEY=${TSKEY:-$DEFAULT_TSKEY}
-HOSTNAME=${HOSTNAME:-$DEFAULT_HOSTNAME}
-ATTACH_GPUS=${ATTACH_GPUS:-$DEFAULT_ATTACH_GPUS}
-CONFIDENTIAL_COMPUTING=${CONFIDENTIAL_COMPUTING:-$DEFAULT_CONFIDENTIAL_COMPUTING}
-IMAGE_URL=${IMAGE_URL:-$DEFAULT_IMAGE_URL}
-IMAGE_SIZE=${IMAGE_SIZE:-$DEFAULT_IMAGE_SIZE}
 
 if [ -z "${HOSTNAME}" ]; then
   HOSTNAME="sbnb-vm-$(xxd -l6 -p /dev/random)"
