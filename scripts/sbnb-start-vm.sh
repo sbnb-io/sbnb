@@ -41,6 +41,9 @@ while getopts "f:h" opt; do
   esac
 done
 
+# Install required packages
+apt-get update && apt-get install -y jq xxd pciutils curl genisoimage
+
 # Check if CONFIG_FILE is provided, otherwise use environment variables
 if [ -z "${CONFIG_FILE}" ]; then
   echo "No configuration file provided. Using environment variables."
@@ -79,9 +82,6 @@ ATTACH_GPUS=${ATTACH_GPUS:-false}
 CONFIDENTIAL_COMPUTING=${CONFIDENTIAL_COMPUTING:-false}
 IMAGE_URL=${IMAGE_URL:-"https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"}
 IMAGE_SIZE=${IMAGE_SIZE:-"10G"}
-
-# Install required packages
-apt-get update && apt-get install -y jq xxd pciutils curl genisoimage
 
 if [ -z "${HOSTNAME}" ]; then
   HOSTNAME="sbnb-vm-$(xxd -l6 -p /dev/random)"
