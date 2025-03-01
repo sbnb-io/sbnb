@@ -30,8 +30,10 @@ RUN git clone https://github.com/microsoft/igvm \
     && make -f igvm_c/Makefile install
 
 # Build qemu
+# Using known good hash: bcb7121d0350f8f6a46ef3e3aee2b48b97091ae9
 RUN git clone -b svsm-igvm https://github.com/coconut-svsm/qemu \
     && cd qemu \
+    && git checkout bcb7121d0350f8f6a46ef3e3aee2b48b97091ae9 \
     && export PKG_CONFIG_PATH=/usr/lib64/pkgconfig \
     && ./configure --prefix=/usr/qemu-svsm/ --target-list=x86_64-softmmu --enable-igvm --disable-docs \
     --disable-xen --disable-sndio \
