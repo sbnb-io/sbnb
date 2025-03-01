@@ -27,3 +27,11 @@ prometheus.scrape "ipmi" {
   forward_to = [prometheus.remote_write.grafanacloud.receiver]
   scrape_interval = "60s"
 }
+
+prometheus.scrape "nvidia" {
+  targets = [
+    {"__address__" = "127.0.0.1:9835", "instance" = constants.hostname},
+  ]
+  forward_to = [prometheus.remote_write.grafanacloud.receiver]
+  scrape_interval = "60s"
+}

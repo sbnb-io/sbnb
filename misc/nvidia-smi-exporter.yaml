@@ -1,0 +1,20 @@
+---
+
+- hosts: "{{ lookup('ansible.builtin.env', 'SBNB_HOSTS') }}"
+  gather_facts: false
+  ignore_unreachable: true
+
+  tasks:
+    - ping:
+
+    - name: Start a nvidia-smi-exporter container
+      docker_container:
+        name: nvidia-smi-exporter
+        image: utkuozdemir/nvidia_gpu_exporter:1.1.0
+        privileged: true
+        network_mode: host
+        volumes:
+          - /dev:/dev
+          - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi
+          - /usr/lib/x86_64-linux-gnu/libnvidia-ml.so:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so
+          - /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1
