@@ -48,6 +48,8 @@ Replace `"your-tskey-auth"` with your actual Tailscale key.
 
 ### 6. Start VM with Ansible Playbook
 ```sh
+export SBNB_HOSTS=sbnb-F6S0R8000719
+
 ansible-playbook -i ./ansible_tailscale_inventory.py sbnb-start-vm.yaml
 ```
 
