@@ -28,9 +28,9 @@ chmod +x ansible_tailscale_inventory.py
 
 ### 4. Pull Grafana Alloy Config and Ansible Playbook
 ```sh
-curl -O https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/misc/grafana.yaml
-curl -O https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/misc/ansible.cfg
-curl -O https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/misc/config.alloy
+curl -O https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/automation/grafana.yaml
+curl -O https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/automation/ansible.cfg
+curl -O https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/automation/config.alloy
 ```
 
 ### 5. Set environment variables
@@ -86,7 +86,7 @@ Import [this Grafana dashboard](https://grafana.com/grafana/dashboards/22906-lin
 The following playbook will run a CPU stress test using sysbench for 10 minutes:
 
 ```bash
-curl -O https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/misc/sysbench.yaml
+curl -O https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/automation/sysbench.yaml
 ansible-playbook -i ./ansible_tailscale_inventory.py sysbench.yaml
 ```
 
