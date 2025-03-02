@@ -1,0 +1,54 @@
+---
+
+- hosts: "{{ lookup('ansible.builtin.env', 'SBNB_HOSTS') }}"
+  gather_facts: false
+  ignore_unreachable: true
+
+  vars:
+    IPMI_DEV: "/dev/ipmi0"
+
+  tasks:
+    - ping:
+
+    - name: Copy Grafana config
+      copy:
+        src: config.alloy 
+        dest: /etc/config.alloy
+
+    - name: Check if "{{ IPMI_DEV }}" exist
+      stat:
+        path: "{{ IPMI_DEV }}"
+      register: ipmi_dev_exist
+
+    - name: Start a ipmi-exporter container
+      when: ipmi_dev_exist.stat.exists
+      docker_container:
+        name: ipmi-exporter
+        image: prometheuscommunity/ipmi-exporter
+        network_mode: host
+        ports:
+          - 9290:9290
+        user: 0:0
+        devices:
+          - "{{ IPMI_DEV }}:{{ IPMI_DEV }}:rwm"
+
+    - name: Start a Grafana Alloy container
+      docker_container:
+        name: grafana
+        image: grafana/alloy
+        privileged: true
+        network_mode: host
+        # state: absent
+        volumes:
+          - /proc:/proc
+          - /etc/config.alloy:/etc/alloy/config.alloy
+        env:
+          GRAFANA_URL: "{{ lookup('ansible.builtin.env', 'GRAFANA_URL') }}"
+          GRAFANA_USERNAME: "{{ lookup('ansible.builtin.env', 'GRAFANA_USERNAME') }}"
+          GRAFANA_PASSWORD: "{{ lookup('ansible.builtin.env', 'GRAFANA_PASSWORD') }}"
+        command: [
+          "run",
+          "--server.http.listen-addr=0.0.0.0:12345",
+          "--storage.path=/var/lib/alloy/data",
+          "/etc/alloy/config.alloy"
+          ]

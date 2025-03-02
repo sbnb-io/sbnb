@@ -1,0 +1,46 @@
+---
+
+- hosts: "{{ lookup('ansible.builtin.env', 'SBNB_HOSTS') }}"
+  gather_facts: true
+  ignore_unreachable: true
+
+  tasks:
+    - name: apt update
+      apt:
+        update_cache: yes
+
+    - name: Install prerequisites for Docker repository
+      apt:
+        pkg:
+        - apt-transport-https
+        - ca-certificates
+        - curl
+        - gnupg2
+        - software-properties-common
+
+    - name: add docker apt key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: add docker apt repo
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/{{ ansible_distribution|lower }} {{ ansible_distribution_release }} stable"
+        state: present
+        update_cache: yes
+  
+    - name: install docker and it's dependencies
+      apt:
+        pkg:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+
+    - name: start and enable docker daemon
+      service:
+        name: docker
+        state: started
+        enabled: yes

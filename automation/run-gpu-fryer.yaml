@@ -1,0 +1,18 @@
+---
+
+- hosts: "{{ lookup('ansible.builtin.env', 'SBNB_HOSTS') }}"
+  gather_facts: false
+  ignore_unreachable: true
+
+  tasks:
+    - name: Start a gpu-fryer container
+      docker_container:
+        name: gpu-fryer
+        image: ghcr.io/huggingface/gpu-fryer:latest
+        runtime: nvidia
+        device_requests:
+          - driver: nvidia
+            count: -1 # this means we want all
+            capabilities:
+              - ['gpu','nvidia']
+        command: 60
