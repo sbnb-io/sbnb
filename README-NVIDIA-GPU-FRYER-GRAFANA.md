@@ -55,6 +55,11 @@ ansible-playbook -i ./ansible_tailscale_inventory.py sbnb-start-vm.yaml
 
 Once the VM starts, you should see it appear in the Tailscale network as `sbnb-vm-VMID`. For example, `sbnb-vm-67f97659333f`.
 
+All Nvidia GPUs present in the system will be attached to this VM using a low-overhead vfio-pci mechanism:
+
+![nvidia-vfio-sbnb-linux](images/nvidia-vfio-sbnb-linux.png)
+
+
 ### 7. Set Grafana Cloud Environment Variables
 
 ```sh
