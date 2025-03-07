@@ -25,6 +25,10 @@
 
 set -euxo pipefail
 
+# Define constants
+SOCKET_PATH="/tmp/sbnb-nbd.sock"
+STORAGE="/mnt/sbnb-data"
+
 # Usage message
 usage() {
   echo "Usage: $0 [-f <path_to_json_config>]"
@@ -73,7 +77,6 @@ else
 fi
 
 # Set default values if variables are empty
-STORAGE="/mnt/sbnb-data/images"
 VCPU=${VCPU:-2}
 MEM=${MEM:-"4G"}
 TSKEY=${TSKEY:-""}
@@ -87,7 +90,7 @@ if [ -z "${HOSTNAME}" ]; then
   HOSTNAME="sbnb-vm-$(xxd -l6 -p /dev/random)"
 fi
 
-VM_FOLDER="${STORAGE}/${HOSTNAME}"
+VM_FOLDER="${STORAGE}/images/${HOSTNAME}"
 BOOT_IMAGE="${VM_FOLDER}/${HOSTNAME}.qcow2"
 SEED_IMAGE="${VM_FOLDER}/seed-${HOSTNAME}.iso"
 
@@ -116,6 +119,18 @@ curl -z ${IMAGE_FILENAME} -O "${IMAGE_URL}" || true
 cp ${IMAGE_FILENAME} ${BOOT_IMAGE}
 qemu-img resize ${BOOT_IMAGE} ${IMAGE_SIZE}
 
+# Calculate half of the available space in ${STORAGE}
+AVAILABLE_SPACE=$(df -k --output=avail ${STORAGE} | tail -n 1)
+HALF_SPACE=$((AVAILABLE_SPACE / 2))
+
+# Create the image with half of the available space
+mkdir -p "${STORAGE}/data"
+DATA_IMAGE="${STORAGE}/data/data.qcow2"
+qemu-img create -f qcow2 ${DATA_IMAGE} ${HALF_SPACE}K
+
+# Export the image with qemu-nbd
+qemu-nbd --share=0 --socket=${SOCKET_PATH} --format=qcow2 ${DATA_IMAGE} &
+
 # Map Nvidia GPU to vfio-pci if required
 if [ "${ATTACH_GPUS}" = true ]; then
   for gpu in $(lspci -nn | grep -i 10de | awk '{print $1}'); do
@@ -143,7 +158,8 @@ QEMU_CMD="/usr/qemu-svsm/bin/qemu-system-x86_64 \
   -device virtio-scsi-pci,id=scsi0,disable-legacy=on,iommu_platform=on \
   -device scsi-hd,drive=disk0,bootindex=0 \
   -cdrom ${SEED_IMAGE} \
-  -nographic"
+  -nographic \
+  -drive file=nbd+unix://?socket=${SOCKET_PATH},if=none,id=drive1 -device virtio-blk-pci,drive=drive1"
 
 if [ "${CONFIDENTIAL_COMPUTING}" = true ]; then
   QEMU_CMD+=" -machine q35,confidential-guest-support=sev0,memory-backend=ram1,igvm-cfg=igvm0 \
