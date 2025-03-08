@@ -11,11 +11,11 @@ set -euxo pipefail
 # TODO: Implement a selector to choose between Debian, Ubuntu, Fedora, and
 # other distributions.
 IMAGE="debian:sid"
-NAME="sbnb"
+NAME="sbnb-dev-env"
 
 # Attach to the dev container if it's already running
 if docker ps | grep -q ${NAME};then
-    docker exec -it ${NAME} tmux new-session -A -s sbnb
+    docker exec -it ${NAME} tmux new-session -A -s sbnb-dev-env
     exit 0
 fi
 
