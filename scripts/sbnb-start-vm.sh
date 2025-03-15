@@ -26,7 +26,6 @@
 set -euxo pipefail
 
 # Define constants
-SOCKET_PATH="/tmp/sbnb-nbd.sock"
 STORAGE="/mnt/sbnb-data"
 
 # Usage message
@@ -35,69 +34,65 @@ usage() {
   exit 1
 }
 
-# Parse arguments
-CONFIG_FILE=""
-while getopts "f:h" opt; do
-  case ${opt} in
-    f) CONFIG_FILE=${OPTARG} ;;
-    h) usage ;;
-    *) usage ;;
-  esac
-done
-
 # Install required packages
-apt-get update && apt-get install -y jq xxd pciutils curl genisoimage
+install_packages() {
+  apt-get update && apt-get install -y jq xxd pciutils curl genisoimage
+}
 
-# Check if CONFIG_FILE is provided, otherwise use environment variables
-if [ -z "${CONFIG_FILE}" ]; then
-  echo "No configuration file provided. Using environment variables."
+# Parse arguments
+parse_arguments() {
+  CONFIG_FILE=""
+  while getopts "f:h" opt; do
+    case ${opt} in
+      f) CONFIG_FILE=${OPTARG} ;;
+      h) usage ;;
+      *) usage ;;
+    esac
+  done
+}
 
-  # Environment variables
-  VCPU=${SBNB_VM_VCPU:-}
-  MEM=${SBNB_VM_MEM:-}
-  TSKEY=${SBNB_VM_TSKEY:-}
-  HOSTNAME=${SBNB_VM_HOSTNAME:-}
-  ATTACH_GPUS=${SBNB_VM_ATTACH_GPUS:-}
-  ATTACH_PCIE_DEVICES=(${SBNB_VM_ATTACH_PCIE_DEVICES:-})
-  CONFIDENTIAL_COMPUTING=${SBNB_VM_CONFIDENTIAL_COMPUTING:-}
-  IMAGE_URL=${SBNB_VM_IMAGE_URL:-}
-  IMAGE_SIZE=${SBNB_VM_IMAGE_SIZE:-}
-else
-  echo "Configuration file provided. Parsing JSON configuration."
-  # Parse JSON configuration
-  VCPU=$(jq -r '.vcpu // empty' ${CONFIG_FILE})
-  MEM=$(jq -r '.mem // empty' ${CONFIG_FILE})
-  TSKEY=$(jq -r '.tskey // empty' ${CONFIG_FILE})
-  HOSTNAME=$(jq -r '.hostname // empty' ${CONFIG_FILE})
-  ATTACH_GPUS=$(jq -r '.attach_gpus // empty' ${CONFIG_FILE})
-  ATTACH_PCIE_DEVICES=($(jq -r '.attach_pcie_devices // empty | .[]' ${CONFIG_FILE}))
-  CONFIDENTIAL_COMPUTING=$(jq -r '.confidential_computing // empty' ${CONFIG_FILE})
-  IMAGE_URL=$(jq -r '.image_url // empty' ${CONFIG_FILE})
-  IMAGE_SIZE=$(jq -r '.image_size // empty' ${CONFIG_FILE})
-fi
+# Load configuration
+load_configuration() {
+  if [ -n "${CONFIG_FILE}" ]; then
+    echo "Configuration file provided. Parsing JSON configuration."
+    CONFIG_VCPU=$(jq -r '.vcpu // empty' ${CONFIG_FILE})
+    CONFIG_MEM=$(jq -r '.mem // empty' ${CONFIG_FILE})
+    CONFIG_TSKEY=$(jq -r '.tskey // empty' ${CONFIG_FILE})
+    CONFIG_HOSTNAME=$(jq -r '.hostname // empty' ${CONFIG_FILE})
+    CONFIG_ATTACH_GPUS=$(jq -r '.attach_gpus // empty' ${CONFIG_FILE})
+    CONFIG_ATTACH_PCIE_DEVICES=($(jq -r '.attach_pcie_devices // empty | .[]' ${CONFIG_FILE}))
+    CONFIG_CONFIDENTIAL_COMPUTING=$(jq -r '.confidential_computing // empty' ${CONFIG_FILE})
+    CONFIG_IMAGE_URL=$(jq -r '.image_url // empty' ${CONFIG_FILE})
+    CONFIG_IMAGE_SIZE=$(jq -r '.image_size // empty' ${CONFIG_FILE})
+  else
+    echo "No configuration file provided. Using environment variables."
+  fi
 
-# Set default values if variables are empty
-VCPU=${VCPU:-2}
-MEM=${MEM:-"4G"}
-TSKEY=${TSKEY:-""}
-HOSTNAME=${HOSTNAME:-""}
-ATTACH_GPUS=${ATTACH_GPUS:-false}
-CONFIDENTIAL_COMPUTING=${CONFIDENTIAL_COMPUTING:-false}
-IMAGE_URL=${IMAGE_URL:-"https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"}
-IMAGE_SIZE=${IMAGE_SIZE:-"10G"}
+  VCPU=${SBNB_VM_VCPU:-${CONFIG_VCPU:-2}}
+  MEM=${SBNB_VM_MEM:-${CONFIG_MEM:-"4G"}}
+  TSKEY=${SBNB_VM_TSKEY:-${CONFIG_TSKEY:-""}}
+  HOSTNAME=${SBNB_VM_HOSTNAME:-${CONFIG_HOSTNAME:-""}}
+  ATTACH_GPUS=${SBNB_VM_ATTACH_GPUS:-${CONFIG_ATTACH_GPUS:-false}}
+  ATTACH_PCIE_DEVICES=(${SBNB_VM_ATTACH_PCIE_DEVICES:-${CONFIG_ATTACH_PCIE_DEVICES[@]}})
+  CONFIDENTIAL_COMPUTING=${SBNB_VM_CONFIDENTIAL_COMPUTING:-${CONFIG_CONFIDENTIAL_COMPUTING:-false}}
+  IMAGE_URL=${SBNB_VM_IMAGE_URL:-${CONFIG_IMAGE_URL:-"https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"}}
+  IMAGE_SIZE=${SBNB_VM_IMAGE_SIZE:-${CONFIG_IMAGE_SIZE:-"10G"}}
 
-if [ -z "${HOSTNAME}" ]; then
-  HOSTNAME="sbnb-vm-$(xxd -l6 -p /dev/random)"
-fi
+  if [ -z "${HOSTNAME}" ]; then
+    HOSTNAME="sbnb-vm-$(xxd -l6 -p /dev/random)"
+  fi
+}
 
-VM_FOLDER="${STORAGE}/images/${HOSTNAME}"
-BOOT_IMAGE="${VM_FOLDER}/${HOSTNAME}.qcow2"
-SEED_IMAGE="${VM_FOLDER}/seed-${HOSTNAME}.iso"
+# Prepare VM folder and cloud-init configuration
+prepare_vm() {
+  VM_FOLDER="${STORAGE}/images/${HOSTNAME}"
+  BOOT_IMAGE="${VM_FOLDER}/${HOSTNAME}.qcow2"
+  SEED_IMAGE="${VM_FOLDER}/seed-${HOSTNAME}.iso"
 
-mkdir -p ${VM_FOLDER}
-cd ${STORAGE}
+  mkdir -p ${VM_FOLDER}
+  cd ${STORAGE}
 
-cat > ${VM_FOLDER}/user-data << EOF
+  cat > ${VM_FOLDER}/user-data << EOF
 #cloud-config
 runcmd:
   - hostname ${HOSTNAME}
@@ -106,84 +101,103 @@ runcmd:
   - tailscale up --ssh --auth-key=${TSKEY}
 EOF
 
-touch ${VM_FOLDER}/meta-data
+  touch ${VM_FOLDER}/meta-data
 
-genisoimage -output ${SEED_IMAGE} -volid cidata -joliet -rock ${VM_FOLDER}/user-data ${VM_FOLDER}/meta-data
+  genisoimage -output ${SEED_IMAGE} -volid cidata -joliet -rock ${VM_FOLDER}/user-data ${VM_FOLDER}/meta-data
+}
 
-# Extract the image filename from the URL
-IMAGE_FILENAME=$(basename ${IMAGE_URL})
-
-# Download the latest image only if etag changed
-curl -z ${IMAGE_FILENAME} -O "${IMAGE_URL}" || true
-
-cp ${IMAGE_FILENAME} ${BOOT_IMAGE}
-qemu-img resize ${BOOT_IMAGE} ${IMAGE_SIZE}
-
-# Calculate half of the available space in ${STORAGE}
-AVAILABLE_SPACE=$(df -k --output=avail ${STORAGE} | tail -n 1)
-HALF_SPACE=$((AVAILABLE_SPACE / 2))
-
-# Create the image with half of the available space
-mkdir -p "${STORAGE}/data"
-DATA_IMAGE="${STORAGE}/data/data.qcow2"
-qemu-img create -f qcow2 ${DATA_IMAGE} ${HALF_SPACE}K
-
-# Export the image with qemu-nbd
-qemu-nbd --share=0 --socket=${SOCKET_PATH} --format=qcow2 ${DATA_IMAGE} &
+# Download and prepare VM image
+prepare_image() {
+  IMAGE_FILENAME=$(basename ${IMAGE_URL})
+  curl -z ${IMAGE_FILENAME} -O "${IMAGE_URL}" || true
+  cp ${IMAGE_FILENAME} ${BOOT_IMAGE}
+  qemu-img resize ${BOOT_IMAGE} ${IMAGE_SIZE}
+}
 
 # Map Nvidia GPU to vfio-pci if required
-if [ "${ATTACH_GPUS}" = true ]; then
-  for gpu in $(lspci -nn | grep -i 10de | awk '{print $1}'); do
-    vendor_device_id=$(lspci -n -s ${gpu} | awk '{print $3}')
+map_gpus() {
+  if [ "${ATTACH_GPUS}" = true ]; then
+    for gpu in $(lspci -nn | grep -i 10de | awk '{print $1}'); do
+      vendor_device_id=$(lspci -n -s ${gpu} | awk '{print $3}')
+      vendor_id=$(echo ${vendor_device_id} | cut -d: -f1)
+      device_id=$(echo ${vendor_device_id} | cut -d: -f2)
+      echo "${vendor_id} ${device_id}" > /sys/bus/pci/drivers/vfio-pci/new_id || true
+    done
+  fi
+}
+
+# Map PCIe devices to vfio-pci
+map_pcie_devices() {
+  for pcie in "${ATTACH_PCIE_DEVICES[@]}"; do
+    vendor_device_id=$(lspci -n -s ${pcie} | awk '{print $3}')
     vendor_id=$(echo ${vendor_device_id} | cut -d: -f1)
     device_id=$(echo ${vendor_device_id} | cut -d: -f2)
     echo "${vendor_id} ${device_id}" > /sys/bus/pci/drivers/vfio-pci/new_id || true
   done
-fi
-
-for pcie in "${ATTACH_PCIE_DEVICES[@]}"; do
-  vendor_device_id=$(lspci -n -s ${pcie} | awk '{print $3}')
-  vendor_id=$(echo ${vendor_device_id} | cut -d: -f1)
-  device_id=$(echo ${vendor_device_id} | cut -d: -f2)
-  echo "${vendor_id} ${device_id}" > /sys/bus/pci/drivers/vfio-pci/new_id || true
-done
+}
 
 # Start the VM
-QEMU_CMD="/usr/qemu-svsm/bin/qemu-system-x86_64 \
-  -enable-kvm \
-  -cpu EPYC-Milan-v2 \
-  -smp ${VCPU} \
-  -netdev user,id=vmnic -device e1000,netdev=vmnic,romfile= \
-  -drive file=${BOOT_IMAGE},if=none,id=disk0,format=qcow2,snapshot=off \
-  -device virtio-scsi-pci,id=scsi0,disable-legacy=on,iommu_platform=on \
-  -device scsi-hd,drive=disk0,bootindex=0 \
-  -cdrom ${SEED_IMAGE} \
-  -nographic \
-  -drive file=nbd+unix://?socket=${SOCKET_PATH},if=none,id=drive1 -device virtio-blk-pci,drive=drive1"
+start_vm() {
+  mkdir -p /usr/qemu-svsm/etc/qemu
+  echo "allow all" > /usr/qemu-svsm/etc/qemu/bridge.conf
 
-if [ "${CONFIDENTIAL_COMPUTING}" = true ]; then
-  QEMU_CMD+=" -machine q35,confidential-guest-support=sev0,memory-backend=ram1,igvm-cfg=igvm0 \
-  -object memory-backend-memfd,id=ram1,size=${MEM},share=true,prealloc=false,reserve=false \
-  -object sev-snp-guest,id=sev0,cbitpos=51,reduced-phys-bits=1"
-else
-  QEMU_CMD+=" -machine q35 -m ${MEM} -bios /usr/share/ovmf/OVMF.fd"
-fi
+  mac_address="52:54:00:$(dd if=/dev/urandom bs=512 count=1 2>/dev/null \
+                             | md5sum \
+                             | sed -E 's/^(..)(..)(..).*$/\1:\2:\3/')"
 
-if [ "${ATTACH_GPUS}" = true ]; then
-  for gpu in $(lspci -nn | grep -i 10de | awk '{print $1}'); do
-    QEMU_CMD+=" -device vfio-pci,host=${gpu}"
+  QEMU_CMD="/usr/qemu-svsm/bin/qemu-system-x86_64 \
+    -enable-kvm \
+    -cpu EPYC-Milan-v2 \
+    -smp ${VCPU} \
+    -drive file=${BOOT_IMAGE},if=none,id=disk0,format=qcow2,snapshot=off \
+    -device virtio-scsi-pci,id=scsi0,disable-legacy=on,iommu_platform=on \
+    -device scsi-hd,drive=disk0,bootindex=0 \
+    -cdrom ${SEED_IMAGE} \
+    -nographic"
+
+  QEMU_CMD+=" -device virtio-net-pci,netdev=br0,mac=${mac_address} -netdev bridge,id=br0,br=br0"
+
+  # if [ -S "${NBD_SOCKET_PATH}" ]; then
+    # QEMU_CMD+=" -drive file=nbd+unix://?socket=${NBD_SOCKET_PATH},if=none,id=drive1 -device virtio-blk-pci,drive=drive1"
+  # fi
+
+  if [ "${CONFIDENTIAL_COMPUTING}" = true ]; then
+    QEMU_CMD+=" -machine q35,confidential-guest-support=sev0,memory-backend=ram1,igvm-cfg=igvm0 \
+    -object memory-backend-memfd,id=ram1,size=${MEM},share=true,prealloc=false,reserve=false \
+    -object sev-snp-guest,id=sev0,cbitpos=51,reduced-phys-bits=1"
+  else
+    QEMU_CMD+=" -machine q35 -m ${MEM} -bios /usr/share/ovmf/OVMF.fd"
+  fi
+
+  if [ "${ATTACH_GPUS}" = true ]; then
+    for gpu in $(lspci -nn | grep -i 10de | awk '{print $1}'); do
+      QEMU_CMD+=" -device vfio-pci,host=${gpu}"
+    done
+  fi
+
+  for pcie in "${ATTACH_PCIE_DEVICES[@]}"; do
+    QEMU_CMD+=" -device vfio-pci,host=${pcie}"
   done
-fi
 
-for pcie in "${ATTACH_PCIE_DEVICES[@]}"; do
-  QEMU_CMD+=" -device vfio-pci,host=${pcie}"
-done
+  # Start sbnb-vm-cleaner.sh with a delay of 30 seconds if it exists
+  CLEANER_SCRIPT="sbnb-vm-cleaner.sh"
+  DELAY=30
+  if [ -x "$(which ${CLEANER_SCRIPT})" ]; then
+    (sleep ${DELAY} && ${CLEANER_SCRIPT}) &
+  fi
 
-# Start sbnb-vm-cleaner.sh with a delay of 30 seconds if it exists
-CLEANER_SCRIPT="sbnb-vm-cleaner.sh"
-DELAY=30
-if [ -x "$(which ${CLEANER_SCRIPT})" ]; then
-  (sleep ${DELAY} && ${CLEANER_SCRIPT}) &
-fi
+  eval ${QEMU_CMD}
+}
 
-eval ${QEMU_CMD}
+main() {
+  parse_arguments "$@"
+  install_packages
+  load_configuration
+  prepare_vm
+  prepare_image
+  map_gpus
+  map_pcie_devices
+  start_vm
+}
+
+main "$@"
