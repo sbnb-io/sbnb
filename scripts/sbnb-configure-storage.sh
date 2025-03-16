@@ -108,6 +108,11 @@ mount_lv() {
 
 # Unmount and destroy LVM
 destroy_lvm() {
+    if systemctl is-active --quiet docker; then
+        echo "Stopping Docker service..."
+        systemctl stop docker
+    fi
+
     if is_mounted; then
         umount "${MOUNT_POINT}"
     fi
