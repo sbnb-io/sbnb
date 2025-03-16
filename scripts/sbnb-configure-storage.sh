@@ -69,6 +69,7 @@ extend_vg() {
 # Extend logical volume
 extend_lv() {
     lvextend -l +100%FREE "${LV_PATH}"
+    e2fsck -f "${LV_PATH}"
     resize2fs "${LV_PATH}"
 }
 
