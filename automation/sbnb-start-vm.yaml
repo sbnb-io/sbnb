@@ -9,13 +9,22 @@
 
     - name: Initialize an empty arguments list
       set_fact:
+        vm_id: "{{ inventory_hostname + '-vm-' + 99999999 | random | to_uuid }}"
         args: ""
 
-    - name: Download VM start script
-      ansible.builtin.get_url:
-        url: https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/scripts/sbnb-start-vm.sh
-        dest: /dev/shm/sbnb-start-vm.sh
+    - name: Download configuration scripts
+      get_url:
+        url: "https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/scripts/{{ item }}"
+        dest: /dev/shm/
         mode: u+x
+      loop:
+        - sbnb-configure-system.sh
+        - sbnb-configure-networking.sh
+        - sbnb-configure-storage.sh
+        - sbnb-start-vm.sh
+
+    - name: Execute host configuration script
+      command: sh /dev/shm/sbnb-configure-system.sh
 
     - name: If VM json config exist
       local_action: stat path=sbnb-example-vm.json
@@ -30,14 +39,17 @@
         args: "{{ args + '-f /dev/shm/sbnb-example-vm.json' }}"
       when: file.stat.exists
 
+    - name: Print VM info
+      ansible.builtin.debug:
+        msg: VM id "{{ vm_id }}"
+
     - name: Start VM using qemu container
       docker_container:
-        name: sbnb-start-vm
+        name: "{{ vm_id }}"
         image: sbnb/svsm
         pull: always
         privileged: true
         network_mode: host
-        # state: absent
         devices:
           - /dev/kvm:/dev/kvm
           - /dev/sev:/dev/sev
@@ -53,8 +65,8 @@
           SBNB_VM_MEM: "{{ lookup('ansible.builtin.env', 'SBNB_VM_MEM') }}"
           SBNB_VM_IMAGE_SIZE: "{{ lookup('ansible.builtin.env', 'SBNB_VM_IMAGE_SIZE') }}"
           SBNB_VM_ATTACH_GPUS: "{{ lookup('ansible.builtin.env', 'SBNB_VM_ATTACH_GPUS') }}"
-          ATTACH_PCIE_DEVICES: "{{ lookup('ansible.builtin.env', 'ATTACH_PCIE_DEVICES') }}"
-          CONFIDENTIAL_COMPUTING: "{{ lookup('ansible.builtin.env', 'CONFIDENTIAL_COMPUTING') }}"
-          HOSTNAME: "{{ lookup('ansible.builtin.env', 'HOSTNAME') }}"
+          SBNB_VM_ATTACH_PCIE_DEVICES: "{{ lookup('ansible.builtin.env', 'ATTACH_PCIE_DEVICES') }}"
+          SBNB_VM_CONFIDENTIAL_COMPUTING: "{{ lookup('ansible.builtin.env', 'CONFIDENTIAL_COMPUTING') }}"
+          SBNB_VM_HOSTNAME: "{{ vm_id }}"
 
         command: /dev/shm/sbnb-start-vm.sh {{ args }}
