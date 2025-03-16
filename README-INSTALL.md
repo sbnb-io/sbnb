@@ -3,6 +3,7 @@
 ## Prerequisites
 - **Bare Metal Server**: Any x86 machine should suffice.
 - **USB Flash Drive for Booting**: Any standard USB flash drive with at least 512MB capacity will work.
+- **Tailscale Key**: Register at [Tailscale](https://tailscale.com/) to obtain your key. The free plan supports up to 100 devices.
 
 ## Prepare a Bootable USB Dongle with Sbnb Linux
 ### Attach a USB flash drive to your computer.
