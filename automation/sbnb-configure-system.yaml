@@ -1,0 +1,19 @@
+---
+
+- hosts: "{{ lookup('ansible.builtin.env', 'SBNB_HOSTS') }}"
+  gather_facts: false
+  ignore_unreachable: true
+
+  tasks:
+    - name: Download configuration scripts
+      get_url:
+        url: "https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/scripts/{{ item }}"
+        dest: /dev/shm/
+        mode: u+x
+      loop:
+        - sbnb-configure-system.sh
+        - sbnb-configure-networking.sh
+        - sbnb-configure-storage.sh
+
+    - name: Execute host configuration script
+      command: sh /dev/shm/sbnb-configure-system.sh
