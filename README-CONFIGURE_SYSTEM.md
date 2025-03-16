@@ -49,7 +49,7 @@ chmod +x ansible_tailscale_inventory.py
 curl -O https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/automation/sbnb-configure-system.yaml
 ```
 
-Under the hood, the Ansible playbook executes two scripts, [sbnb-configure-storage.sh](https://github.com/sbnb-io/sbnb/blob/main/scripts/sbnb-configure-storage.sh) and [sbnb-configure-networking.sh](https://github.com/sbnb-io/sbnb/blob/main/scripts/sbnb-configure-networking.sh), for those interested in a deeper dive.
+Under the hood, the Ansible playbook executes three scripts, [sbnb-configure-storage.sh](https://github.com/sbnb-io/sbnb/blob/main/scripts/sbnb-configure-storage.sh), [sbnb-configure-networking.sh](https://github.com/sbnb-io/sbnb/blob/main/scripts/sbnb-configure-networking.sh), and [sbnb-configure-system.sh](https://github.com/sbnb-io/sbnb/blob/main/scripts/sbnb-configure-system.sh) for those interested in a deeper dive.
 
 ### **5. Set Environment Variables**
 ```sh
