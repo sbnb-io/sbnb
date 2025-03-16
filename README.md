@@ -151,6 +151,8 @@ For more details, refer to [README-CUSTOMIZATION.md](README-CUSTOMIZATION.md).
 To start workloads, it's recommended to use an Infrastructure as Code (IaC) approach using Ansible.  
 Please refer to this tutorial where we will start a Docker container on a bare-metal server booted into Sbnb Linux using the Ansible automation tool: [README-ANSIBLE.md](README-ANSIBLE.md).
 
+Additionally, check out this detailed tutorial on how disks and networking are configured in Sbnb Linux [README-CONFIGURE_SYSTEM.md](README-CONFIGURE_SYSTEM.md). Disks are combined into an LVM volume, and the network is attached to a br0 bridge for fast and simple VM plumbing.
+
 Days when system administrators manually installed Linux OS and configured services are gone.
 
 
