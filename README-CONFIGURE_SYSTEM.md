@@ -95,6 +95,10 @@ sdc      8:32   0 476.9G  0 disk
 The disks are combined into an LVM volume, formatted as `ext4`, and mounted at `/mnt/sbnb-data`.
 
 #### **Disks After Running Ansible Playbook**
+
+![Sbnb storage - The disks are combined into an LVM volume, formatted as ext4, and mounted at /mnt/sbnb-data.](images/sbnb-storage.png)
+
+
 ```sh
 # lsblk
 NAME                MAJ:MIN RM   SIZE RO TYPE MOUNTPOINTS
@@ -109,10 +113,12 @@ sdc                   8:32   0 476.9G  0 disk
 /dev/mapper/sbnb--vg-sbnb--lv 1.4T      2.3M      1.4T   0% /mnt/sbnb-data
 ```
 
-![Sbnb storage - The disks are combined into an LVM volume, formatted as ext4, and mounted at /mnt/sbnb-data.](images/sbnb-storage.png)
 
 
 #### **Network After Running Ansible Playbook**
+
+![Sbnb net - The main Ethernet interface is attached to a Linux bridge br0](images/sbnb-net.png)
+
 The main Ethernet interface is attached to a Linux bridge (`br0`).
 ```sh
 # ip addr
@@ -127,7 +133,6 @@ The main Ethernet interface is attached to a Linux bridge (`br0`).
        valid_lft forever preferred_lft forever
 ```
 
-![Sbnb net - The main Ethernet interface is attached to a Linux bridge br0](images/sbnb-net.png)
 
 
 This setup allows virtual machines to connect directly to the LAN via `br0`.
