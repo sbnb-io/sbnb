@@ -3,5 +3,5 @@
     "mem": "4G",
     "tskey": "your-tskey-auth",
     "attach_gpus": true,
-    "image_size": "10G"
+    "image_size": "100G"
 }
