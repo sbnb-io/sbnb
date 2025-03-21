@@ -1,0 +1,29 @@
+---
+
+- hosts: "{{ lookup('ansible.builtin.env', 'SBNB_HOSTS') }}"
+  gather_facts: false
+  ignore_unreachable: true
+
+  tasks:
+    - name: Install requirements
+      community.docker.docker_container_exec:
+        container: vllm
+        command: >
+          pip3 install -r /vllm-workspace/vllm/requirements/test.txt
+
+    - name: Run vllm benchmark
+      community.docker.docker_container_exec:
+        container: vllm
+        command: >
+          python3 /vllm-workspace/vllm/benchmarks/benchmark_serving.py
+            --backend openai
+            --base-url http://127.0.0.1:8000
+            --dataset-name=random
+            --seed 12345
+            --num-prompts=1000
+            --model allenai/OLMo-1B-hf
+      register: result
+
+    - name: Print stdout
+      ansible.builtin.debug:
+        var: result.stdout
