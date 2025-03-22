@@ -22,15 +22,18 @@ The diagram below shows how Sbnb Linux boots a bare metal server (host), starts 
 
 In summary, the bare metal server boots into a minimal Linux environment consisting of a Linux kernel with Tailscale, Docker container engine, and QEMU KVM hypervisor.
 
-## Use Case 2: Running Sbnb Linux with Grafana Monitoring on a Bare Metal Server
+## Use Case 2: Run vLLM AI on Nvidia GPU
 
-Quickly set up a Bare Metal server with CPU temperature, fan speed, and power consumption (Watt) monitoring using Sbnb Linux and **Infrastructure as Code (IaC)**, all visualized through **Grafana**.
+Quickly set up a Bare Metal server with GPU monitoring using Sbnb Linux and **Infrastructure as Code (IaC)**, all visualized through **Grafana**.
 
-The graph below illustrates a **10-minute CPU stress test** where the CPU load spikes to **100%**, causing the temperature to rise from **40°C to ~80°C**. As a result, the fan speed increases from **8,000 RPM to 18,000 RPM**, and power consumption surges from **50W to 200W**.
+The graphs below shows GPU load during a vLLM benchmark test for a few minutes, leading to a GPU load spike to 100%. Memory allocation is at 90% per vLLM config.
 
-![Sbnb Linux: Monitoring CPU Temp, Fan Speed, and Power Consumption with Grafana](images/sbnb-grafana-cpu-temp-power.png)
+![Sbnb Linux: vLLM - Monitoring GPU Load, Memory, Temp, FAN speed, Power consumption (Watt) with Grafana](images/vllm-benchmark-per-gpu.png)
 
-**Read the step-by-step guide:** [README-GRAFANA.md](README-GRAFANA.md)
+![Sbnb Linux: vLLM - Monitoring GPU Load, Memory, Temp, FAN speed, Power consumption (Watt) with Grafana](images/vllm-benchmark-all-gpu.png)
+
+
+**Read the step-by-step guide:** [README-VLLM.md](README-VLLM.md)
 
 
 ## Use Case 3: Run Sbnb Linux as a VM Guest
