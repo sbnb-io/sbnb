@@ -18,6 +18,7 @@
           - 8000:8000
         volumes:
           - /mnt/sbnb-data/huggingface:/root/.cache/huggingface
+          - /mnt/sbnb-data/src:/mnt/sbnb-data/src
         device_requests:
           - driver: nvidia
             count: -1 # this means we want all

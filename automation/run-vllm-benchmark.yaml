@@ -5,17 +5,22 @@
   ignore_unreachable: true
 
   tasks:
+    - name: Clone vllm src
+      ansible.builtin.git:
+        repo: 'https://github.com/vllm-project/vllm.git'
+        dest: /mnt/sbnb-data/src/vllm
+
     - name: Install requirements
       community.docker.docker_container_exec:
         container: vllm
         command: >
-          pip3 install -r /vllm-workspace/vllm/requirements/test.txt
+          pip3 install -r /mnt/sbnb-data/src/vllm/requirements/test.txt
 
     - name: Run vllm benchmark
       community.docker.docker_container_exec:
         container: vllm
         command: >
-          python3 /vllm-workspace/vllm/benchmarks/benchmark_serving.py
+          python3 /mnt/sbnb-data/src/vllm/benchmarks/benchmark_serving.py
             --backend openai
             --base-url http://127.0.0.1:8000
             --dataset-name=random
