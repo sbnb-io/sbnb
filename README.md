@@ -7,7 +7,6 @@ Sbnb Linux is a revolutionary minimalist Linux distribution designed to boot bar
 # Prerequisites
 
 - **Bare Metal Server:** Any x86 machine should suffice.
-    - For example, take a look at this [Reddit post](https://www.reddit.com/r/homelab/comments/1hmnnwg/built_a_powerful_and_silent_amd_epyc_home_server/) where we built a powerful and quiet AMD EPYC 3rd Gen home server together with my kids.
 - A **USB flash drive** (if using local boot), or an **iPXE server** (for network boot).
 - **[Optional]** If you plan to launch Confidential Computing (CC) Virtual Machines (VMs) on Sbnb Linux, ensure that your CPU supports AMD SEV-SNP technology (available from AMD EPYC Gen 3 CPUs onward). Additionally, enable this feature in the BIOS. For more details, refer to [README-CC.md](https://github.com/sbnb-io/sbnb/blob/main/README-CC.md).
 
