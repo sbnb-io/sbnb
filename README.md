@@ -8,8 +8,7 @@ Sbnb Linux is a revolutionary minimalist Linux distribution designed to boot bar
 
 - **Bare Metal Server:** Any x86 machine should suffice.
     - For example, take a look at this [Reddit post](https://www.reddit.com/r/homelab/comments/1hmnnwg/built_a_powerful_and_silent_amd_epyc_home_server/) where we built a powerful and quiet AMD EPYC 3rd Gen home server together with my kids.
-- **USB Flash Drive** for booting.
-    - Any standard USB flash drive with at least 512MB capacity will work. Please note that all existing data on the drive will be overwritten.
+- A **USB flash drive** (if using local boot), or an **iPXE server** (for network boot).
 - **[Optional]** If you plan to launch Confidential Computing (CC) Virtual Machines (VMs) on Sbnb Linux, ensure that your CPU supports AMD SEV-SNP technology (available from AMD EPYC Gen 3 CPUs onward). Additionally, enable this feature in the BIOS. For more details, refer to [README-CC.md](https://github.com/sbnb-io/sbnb/blob/main/README-CC.md).
 
 # Typical Use Case for Sbnb Linux
@@ -58,8 +57,17 @@ However, VMware is not a hard requirement. Any VM hypervisor, such as QEMU, can 
 - **Firmware Updates** – Sbnb Linux applies the latest CPU and Security Processor microcode updates at every boot. BIOS updates can also be applied during the update process, keeping the entire system up to date.
 - **Built with Buildroot** – sbnb Linux is created using Buildroot with the br2-external mechanism, keeping sbnb customizations separate for easier maintenance and rolling updates.
 
-
 # How to Boot Your Server into Sbnb Linux
+
+## Option 1: Booting from a USB Flash Drive
+
+This method is ideal for home labs and small server fleets. It allows you to quickly boot bare metal servers within minutes. Detailed steps for this option are provided below.
+
+## Option 2: Booting via Network (iPXE)
+
+Best suited for large, automated server fleets such as data centers. This method enables you to automatically boot a large number of bare metal servers over the network.
+
+# Booting from a USB Flash Drive
 Below is a brief guide. For a more detailed installation guide, refer to [README-INSTALL.md](README-INSTALL.md).
 
 ## 1. Prepare a Bootable USB Dongle with Sbnb Linux
