@@ -31,8 +31,8 @@ The graphs below shows GPU load during a vLLM benchmark test for a few minutes, 
 ![Sbnb Linux: vLLM - Monitoring GPU Load, Memory, Temp, FAN speed, Power consumption (Watt) with Grafana](images/vllm-benchmark-all-gpu.png)
 
 
-**Read the step-by-step guide for vLLM:** [README-VLLM.md](README-VLLM.md)
-**Read the step-by-step guide for SGLang:** [README-SGLANG.md](README-SGLANG.md)
+- **Read the step-by-step guide for vLLM:** [README-VLLM.md](README-VLLM.md)
+- **Read the step-by-step guide for SGLang:** [README-SGLANG.md](README-SGLANG.md)
 
 ## Use Case 3: Run Sbnb Linux as a VM Guest
 
