@@ -30,4 +30,4 @@
           --tensor-parallel-size 2
           --max-num-seqs 32
           --enforce-eager
-          --model "allenai/OLMo-1B-hf"
+          --model "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
