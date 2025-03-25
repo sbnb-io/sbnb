@@ -20,7 +20,7 @@ The diagram below shows how Sbnb Linux boots a bare metal server (host), starts 
 
 In summary, the bare metal server boots into a minimal Linux environment consisting of a Linux kernel with Tailscale, Docker container engine, and QEMU KVM hypervisor.
 
-## Use Case 2: Run vLLM AI on Nvidia GPU
+## Use Case 2: Run vLLM or SGLang AI on Nvidia GPU
 
 Quickly set up a Bare Metal server with GPU monitoring using Sbnb Linux and **Infrastructure as Code (IaC)**, all visualized through **Grafana**.
 
@@ -31,8 +31,8 @@ The graphs below shows GPU load during a vLLM benchmark test for a few minutes, 
 ![Sbnb Linux: vLLM - Monitoring GPU Load, Memory, Temp, FAN speed, Power consumption (Watt) with Grafana](images/vllm-benchmark-all-gpu.png)
 
 
-**Read the step-by-step guide:** [README-VLLM.md](README-VLLM.md)
-
+**Read the step-by-step guide for vLLM:** [README-VLLM.md](README-VLLM.md)
+**Read the step-by-step guide for SGLang:** [README-SGLANG.md](README-SGLANG.md)
 
 ## Use Case 3: Run Sbnb Linux as a VM Guest
 
