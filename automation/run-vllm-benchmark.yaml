@@ -8,6 +8,8 @@
     - name: Clone vllm src
       ansible.builtin.git:
         repo: 'https://github.com/vllm-project/vllm.git'
+        version: 'v0.8.2'
+        force: true
         dest: /mnt/sbnb-data/src/vllm
 
     - name: Install requirements
