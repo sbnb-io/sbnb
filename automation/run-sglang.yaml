@@ -1,0 +1,34 @@
+---
+
+- hosts: "{{ lookup('ansible.builtin.env', 'SBNB_HOSTS') }}"
+  gather_facts: false
+  ignore_unreachable: true
+
+  tasks:
+    - name: Start SGLang container
+      docker_container:
+        name: sglang
+        image: lmsysorg/sglang:latest
+        runtime: nvidia
+        ipc_mode: host
+        shm_size: "32g"
+        env:
+          HF_TOKEN: "{{ lookup('ansible.builtin.env', 'HUGGING_FACE_HUB_TOKEN') }}"
+          CUDA_DEVICE_ORDER: PCI_BUS_ID
+        ports:
+          - 30000:30000
+        volumes:
+          - /mnt/sbnb-data/huggingface:/root/.cache/huggingface
+          - /mnt/sbnb-data/src:/mnt/sbnb-data/src
+        device_requests:
+          - driver: nvidia
+            count: -1 # this means we want all
+            capabilities:
+              - ['gpu','nvidia']
+        command: > 
+          python3
+          -m sglang.launch_server
+          --host 0.0.0.0
+          --port 30000
+          --model-path TinyLlama/TinyLlama-1.1B-Chat-v1.0
+          --dp 2
