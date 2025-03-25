@@ -79,10 +79,10 @@ By default, `run-vllm.yaml` has the following settings:
 --tensor-parallel-size 2
 --max-num-seqs 32
 --enforce-eager
---model "allenai/OLMo-1B-hf"
+--model "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 ```
 
-We’re setting tensor parallelization `--tensor-parallel-size 2` because we have 2 Nvidia GPU cards in the system. We also choose a small model `"allenai/OLMo-1B-hf"` to fit our limited GPU memory (12GB * 2 = 24GB) in this setup.
+We’re setting tensor parallelization `--tensor-parallel-size 2` because we have 2 Nvidia GPU cards in the system. We also choose a small model `"TinyLlama/TinyLlama-1.1B-Chat-v1.0"` to fit our limited GPU memory (12GB * 2 = 24GB) in this setup.
 
 Please refer to the vLLM engine arguments for more details:  
 https://docs.vllm.ai/en/latest/serving/engine_args.html
@@ -116,27 +116,32 @@ ansible-playbook -i ./ansible_tailscale_inventory.py run-vllm-benchmark.yaml
 ### Example Output of the Benchmark
 
 ```text
-=========== Serving Benchmark Result ============
-Successful requests:                     10000
-Benchmark duration (s):                  1650.40
-Total input tokens:                      10240000
-Total generated tokens:                  1249339
-Request throughput (req/s):              6.06
-Output token throughput (tok/s):         756.99
-Total Token throughput (tok/s):          6961.54
----------------Time to First Token----------------
-Mean TTFT (ms):                          823866.75
-Median TTFT (ms):                        822703.42
-P99 TTFT (ms):                           1627880.13
------Time per Output Token (excl. 1st token)------
-Mean TPOT (ms):                          41.80
-Median TPOT (ms):                        41.25
-P99 TPOT (ms):                           64.80
----------------Inter-token Latency----------------
-Mean ITL (ms):                           41.37
-Median ITL (ms):                         18.53
-P99 ITL (ms):                            179.15
-==================================================
+    Starting initial single prompt test run...                                                                                                 
+    Initial test run completed. Starting main benchmark run...                                                                                 
+    Traffic request rate: inf                                          
+    Burstiness factor: 1.0 (Poisson process)                                                                                                   
+    Maximum request concurrency: None                                  
+    ============ Serving Benchmark Result ============                 
+    Successful requests:                     10000                     
+    Benchmark duration (s):                  1628.80                   
+    Total input tokens:                      10240000                                                                                          
+    Total generated tokens:                  1254908                                                                                           
+    Request throughput (req/s):              6.14                                                                                              
+    Output token throughput (tok/s):         770.45                    
+    Total Token throughput (tok/s):          7057.28                                                                                           
+    ---------------Time to First Token----------------                                                                                         
+    Mean TTFT (ms):                          814414.55                                                                                         
+    Median TTFT (ms):                        815241.73                 
+    P99 TTFT (ms):                           1606278.41                
+    -----Time per Output Token (excl. 1st token)------                 
+    Mean TPOT (ms):                          40.77
+    Median TPOT (ms):                        40.62
+    P99 TPOT (ms):                           46.13                     
+    ---------------Inter-token Latency----------------                 
+    Mean ITL (ms):                           40.51                     
+    Median ITL (ms):                         13.16                     
+    P99 ITL (ms):                            145.59                    
+    ==================================================      
 ```
 
 ## Display GPU Utilization in Grafana
