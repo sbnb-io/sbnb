@@ -5,7 +5,6 @@
   ignore_unreachable: true
 
   vars:
-    LLM_MODEL: "{{ lookup('env','LLM_MODEL') or 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' }}"
     LLM_ARGS: "{{ lookup('env','LLM_ARGS') }}"
 
   tasks:
@@ -30,10 +29,4 @@
             capabilities:
               - ['gpu','nvidia']
         command: > 
-          --max-model-len 2048
-          --gpu-memory-utilization 0.9
-          --tensor-parallel-size 2
-          --max-num-seqs 32
-          --enforce-eager
-          --model {{ LLM_MODEL }}
           {{ LLM_ARGS }}
