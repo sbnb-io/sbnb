@@ -33,6 +33,7 @@ The graphs below shows GPU load during a vLLM benchmark test for a few minutes, 
 
 - **Read the step-by-step guide for vLLM:** [README-VLLM.md](README-VLLM.md)
 - **Read the step-by-step guide for SGLang:** [README-SGLANG.md](README-SGLANG.md)
+- **Run Qwen2.5-VL in vLLM and SGLang in Automated Way:** [README-QWEN2.5-VL.md](README-QWEN2.5-VL.md)
 
 ## Use Case 3: Run Sbnb Linux as a VM Guest
 
