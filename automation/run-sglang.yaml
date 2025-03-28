@@ -20,7 +20,7 @@
           HF_TOKEN: "{{ lookup('ansible.builtin.env', 'HUGGING_FACE_HUB_TOKEN') }}"
           CUDA_DEVICE_ORDER: PCI_BUS_ID
         ports:
-          - 30000:30000
+          - 8000:8000
         volumes:
           - /mnt/sbnb-data/huggingface:/root/.cache/huggingface
           - /mnt/sbnb-data/src:/mnt/sbnb-data/src
@@ -33,7 +33,7 @@
           python3
           -m sglang.launch_server
           --host 0.0.0.0
-          --port 30000
+          --port 8000
           --model-path {{ LLM_MODEL }}
           --dp 2
           {{ LLM_ARGS }}

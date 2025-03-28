@@ -24,7 +24,7 @@
         command: >
           python3 /mnt/sbnb-data/src/vllm/benchmarks/benchmark_serving.py
             --backend openai
-            --base-url http://127.0.0.1:30000
+            --base-url http://127.0.0.1:8000
             --dataset-name=random
             --seed 12345
             --num-prompts=10000
