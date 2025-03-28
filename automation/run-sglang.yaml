@@ -4,6 +4,10 @@
   gather_facts: false
   ignore_unreachable: true
 
+  vars:
+    LLM_MODEL: "{{ lookup('env','LLM_MODEL') or 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' }}"
+    LLM_ARGS: "{{ lookup('env','LLM_ARGS') }}"
+
   tasks:
     - name: Start SGLang container
       docker_container:
@@ -30,5 +34,6 @@
           -m sglang.launch_server
           --host 0.0.0.0
           --port 30000
-          --model-path TinyLlama/TinyLlama-1.1B-Chat-v1.0
+          --model-path {{ LLM_MODEL }}
           --dp 2
+          {{ LLM_ARGS }}
