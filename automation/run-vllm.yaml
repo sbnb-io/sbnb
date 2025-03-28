@@ -4,6 +4,10 @@
   gather_facts: false
   ignore_unreachable: true
 
+  vars:
+    LLM_MODEL: "{{ lookup('env','LLM_MODEL') or 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' }}"
+    LLM_ARGS: "{{ lookup('env','LLM_ARGS') }}"
+
   tasks:
     - name: Start vLLM container
       docker_container:
@@ -11,6 +15,7 @@
         image: vllm/vllm-openai
         runtime: nvidia
         ipc_mode: host
+        pull: yes
         env:
           HUGGING_FACE_HUB_TOKEN: "{{ lookup('ansible.builtin.env', 'HUGGING_FACE_HUB_TOKEN') }}"
           CUDA_DEVICE_ORDER: PCI_BUS_ID
@@ -30,4 +35,5 @@
           --tensor-parallel-size 2
           --max-num-seqs 32
           --enforce-eager
-          --model "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+          --model {{ LLM_MODEL }}
+          {{ LLM_ARGS }}
