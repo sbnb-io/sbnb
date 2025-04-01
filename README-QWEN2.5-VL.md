@@ -232,3 +232,15 @@ Look for `"content": "The text in the illustration is "nVIDIA.""` - that means i
 You're now running Qwen2.5-VL using either vLLM or SGLang on your own Sbnb Linux VM with full GPU acceleration.
 
 Happy experimenting! Reach out if you have questions or improvements to share!
+
+### 🚀 Bonus  
+Want detailed NVIDIA GPU monitoring with Grafana?  
+
+Follow this guide:
+👉 [NVIDIA GPU Monitoring with Grafana](https://github.com/sbnb-io/sbnb/blob/main/README-NVIDIA-GPU-FRYER-GRAFANA.md)
+
+You'll get insightful dashboards like these:
+
+![Sbnb Linux: vLLM - Monitoring GPU Load, Memory, Temp, FAN speed, Power consumption (Watt) with Grafana](images/vllm-benchmark-per-gpu.png)
+
+![Sbnb Linux: vLLM - Monitoring GPU Load, Memory, Temp, FAN speed, Power consumption (Watt) with Grafana](images/vllm-benchmark-all-gpu.png)
