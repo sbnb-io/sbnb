@@ -195,6 +195,8 @@ Fill in:
 - **Max Tokens:** `1500`
 - **Supports Vision:** `Yes`
 
+![rag-add-vllm](images/rag-add-vllm.png)
+
 ---
 
 ### 3. Set System Models
@@ -205,6 +207,8 @@ Select:
 - **Chat model:** `Qwen/Qwen2.5-VL-3B-Instruct`
 - **Embedding model:** `BAAI/bge-large-zh-v1.5`
 - **Img2txt model:** `Qwen/Qwen2.5-VL-3B-Instruct`
+
+![rag-model-settings](images/rag-model-settings.png)
 
 ---
 
@@ -227,6 +231,8 @@ Then:
 
 Wait for **Parsing Status** to turn **SUCCESS**.
 
+![rag-upload-file](images/rag-upload-file.png)
+
 ---
 
 ### 6. Create an Assistant
@@ -234,6 +240,8 @@ Wait for **Parsing Status** to turn **SUCCESS**.
 - Go to `Chat → Create an Assistant`
 - Set an **Assistant name**
 - Choose your **Knowledge Base**
+
+![rag-create-assistant](images/rag-create-assistant.png)
 
 ---
 
@@ -246,6 +254,8 @@ Try this question (answer is only in the PDF):
 > "How much tax was collected in the US in 2024?"
 
 ✅ RAGFlow responds with the answer **"... 5.0 trillion for FY 2024"** and cites the PDF source.
+
+![rag-ask-question](images/rag-ask-question.png)
 
 ---
 
