@@ -1,0 +1,21 @@
+---
+
+- hosts: "{{ lookup('ansible.builtin.env', 'SBNB_HOSTS') }}"
+  gather_facts: false
+  ignore_unreachable: true
+
+  environment:
+    RAGFLOW_IMAGE: "infiniflow/ragflow:v0.17.2"
+
+  tasks:
+    - name: Clone ragflow src
+      ansible.builtin.git:
+        repo: 'https://github.com/infiniflow/ragflow'
+        version: 'main'
+        force: true
+        dest: /mnt/sbnb-data/src/ragflow
+
+    - name: Create and start RAGFlow
+      community.docker.docker_compose_v2:
+        project_src: /mnt/sbnb-data/src/ragflow/docker
+        files: docker-compose.yml
