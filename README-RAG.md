@@ -5,7 +5,7 @@ This guide walks you through setting up a full RAG pipeline on your own bare met
 - A bare metal server with Nvidia GPUs running **Sbnb Linux**
 - A **VM with Ubuntu 24.04**
 - The open-source [**RAGFlow**](https://github.com/infiniflow/ragflow) project
-- The **vLLM inference engine** with the `Qwen/Qwen2.5-VL-3B-Instruct` model
+- The [**vLLM inference engine**](https://github.com/vllm-project/vllm) with the `Qwen/Qwen2.5-VL-3B-Instruct` model
 - Upload a PDF to RAGFlow and extract knowledge from it
 
 ---
