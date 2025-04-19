@@ -1,6 +1,7 @@
 docker run -it --gpus all \
     -v /tmp:/tmp \
     -v /root/.cache:/root/.cache \
+    -e HF_TOKEN=hf_REPLACE_ME \
     sbnb/perceptionlm \
     conda run -n perception_models --no-capture-output \
     python3 /perception_models/apps/plm/generate.py \
