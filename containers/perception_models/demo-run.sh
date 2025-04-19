@@ -6,5 +6,5 @@ docker run -it --gpus all \
     conda run -n perception_models --no-capture-output \
     python3 /perception_models/apps/plm/generate.py \
     --ckpt facebook/Perception-LM-1B --media_type video\
-    --question 'Describe the bar plot in the video with most details possible.' \
+    --question 'What is happening in the video?' \
     --media_path  /tmp/demo.mp4
