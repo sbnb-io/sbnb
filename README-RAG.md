@@ -2,8 +2,6 @@
 
 * **Note:** We also have a separate guide for running **LightRAG** using the same approach. Check it out here: [README-LightRAG.md](README-LightRAG.md) if you're interested.
 
-* **Note:** We also have a separate guide for running **RAGFlow** using the same approach. Check it out here: [README-RAG.md](README-RAG.md) if you're interested.
-
 This guide walks you through setting up a full RAG pipeline on your own bare metal server in just minutes. You'll launch:
 
 - A bare metal server with Nvidia GPUs running **Sbnb Linux**
