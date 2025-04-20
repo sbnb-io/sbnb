@@ -1,0 +1,27 @@
+---
+
+- hosts: "{{ lookup('ansible.builtin.env', 'SBNB_HOSTS') }}"
+  gather_facts: false
+  ignore_unreachable: true
+
+  tasks:
+    - name: Copy docker compose
+      ansible.builtin.copy:
+        src: docker-compose-lightrag.yaml
+        dest: /dev/shm/docker-compose-lightrag.yaml
+
+    - name: Create and start LightRAG
+      community.docker.docker_compose_v2:
+        project_src: /dev/shm
+        files: docker-compose-lightrag.yaml
+
+    - name: Pull models
+      community.docker.docker_compose_v2_exec:
+        project_src: /dev/shm
+        files: docker-compose-lightrag.yaml
+        service: ollama
+        command: /bin/bash -c "while ! ollama pull {{ item }};do echo Waiting ollama ...; sleep1;done"
+        chdir: /root
+      loop:
+        - bge-m3
+        - mistral-nemo:latest

@@ -1,0 +1,33 @@
+version: '3.8'
+services:
+  ollama:
+    image: ollama/ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - /mnt/sbnb-data/cache/.ollama:/root/.ollama
+    networks:
+      - lightrag-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: -1 # this means we want all
+              capabilities: [gpu]
+
+  lightrag:
+    image: sbnb/lightrag
+    ports:
+      - "8000:8000"
+    environment:
+      PORT: 8000
+      LLM_BINDING_HOST: http://ollama:11434
+      EMBEDDING_BINDING_HOST: http://ollama:11434
+    depends_on:
+      - ollama
+    networks:
+      - lightrag-network
+
+networks:
+  lightrag-network:
