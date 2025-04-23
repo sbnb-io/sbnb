@@ -57,6 +57,8 @@ For more details on automatic hostname assignments, refer to [README-SERIAL-NUMB
 
 ## Done!
 You can now SSH into the server using Tailscale SSO methods, such as **Google Auth**.
+If you're having trouble connecting via SSH, check out this GitHub issue for detailed debugging steps:
+[https://github.com/sbnb-io/sbnb/issues/8](https://github.com/sbnb-io/sbnb/issues/8)
 
 ## Next Steps
 For development and testing, run the following command after SSH-ing into the server:
