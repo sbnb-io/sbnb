@@ -11,9 +11,9 @@
 
     - name: Install Nvidia kernel modules and utils
       vars:
-        DRIVER_BRANCH: "565"
+        DRIVER_BRANCH: "570"
 
       apt:
         pkg:
         - nvidia-utils-{{ DRIVER_BRANCH }}-server
-        - linux-modules-nvidia-{{ DRIVER_BRANCH }}-server-{{ ansible_kernel }}
+        - linux-modules-nvidia-{{ DRIVER_BRANCH }}-server-open-{{ ansible_kernel }}
