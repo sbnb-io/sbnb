@@ -58,9 +58,21 @@ See [README-SERIAL-NUMBER.md](README-SERIAL-NUMBER.md) for automatic hostname as
 
 ---
 
-### 2. Connect Your Laptop to Tailscale
+### 2. Connect Your Laptop to Tailscale and Install Ansible
 
-We use a MacBook in this tutorial, but any Linux/Unix laptop should work.
+Connect your laptop to the same Tailscale network as your server using the instructions at [https://tailscale.com/](https://tailscale.com/). This allows your laptop to directly reach your server using SSH, which is the primary transport protocol used by Ansible automation.
+
+We use a MacBook in this tutorial, but any Linux/Unix laptop should work.  
+To install Ansible on macOS using Homebrew:
+
+```sh
+brew install ansible
+```
+---
+
+### ⚠️ Warning: Run All Commands From Your Laptop
+
+All commands below should be executed on your **laptop**, not the server.
 
 ---
 
