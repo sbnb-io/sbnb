@@ -17,6 +17,7 @@ set_hostname() {
         # Set random hostname if no platform serial number found
         SERIAL=$(xxd -l6 -p /dev/random)
     fi
+    SERIAL=$(echo "${SERIAL}" | tr ' ' '-') # Replace spaces with dashes
     hostname "sbnb-${SERIAL}"
 }
 
