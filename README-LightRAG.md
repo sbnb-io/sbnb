@@ -70,6 +70,10 @@ brew install ansible
 ```
 ---
 
+At this point, your network should resemble the diagram below - with both your laptop and server able to communicate directly over the Tailscale network.
+
+![Sbnb Linux: laptop and server able to communicate directly over the Tailscale network](images/sbnb-control.png)
+
 ### ⚠️ Warning: Run All Commands From Your Laptop
 
 All commands below should be executed on your **laptop**, not the server.
