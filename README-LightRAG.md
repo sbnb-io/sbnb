@@ -120,6 +120,9 @@ Replace `"your-tskey-auth"` with your actual **Tailscale auth key**.
 
 ```sh
 export SBNB_HOSTS=sbnb-F6S0R8000719
+```
+
+```sh
 ansible-playbook -i ./ansible_tailscale_inventory.py sbnb-start-vm.yaml
 ```
 
@@ -135,7 +138,9 @@ You should see the VM appear in Tailscale as `sbnb-vm-<VMID>` (e.g., `sbnb-vm-67
 
 ```bash
 export SBNB_HOSTS=sbnb-vm-67f97659333f
+```
 
+```bash
 for playbook in install-docker.yaml install-nvidia.yaml install-nvidia-container-toolkit.yaml; do
   ansible-playbook -i ./ansible_tailscale_inventory.py $playbook
 done
