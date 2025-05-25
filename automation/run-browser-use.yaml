@@ -1,0 +1,26 @@
+---
+
+- hosts: "{{ lookup('ansible.builtin.env', 'SBNB_HOSTS') }}"
+  gather_facts: false
+  ignore_unreachable: true
+
+  tasks:
+    - name: Copy docker compose
+      ansible.builtin.copy:
+        src: docker-compose-browser-use.yaml
+        dest: /dev/shm/docker-compose-browser-use.yaml
+
+    - name: Create and start browser-use web-ui
+      community.docker.docker_compose_v2:
+        project_src: /dev/shm
+        files: docker-compose-browser-use.yaml
+
+    - name: Pull models
+      community.docker.docker_compose_v2_exec:
+        project_src: /dev/shm
+        files: docker-compose-browser-use.yaml
+        service: ollama
+        command: /bin/bash -c "while ! ollama pull {{ item }};do echo Waiting ollama ...; sleep1;done"
+        chdir: /root
+      loop:
+        - qwen2.5:7b
