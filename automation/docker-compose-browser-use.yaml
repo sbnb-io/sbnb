@@ -16,7 +16,7 @@ services:
 
   # debug: docker compose run --rm -it browser-use-webui bash
   browser-use-webui:
-    image: ghcr.io/browser-use/web-ui # Using precompiled image
+    image: sbnb/browser-use # Using precompiled image
     build:
       context: .
       dockerfile: Dockerfile
