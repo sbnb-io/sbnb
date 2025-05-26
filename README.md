@@ -31,18 +31,22 @@ The graphs below shows GPU load during a vLLM benchmark test for a few minutes, 
 ![Sbnb Linux: vLLM - Monitoring GPU Load, Memory, Temp, FAN speed, Power consumption (Watt) with Grafana](images/vllm-benchmark-all-gpu.png)
 
 
-- **Read the step-by-step guide for vLLM:** [README-VLLM.md](README-VLLM.md)
-- **Read the step-by-step guide for SGLang:** [README-SGLANG.md](README-SGLANG.md)
-- **Run Qwen2.5-VL in vLLM and SGLang in Automated Way:** [README-QWEN2.5-VL.md](README-QWEN2.5-VL.md)
-- **Run LightRAG on a Bare Metal Server in Minutes (Fully Automated):** [README-LightRAG.md](README-LightRAG.md)
-- **Run RAGFlow on a Bare Metal Server in Minutes (Fully Automated):** [README-RAG.md](README-RAG.md)
-
 ## Use Case 3: Run Sbnb Linux as a VM Guest
 
 Please refer to the separate document on how to run Sbnb Linux as a VMware guest: [README-VMWARE.md](https://github.com/sbnb-io/sbnb/blob/main/README-VMWARE.md).
 
 However, VMware is not a hard requirement. Any VM hypervisor, such as QEMU, can also be used.
 
+# Run AI Workloads Seamlessly with Sbnb Linux
+
+Explore step-by-step guides to deploy popular AI tools on bare metal using Sbnb Linux in Automated Way:
+
+- 🚀 **vLLM Setup Guide** – [README-VLLM.md](README-VLLM.md)  
+- 💬 **SGLang Setup Guide** – [README-SGLANG.md](README-SGLANG.md)  
+- 🧠 **Run Qwen2.5-VL in vLLM and SGLang** – [README-QWEN2.5-VL.md](README-QWEN2.5-VL.md)  
+- ⚡ **Deploy LightRAG in Minutes** – [README-LightRAG.md](README-LightRAG.md)  
+- 📚 **Deploy RAGFlow in Minutes** – [README-RAG.md](README-RAG.md)  
+- 🕵️‍♂️ **Launch Browser Use AI Agent** – [README-AI-AGENT.md](README-AI-AGENT.md)
 
 # Key Features of Sbnb Linux:
 
