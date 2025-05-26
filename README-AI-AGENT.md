@@ -213,6 +213,10 @@ Status: Success
 
 You can monitor the AI Agent's actions in the VNC Web interface.
 
+Below is an animated GIF showing all the steps taken by the AI Agent in autonomous mode.
+
+![All the steps taken by the AI Agent in autonomous mode](images/agent-all-steps.gif)
+
 ---
 
 🎉 **That's it!** You've successfully run the AI Agent to find the necessary information in autonomous mode.
