@@ -221,6 +221,7 @@ Below is an animated GIF showing all the steps taken by the AI Agent in autonomo
 
 🎉 **That's it!** You've successfully run the AI Agent to find the necessary information in autonomous mode.
 This is just a basic example, but the possibilities unlocked by AI Agents are enormous.
-Please follow the [Browser Use](https://github.com/browser-use/web-ui) project for more use cases!
 
-Happy experimenting—and solving real-world problems!
+Be sure to follow the amazing [Browser Use](https://github.com/browser-use/web-ui) project for more use cases and examples!
+
+Happy experimenting - and solving real-world problems!
