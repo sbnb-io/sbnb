@@ -81,4 +81,4 @@ jobs:
         path: |
           buildroot/output/images/sbnb.raw.zip
           buildroot/output/images/sbnb.vhd
-          buildroot/output/images/sbnb.efi.zip
+          buildroot/output/images/sbnb.efi
