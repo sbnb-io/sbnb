@@ -1,0 +1,33 @@
+---
+
+- hosts: "{{ lookup('ansible.builtin.env', 'SBNB_HOSTS') }}"
+  gather_facts: false
+  ignore_unreachable: true
+
+  vars:
+    LLM_ARGS: "{{ lookup('env','LLM_ARGS') }}"
+
+  tasks:
+    - name: Start Frigate NVR container
+      docker_container:
+        name: frigate
+        image: sbnb/frigate
+        runtime: nvidia
+        shm_size: "512M"
+        stop_timeout: 30
+        env:
+          YOLO_MODELS: "yolov7-320"
+        ports:
+          - "8971:8971"
+          - "8554:8554"
+          - "8555:8555/tcp"
+          - "8555:8555/udp"
+        volumes:
+          - /mnt/sbnb-data/fg/media:/media/frigate
+          - /mnt/sbnb-data/fg/config:/config
+          - /etc/localtime:/etc/localtime:ro
+        device_requests:
+          - driver: nvidia
+            count: -1 # this means we want all
+            capabilities:
+              - ['gpu','nvidia']
