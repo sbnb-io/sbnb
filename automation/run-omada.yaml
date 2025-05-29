@@ -1,0 +1,23 @@
+---
+
+- hosts: "{{ lookup('ansible.builtin.env', 'SBNB_HOSTS') }}"
+  gather_facts: false
+  ignore_unreachable: true
+
+  vars:
+    LLM_ARGS: "{{ lookup('env','LLM_ARGS') }}"
+
+  tasks:
+    - name: Start TP-Link Omada Controller
+      docker_container:
+        name: omada
+        image: mbentley/omada-controller:latest
+        env:
+          TZ: "Etc/UTC"
+        network_mode: host
+        ulimits:
+          - nofile:4096:8192
+        stop_timeout: 60
+        volumes:
+          - /mnt/sbnb-data/omada/omada-data:/opt/tplink/EAPController/data
+          - /mnt/sbnb-data/omada/omada-logs:/opt/tplink/EAPController/logs
