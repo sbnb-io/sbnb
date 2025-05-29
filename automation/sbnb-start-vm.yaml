@@ -28,6 +28,7 @@
 
     - name: If VM json config exist
       local_action: stat path=sbnb-example-vm.json
+      connection: local
       register: file
 
     - name: Copy VM config if it exists
