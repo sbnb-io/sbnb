@@ -23,6 +23,12 @@
         - sbnb-configure-storage.sh
         - sbnb-start-vm.sh
 
+    - name: Copy file with owner and permissions
+      ansible.builtin.copy:
+        src: ../scripts/sbnb-start-vm.sh
+        dest: /dev/shm/sbnb-start-vm.sh
+        mode: '0700'
+
     - name: Execute host configuration script
       command: sh /dev/shm/sbnb-configure-system.sh
 
