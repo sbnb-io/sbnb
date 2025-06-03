@@ -15,6 +15,7 @@
         runtime: nvidia
         shm_size: "512M"
         stop_timeout: 30
+        restart_policy: "unless-stopped"
         env:
           YOLO_MODELS: "yolov7-320"
         ports:
