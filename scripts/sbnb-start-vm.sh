@@ -147,7 +147,7 @@ start_vm() {
 
   QEMU_CMD="/usr/qemu-svsm/bin/qemu-system-x86_64 \
     -enable-kvm \
-    -cpu EPYC-Milan-v2 \
+    -cpu host \
     -smp ${VCPU} \
     -drive file=${BOOT_IMAGE},if=none,id=disk0,format=qcow2,snapshot=off \
     -device virtio-scsi-pci,id=scsi0,disable-legacy=on,iommu_platform=on \
