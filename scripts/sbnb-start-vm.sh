@@ -145,15 +145,20 @@ start_vm() {
                              | md5sum \
                              | sed -E 's/^(..)(..)(..).*$/\1:\2:\3/')"
 
+  # Define disk and iothread
   QEMU_CMD="/usr/qemu-svsm/bin/qemu-system-x86_64 \
     -enable-kvm \
     -cpu EPYC-Milan-v2 \
     -smp ${VCPU} \
-    -drive file=${BOOT_IMAGE},if=none,id=disk0,format=qcow2,snapshot=off \
-    -device virtio-scsi-pci,id=scsi0,disable-legacy=on,iommu_platform=on \
-    -device scsi-hd,drive=disk0,bootindex=0 \
-    -cdrom ${SEED_IMAGE} \
+    -object iothread,id=iothread0 \
+    -device virtio-scsi-pci,id=scsi0,disable-legacy=on,iommu_platform=on,iothread=iothread0 \
     -nographic"
+
+  # Attach disk and cdrom
+  QEMU_CMD+=" \
+    -drive file=${BOOT_IMAGE},if=none,id=disk0,format=qcow2,snapshot=off \
+    -device scsi-hd,drive=disk0,bootindex=0 \
+    -cdrom ${SEED_IMAGE}"
 
   QEMU_CMD+=" -device virtio-net-pci,netdev=br0,mac=${mac_address} -netdev bridge,id=br0,br=br0"
 
