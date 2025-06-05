@@ -1,0 +1,31 @@
+---
+
+- hosts: "{{ lookup('ansible.builtin.env', 'SBNB_HOSTS') }}"
+  gather_facts: true
+  ignore_unreachable: true
+
+  tasks:
+    - name: Check data disk passphrase is set
+      fail:
+        msg: "Error: SBNB_DATA_DISK_PASSPHRASE environment variable is required but not set"
+      when: lookup('ansible.builtin.env', 'SBNB_DATA_DISK_PASSPHRASE', default='') == ''
+
+    - name: Create LUKS container with a passphrase
+      community.crypto.luks_device:
+        device: "/dev/sdb"
+        state: "opened"
+        name: "sbnb-data"
+        passphrase: "{{ lookup('ansible.builtin.env', 'SBNB_DATA_DISK_PASSPHRASE') }}"
+
+    - name: Create a ext4 filesystem 
+      community.general.filesystem:
+        fstype: ext4
+        dev: /dev/mapper/sbnb-data
+        opts: "-m 0"
+
+    - name: Mount ext4
+      ansible.posix.mount:
+        src: /dev/mapper/sbnb-data
+        path: /mnt/sbnb-data
+        fstype: ext4
+        state: mounted
