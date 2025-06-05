@@ -20,7 +20,9 @@
 #   ],
 #   "confidential_computing": false, # Whether to enable confidential computing
 #   "image_url": "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img", # URL of the VM image (optional)
-#   "image_size": "10G"              # Size of the VM image (optional)
+#   "image_size": "10G",             # Size of the VM image (optional)
+#   "data_disk_name": "data-disk",   # Name of the secondary data disk (optional)
+#   "data_disk_size": "100G"         # Size of the secondary data disk (optional, if not specified will use storage partition size)
 # }
 
 set -euxo pipefail
@@ -64,6 +66,8 @@ load_configuration() {
     CONFIG_CONFIDENTIAL_COMPUTING=$(jq -r '.confidential_computing // empty' ${CONFIG_FILE})
     CONFIG_IMAGE_URL=$(jq -r '.image_url // empty' ${CONFIG_FILE})
     CONFIG_IMAGE_SIZE=$(jq -r '.image_size // empty' ${CONFIG_FILE})
+    CONFIG_DATA_DISK_NAME=$(jq -r '.data_disk_name // empty' ${CONFIG_FILE})
+    CONFIG_DATA_DISK_SIZE=$(jq -r '.data_disk_size // empty' ${CONFIG_FILE})
   else
     echo "No configuration file provided. Using environment variables."
   fi
@@ -77,6 +81,8 @@ load_configuration() {
   CONFIDENTIAL_COMPUTING=${SBNB_VM_CONFIDENTIAL_COMPUTING:-${CONFIG_CONFIDENTIAL_COMPUTING:-false}}
   IMAGE_URL=${SBNB_VM_IMAGE_URL:-${CONFIG_IMAGE_URL:-"https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"}}
   IMAGE_SIZE=${SBNB_VM_IMAGE_SIZE:-${CONFIG_IMAGE_SIZE:-"10G"}}
+  DATA_DISK_NAME=${SBNB_VM_DATA_DISK_NAME:-${CONFIG_DATA_DISK_NAME:-""}}
+  DATA_DISK_SIZE=${SBNB_VM_DATA_DISK_SIZE:-${CONFIG_DATA_DISK_SIZE:-""}}
 
   if [ -z "${HOSTNAME}" ]; then
     HOSTNAME="sbnb-vm-$(xxd -l6 -p /dev/random)"
@@ -156,9 +162,33 @@ start_vm() {
 
   # Attach disk and cdrom
   QEMU_CMD+=" \
-    -drive file=${BOOT_IMAGE},if=none,id=disk0,format=qcow2,snapshot=off \
+    -drive file=${BOOT_IMAGE},if=none,id=disk0,format=qcow2,snapshot=off,cache=none \
     -device scsi-hd,drive=disk0,bootindex=0 \
     -cdrom ${SEED_IMAGE}"
+
+  # Attach secondary data disk if specified
+  if [ -n "${DATA_DISK_NAME}" ]; then
+    DATA_FOLDER="${STORAGE}/data/"
+    DATA_IMAGE="${DATA_FOLDER}/${DATA_DISK_NAME}.qcow2"
+    mkdir -p "${DATA_FOLDER}"
+
+    # Get size for data disk
+    if [ -n "${DATA_DISK_SIZE}" ]; then
+      DISK_SIZE="${DATA_DISK_SIZE}"
+    else
+      # Fallback to storage partition size if no size specified
+      DISK_SIZE=$(df -k "${STORAGE}" | tail -n 1 | awk '{print $2}')
+    fi
+
+    # Create data disk if it doesn't exist
+    if [ ! -f "${DATA_IMAGE}" ]; then
+      qemu-img create -f qcow2 "${DATA_IMAGE}" "${DISK_SIZE}K"
+    fi
+
+    QEMU_CMD+=" \
+      -drive file=${DATA_IMAGE},if=none,id=datadisk0,format=qcow2,snapshot=off,cache=none \
+      -device scsi-hd,drive=datadisk0,serial=sbnb-data-disk"
+  fi
 
   QEMU_CMD+=" -device virtio-net-pci,netdev=br0,mac=${mac_address} -netdev bridge,id=br0,br=br0"
 
