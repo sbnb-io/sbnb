@@ -12,27 +12,31 @@
         vm_id: "{{ inventory_hostname + '-vm-' + 99999999 | random | to_uuid }}"
         args: ""
 
-    - name: Download configuration scripts
-      get_url:
-        url: "https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/scripts/{{ item }}"
+    - name: Copy configuration scripts
+      copy:
+        src: "{{ playbook_dir }}/../scripts/{{ item }}"
         dest: /dev/shm/
         mode: u+x
       loop:
-        - sbnb-configure-system.sh
-        - sbnb-configure-networking.sh
-        - sbnb-configure-storage.sh
-        - sbnb-start-vm.sh
+        - "sbnb-configure-system.sh"
+        - "sbnb-configure-networking.sh"
+        - "sbnb-configure-storage.sh"
+        - "sbnb-start-vm.sh"
 
     - name: Execute host configuration script
       command: sh /dev/shm/sbnb-configure-system.sh
 
+    - name: Set path to VM config
+      set_fact:
+        json_path: "{{ lookup('ansible.builtin.env', 'SBNB_VM_CONFIG_PATH', default='sbnb-example-vm.json') }}"
+
     - name: If VM json config exist
-      local_action: stat path=sbnb-example-vm.json
+      local_action: stat path="{{ json_path }}"
       connection: local
       register: file
 
     - name: Copy VM config if it exists
-      copy: src=sbnb-example-vm.json dest=/dev/shm/sbnb-example-vm.json
+      copy: src="{{ json_path }}" dest=/dev/shm/sbnb-example-vm.json
       when: file.stat.exists
 
     - name: Set args
