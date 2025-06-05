@@ -7,10 +7,21 @@
   tasks:
     - ping:
 
-    - name: Initialize an empty arguments list
+    - name: Include wordlists
+      include_vars:
+        file: wordlists.yaml
+
+    - name: Generate timestamp
       set_fact:
-        vm_id: "{{ inventory_hostname + '-vm-' + 99999999 | random | to_uuid }}"
-        args: ""
+        timestamp: "{{ '%Y%m%d%H%M%S' | strftime }}"
+
+    - name: Generate random seed
+      set_fact:
+        random_seed: "{{ timestamp | int }}"
+
+    - name: Generate human-readable VM name
+      set_fact:
+        vm_id: "{{ inventory_hostname + '-vm-' + adverbs | random(seed=random_seed) + '-' + adjectives | random(seed=random_seed) + '-' + names | random(seed=random_seed) }}"
 
     - name: Copy configuration scripts
       copy:
@@ -41,7 +52,7 @@
 
     - name: Set args
       set_fact:
-        args: "{{ args + '-f /dev/shm/sbnb-example-vm.json' }}"
+        args: "{{ '-f /dev/shm/sbnb-example-vm.json' }}"
       when: file.stat.exists
 
     - name: Print VM info
