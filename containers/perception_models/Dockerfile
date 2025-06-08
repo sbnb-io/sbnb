@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
 # Install conda
 # copy-pasted from https://github.com/anaconda/docker-images/blob/main/anaconda3/debian/Dockerfile
@@ -66,8 +66,9 @@ RUN set -x && \
 # Install Meta PerceptionLM
 RUN git clone https://github.com/facebookresearch/perception_models.git \
     && cd perception_models \
+    && sed -i 's/torchcodec==0.1.0/torchcodec==0.4.0/' requirements.txt \
     && conda create -y --name perception_models python=3.12 \
-    && conda run --no-capture-output -n perception_models pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 xformers --index-url https://download.pytorch.org/whl/cu124 \
+    && conda run --no-capture-output -n perception_models pip install torchcodec==0.4 torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 xformers --index-url https://download.pytorch.org/whl/cu128 \
     && conda install -n perception_models -y ffmpeg -c conda-forge \
-    && conda run --no-capture-output -n perception_models pip install torchcodec==0.1 --index-url=https://download.pytorch.org/whl/cu124 \
+    && conda run --no-capture-output -n perception_models pip install torchcodec==0.4 --index-url=https://download.pytorch.org/whl/cu128 \
     && conda run --no-capture-output -n perception_models pip install -e .
