@@ -154,7 +154,7 @@ start_vm() {
   # Define disk and iothread
   QEMU_CMD="/usr/qemu-svsm/bin/qemu-system-x86_64 \
     -enable-kvm \
-    -cpu EPYC-Milan-v2 \
+    -cpu host \
     -smp ${VCPU} \
     -object iothread,id=iothread0 \
     -device virtio-scsi-pci,id=scsi0,disable-legacy=on,iommu_platform=on,iothread=iothread0 \
