@@ -72,7 +72,7 @@ llm_benchmark run --custombenchmark=benchmarks.yml
 
 ---
 
-## Benchmark Results (tokens per second)
+## GPU Passthrough Overhead Benchmark Results (tokens per second)
 
 | Model             | Bare Metal | VM w/ GPU Passthrough | Penalty (%) |
 |------------------|------------|-------------------|-------------|
