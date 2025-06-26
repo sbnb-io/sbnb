@@ -13,6 +13,12 @@ In this article, we measure the performance penalty introduced by GPU passthroug
   - `phi4:14b`
   - `deepseek-r1:14b`
 
+## GPU Passthrough Architecture
+
+Here is a simplified diagram showing how GPU passthrough works using `vfio-pci` with AI Linux and a VM running Ubuntu:
+
+![GPU Passthrough Diagram](images/gpu-passthrough-diagram.jpg)
+
 ### ROCm Installation
 
 AMD ROCm drivers and tools were installed following the [official quick start guide](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/quick-start.html) using the steps below:
