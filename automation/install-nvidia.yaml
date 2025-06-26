@@ -17,3 +17,4 @@
         pkg:
         - nvidia-utils-{{ DRIVER_BRANCH }}-server
         - linux-modules-nvidia-{{ DRIVER_BRANCH }}-server-open-{{ ansible_kernel }}
+        - libnvidia-decode-{{ DRIVER_BRANCH }}-server
