@@ -1,0 +1,70 @@
+version: '3.8'
+services:
+  mqtt:
+    image: eclipse-mosquitto:latest
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+    networks:
+      - sunny-osprey-network
+
+  frigate:
+    image: ghcr.io/blakeblackshear/frigate:0.16.0-beta3-tensorrt
+    runtime: nvidia
+    shm_size: "512M"
+    ports:
+      - "8971:8971"
+      - "8554:8554"
+      - "8555:8555/tcp"
+      - "8555:8555/udp"
+    volumes:
+      - /mnt/sbnb-data/fg/media:/media/frigate
+      - /mnt/sbnb-data/fg/config:/config
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - sunny-osprey-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: -1 # this means we want all
+              capabilities: [gpu]
+
+  sunny-osprey:
+    image: sunny-osprey
+    ports:
+      - "8000:8000"
+    environment:
+      PORT: 8000
+      MQTT_HOST: mqtt
+      MQTT_PORT: 1883
+      FRIGATE_HOST: frigate
+      FRIGATE_PORT: 8971
+      HF_TOKEN: ${HF_TOKEN}
+      GRAFANA_HOST: ${GRAFANA_HOST:-http://localhost:3000}
+      GRAFANA_USERNAME: ${GRAFANA_USERNAME:-admin}
+      GRAFANA_PASSWORD: ${GRAFANA_PASSWORD}
+      GRAFANA_ORG_ID: ${GRAFANA_ORG_ID:-1}
+      VIDEO_CLIP_BASE_URL: ${VIDEO_CLIP_BASE_URL:-https://frigate:8971/explore}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      CHAT_ID: ${CHAT_ID}
+    volumes:
+      - /root/.cache/huggingface:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: -1 # this means we want all
+              capabilities: [gpu]
+    depends_on:
+      - frigate
+      - mqtt
+    networks:
+      - sunny-osprey-network
+
+networks:
+  sunny-osprey-network:

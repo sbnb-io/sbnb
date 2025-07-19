@@ -1,0 +1,49 @@
+---
+
+- hosts: "{{ lookup('ansible.builtin.env', 'SBNB_HOSTS') }}"
+  gather_facts: false
+  ignore_unreachable: true
+
+  tasks:
+    - name: Ensure conf dir exists for Frigate
+      file:
+        path: "/mnt/sbnb-data/fg/config/"
+        state: directory
+
+    - name: If Frigate config exists
+      local_action: stat path="frigate-config.yaml"
+      connection: local
+      register: file
+
+    - name: Copy Frigate config if it exists
+      copy: src=frigate-config.yaml dest=/mnt/sbnb-data/fg/config/config.yaml
+      when: file.stat.exists
+
+    - name: Copy model file for Frigate
+      ansible.builtin.copy:
+        src: yolo_nas_s.onnx
+        dest: /mnt/sbnb-data/fg/config/yolo_nas_s.onnx
+
+    - name: Copy mosquitto configuration
+      ansible.builtin.copy:
+        src: mosquitto.conf
+        dest: /dev/shm/mosquitto.conf
+
+    - name: Copy docker compose for sunny-osprey
+      ansible.builtin.copy:
+        src: docker-compose-sunny-osprey.yaml
+        dest: /dev/shm/docker-compose-sunny-osprey.yaml
+
+    - name: Create and start sunny-osprey services
+      community.docker.docker_compose_v2:
+        project_src: /dev/shm
+        files: docker-compose-sunny-osprey.yaml
+      environment:
+        HF_TOKEN: "{{ lookup('env', 'HF_TOKEN') }}"
+        GRAFANA_HOST: "{{ lookup('env', 'GRAFANA_HOST') | default('http://localhost:3000') }}"
+        GRAFANA_USERNAME: "{{ lookup('env', 'GRAFANA_USERNAME') | default('admin') }}"
+        GRAFANA_PASSWORD: "{{ lookup('env', 'GRAFANA_PASSWORD') | default('') }}"
+        GRAFANA_ORG_ID: "{{ lookup('env', 'GRAFANA_ORG_ID') | default('1') }}"
+        VIDEO_CLIP_BASE_URL: "{{ lookup('env', 'VIDEO_CLIP_BASE_URL') | default('https://frigate:8971/explore') }}"
+        TELEGRAM_BOT_TOKEN: "{{ lookup('env', 'TELEGRAM_BOT_TOKEN') | default('') }}"
+        CHAT_ID: "{{ lookup('env', 'CHAT_ID') | default('') }}"
