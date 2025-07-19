@@ -34,7 +34,7 @@ services:
               capabilities: [gpu]
 
   sunny-osprey:
-    image: sunny-osprey
+    image: sbnb/sunny-osprey
     ports:
       - "8000:8000"
     environment:
