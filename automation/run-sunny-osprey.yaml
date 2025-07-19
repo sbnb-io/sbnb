@@ -16,13 +16,17 @@
       register: file
 
     - name: Copy Frigate config if it exists
-      copy: src=frigate-config.yaml dest=/mnt/sbnb-data/fg/config/config.yaml
+      ansible.builtin.copy:
+        src: frigate-config.yaml
+        dest: /mnt/sbnb-data/fg/config/config.yaml
+        force: false
       when: file.stat.exists
 
     - name: Copy model file for Frigate
       ansible.builtin.copy:
         src: yolo_nas_s.onnx
         dest: /mnt/sbnb-data/fg/config/yolo_nas_s.onnx
+        force: false
 
     - name: Copy mosquitto configuration
       ansible.builtin.copy:

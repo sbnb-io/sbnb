@@ -14,6 +14,7 @@ services:
     image: ghcr.io/blakeblackshear/frigate:0.16.0-beta3-tensorrt
     runtime: nvidia
     shm_size: "512M"
+    restart: unless-stopped
     ports:
       - "8971:8971"
       - "8554:8554"
