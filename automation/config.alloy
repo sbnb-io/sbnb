@@ -16,8 +16,8 @@ prometheus.scrape "linux_node" {
 }
 
 prometheus.exporter.unix "node" {
-  set_collectors = ["cpu", "uname"]
-  enable_collectors = ["cpu", "uname"]
+  set_collectors = ["cpu", "uname", "meminfo", "filesystem"]
+  enable_collectors = ["cpu", "uname", "meminfo", "filesystem"]
 }
 
 prometheus.scrape "ipmi" {
