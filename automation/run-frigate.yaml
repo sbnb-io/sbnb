@@ -8,16 +8,33 @@
     LLM_ARGS: "{{ lookup('env','LLM_ARGS') }}"
 
   tasks:
+    - name: Ensures conf dir exists
+      file:
+        path: "/mnt/sbnb-data/fg/config/"
+        state: directory
+
+    - name: If Frigate config exist
+      local_action: stat path="frigate-config.yaml"
+      connection: local
+      register: file
+
+    - name: Copy Frigate config if it exists
+      copy: src=frigate-config.yaml dest=/mnt/sbnb-data/fg/config/config.yaml
+      when: file.stat.exists
+
+    - name: Copy model file
+      ansible.builtin.copy:
+        src: yolo_nas_s.onnx
+        dest: /mnt/sbnb-data/fg/config/yolo_nas_s.onnx
+
     - name: Start Frigate NVR container
       docker_container:
         name: frigate
-        image: sbnb/frigate
+        image: ghcr.io/blakeblackshear/frigate:0.16.0-beta3-tensorrt
         runtime: nvidia
         shm_size: "512M"
         stop_timeout: 30
         restart_policy: "unless-stopped"
-        env:
-          YOLO_MODELS: "yolov7-320"
         ports:
           - "8971:8971"
           - "8554:8554"
