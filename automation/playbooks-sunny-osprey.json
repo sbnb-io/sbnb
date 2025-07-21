@@ -1,0 +1,9 @@
+[
+  "sbnb-mount-data-disk.yaml",
+  "install-docker.yaml",
+  "install-nvidia.yaml",
+  "install-nvidia-container-toolkit.yaml",
+  "nvidia-smi-exporter.yaml",
+  "grafana.yaml",
+  "run-sunny-osprey.yaml"
+]
