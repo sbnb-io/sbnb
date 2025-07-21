@@ -1,0 +1,13 @@
+{
+  "scope": "test",
+  "parameters": {
+    "SBNB_VM_CONFIG_PATH": "sbnb-example-vm.json",
+    "SBNB_DATA_DISK_PASSPHRASE": "test_pw",
+    "GRAFANA_URL": "https://prometheus-prod-13-prod-us-east-0.grafana.net/api/prom/push",
+    "GRAFANA_USERNAME": "123456",
+    "GRAFANA_PASSWORD": "glc_test",
+    "TELEGRAM_BOT_TOKEN": "test",
+    "CHAT_ID": "123456",
+    "HF_TOKEN": "hf_test"
+  }
+} 
