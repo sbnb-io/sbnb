@@ -229,6 +229,8 @@ All components listed below are brand new and available in the U.S. market as of
 | PSU 600W                | 42          | [Amazon](https://www.amazon.com/dp/B014W3EMAO)     |
 | **Total**               | **1040**    |                                                    |
 
+To see what this configuration can achieve, check out [this submission](https://www.kaggle.com/competitions/google-gemma-3n-hackathon/writeups/sixth-sense-for-security-guards-powered-by-googles) to Google’s Gemma 3n Hackathon, which processes live feeds from 16 security cameras and provides video understanding.
+
 # Architecture and Technical Details
 
 Sbnb Linux is built from source using the Buildroot project. It leverages the [Buildroot br2-external mechanism](https://buildroot.org/downloads/manual/manual.html#outside-br-custom) to keep Sbnb-specific customizations separate, simplifying maintenance and enabling smooth rolling updates.
