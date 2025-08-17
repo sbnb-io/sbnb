@@ -206,6 +206,29 @@ make -j $(nproc)
 
 Happy developing! Contributions are encouraged and appreciated!
 
+## Hardware
+
+### AI computer ("GPUter")
+
+<p align="left">
+  <img src="images/ai-pc.jpg" alt="AI Computer ("GPUter")" width="640">
+  <br>
+  <em>This is our actual AI computer ("GPUter") build - and yes, it runs almost silently!</em>
+</p>
+
+All components listed below are brand new and available in the U.S. market as of 2025. This is our go-to configuration for affordable (\$1,040) yet powerful local AI compute. Hardware configurations may vary; the sky is the limit.
+
+| Component               | Price (USD) | Link                                               |
+| ----------------------- | ----------- | -------------------------------------------------- |
+| NVIDIA RTX 5060 Ti 16GB Blackwell (759 AI TOPS) | 429         | [Newegg](https://www.newegg.com/p/N82E16814932791) |
+| MotherBoard (B550M)     | 99         | [Amazon](https://www.amazon.com/dp/B0BDCZRBD6)     |
+| AMD Ryzen 5 5500 CPU    | 60          | [Amazon](https://www.amazon.com/dp/B09VCJ171S)     |
+| 32GB DDR4 RAM (2x16GB)  | 52          | [Amazon](https://www.amazon.com/dp/B07RW6Z692)     |
+| M.2 SSD 4TB             | 249         | [Amazon](https://www.amazon.com/dp/B0DHLBDSP7)     |
+| Case (JONSBO/JONSPLUS Z20 mATX)    | 109         | [Amazon](https://www.amazon.com/dp/B0D1YKXXJD)     |
+| PSU 600W                | 42          | [Amazon](https://www.amazon.com/dp/B014W3EMAO)     |
+| **Total**               | **1040**    |                                                    |
+
 # Architecture and Technical Details
 
 Sbnb Linux is built from source using the Buildroot project. It leverages the [Buildroot br2-external mechanism](https://buildroot.org/downloads/manual/manual.html#outside-br-custom) to keep Sbnb-specific customizations separate, simplifying maintenance and enabling smooth rolling updates.
