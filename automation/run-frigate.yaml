@@ -19,7 +19,7 @@
       register: file
 
     - name: Copy Frigate config if it exists
-      copy: src=frigate-config.yaml dest=/mnt/sbnb-data/fg/config/config.yaml
+      copy: src=frigate-config.yaml dest=/mnt/sbnb-data/fg/config/config.yaml force=false
       when: file.stat.exists
 
     - name: Copy model file
@@ -30,11 +30,13 @@
     - name: Start Frigate NVR container
       docker_container:
         name: frigate
-        image: ghcr.io/blakeblackshear/frigate:0.16.0-beta3-tensorrt
+        image: ghcr.io/blakeblackshear/frigate:0.16.0-tensorrt
         runtime: nvidia
         shm_size: "512M"
         stop_timeout: 30
         restart_policy: "unless-stopped"
+        pull: always
+        recreate: yes
         ports:
           - "8971:8971"
           - "8554:8554"
