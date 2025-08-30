@@ -12,6 +12,8 @@
       docker_container:
         name: omada
         image: mbentley/omada-controller:latest
+        pull: always
+        recreate: yes
         env:
           TZ: "Etc/UTC"
         network_mode: host
