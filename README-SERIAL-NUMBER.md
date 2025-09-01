@@ -27,3 +27,6 @@ Below are pictures from a test 1U rack-mount machine based on an ASRock motherbo
 ### Machine registered in Tailscale (tailnet)
 ![Sbnb Linux: Machine registered in Tailscale (tailnet)](images/serial-number-tailscale.png)
 
+
+## Note:
+When the motherboard serial number reported by dmidecode is a placeholder such as `To be filled by O.E.M.`, `Not Specified`, or `Default string`, the system will use the MAC address of the first physical network interface to generate the hostname (e.g. `sbnb-345a6078df18`). If no physical interface is found, it will fall back to a random hostname.
