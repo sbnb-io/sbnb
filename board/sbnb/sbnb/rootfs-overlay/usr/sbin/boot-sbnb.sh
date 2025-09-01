@@ -12,11 +12,23 @@ set -euxo pipefail
 
 # Function to set unique hostname using platform serial number
 set_hostname() {
+    # Define placeholder strings that indicate no real serial number set by the motherboard manufacturer
+    PLACEHOLDER_STRINGS="To be filled by O.E.M.|Not Specified|Default string"
+
+    # 1. Try dmidecode first
     SERIAL=$(dmidecode -s system-serial-number || echo "Not Specified")
-    if [ "${SERIAL}" = "Not Specified" ]; then
-        # Set random hostname if no platform serial number found
-        SERIAL=$(xxd -l6 -p /dev/random)
+
+    # 2. Check if dmidecode returned a placeholder value
+    if echo "${SERIAL}" | grep -qiE "(${PLACEHOLDER_STRINGS})"; then
+        # Use MAC address of first physical network interface
+        SERIAL=$(find /sys/class/net -maxdepth 1 -name "eth*" -o -name "en*" -o -name "wl*" | head -n 1 | xargs -I {} cat {}/address 2>/dev/null | tr -d ':')
+        if [ -z "${SERIAL}" ]; then
+            # Fallback to random if no physical interface found
+            SERIAL=$(xxd -l6 -p /dev/random)
+        fi
     fi
+
+    # sanitize serial number
     SERIAL=$(echo "${SERIAL}" | tr ' ' '-' | tr '[:upper:]' '[:lower:]') # Replace spaces with dashes and convert to lowercase
     hostname "sbnb-${SERIAL}"
 }
