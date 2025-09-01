@@ -55,6 +55,9 @@ After booting, verify that the server appears in your **Tailscale machine list**
 
 For more details on automatic hostname assignments, refer to [README-SERIAL-NUMBER.md](README-SERIAL-NUMBER.md).
 
+### Note:
+When the motherboard serial number reported by dmidecode is a placeholder such as `To be filled by O.E.M.`, `Not Specified`, or `Default string`, the system will use the MAC address of the first physical network interface to generate the hostname (e.g. `sbnb-345a6078df18`). If no physical interface is found, it will fall back to a random hostname.
+
 ## Done!
 You can now SSH into the server using Tailscale SSO methods, such as **Google Auth**.
 If you're having trouble connecting via SSH, check out this GitHub issue for detailed debugging steps:
