@@ -120,14 +120,30 @@ prepare_image() {
   qemu-img resize ${BOOT_IMAGE} ${IMAGE_SIZE}
 }
 
-# Map Nvidia GPU to vfio-pci if required
+# Define vendor and class IDs
+NVIDIA_VENDOR_ID="10de"
+AMD_VENDOR_ID="1002"
+VGA_CLASS_ID="0300"
+
+# Map Nvidia and AMD GPUs to vfio-pci if required, and keep a global list of GPUs to attach
+GPU_LIST=()
 map_gpus() {
   if [ "${ATTACH_GPUS}" = true ]; then
-    for gpu in $(lspci -nn | grep -i 10de | awk '{print $1}'); do
+    # Map Nvidia GPUs
+    for gpu in $(lspci -nn | grep -i ${NVIDIA_VENDOR_ID} | awk '{print $1}'); do
       vendor_device_id=$(lspci -n -s ${gpu} | awk '{print $3}')
       vendor_id=$(echo ${vendor_device_id} | cut -d: -f1)
       device_id=$(echo ${vendor_device_id} | cut -d: -f2)
       echo "${vendor_id} ${device_id}" > /sys/bus/pci/drivers/vfio-pci/new_id || true
+      GPU_LIST+=("${gpu}")
+    done
+    # Map AMD GPUs (VGA class)
+    for gpu in $(lspci -d ${AMD_VENDOR_ID}::${VGA_CLASS_ID} | awk '{print $1}'); do
+      vendor_device_id=$(lspci -n -s ${gpu} | awk '{print $3}')
+      vendor_id=$(echo ${vendor_device_id} | cut -d: -f1)
+      device_id=$(echo ${vendor_device_id} | cut -d: -f2)
+      echo "${vendor_id} ${device_id}" > /sys/bus/pci/drivers/vfio-pci/new_id || true
+      GPU_LIST+=("${gpu}")
     done
   fi
 }
@@ -205,7 +221,7 @@ start_vm() {
   fi
 
   if [ "${ATTACH_GPUS}" = true ]; then
-    for gpu in $(lspci -nn | grep -i 10de | awk '{print $1}'); do
+    for gpu in "${GPU_LIST[@]}"; do
       QEMU_CMD+=" -device vfio-pci,host=${gpu}"
     done
   fi
