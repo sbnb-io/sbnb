@@ -24,6 +24,8 @@ services:
       PORT: 8000
       LLM_BINDING_HOST: http://ollama:11434
       EMBEDDING_BINDING_HOST: http://ollama:11434
+    volumes:
+      - /mnt/sbnb-data/lightrag:/app/data
     depends_on:
       - ollama
     networks:
