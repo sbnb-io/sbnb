@@ -1,12 +1,18 @@
 #!/bin/sh
 set -euxo pipefail
 
+# Global mount point for sbnb USB flash
+SBNB_MNT="/mnt/sbnb"
+
+# Global tunnel start script filename
+TUNNEL_START_SCRIPT="tunnel-start.sh"
+
 # Sbnb Linux boot script executed by systemd at startup to perform the following tasks:
 # 1. Set a unique hostname using the platform's serial number or a random value if no serial number found
 # 2. Mount sbnb USB flash identified by PARTLABEL="sbnb" or LABEL="sbnb"
 # 3. Mount VMware shared folder shared by the host and named "sbnb" if we started in a VMware VM
 # 4. Find Tailscale key file "sbnb-tskey.txt"
-# 5. Start Tailscale tunnel
+# 5. Start tunnel
 # 6. Execute sbnb-cmds.sh if found
 # 7. Display ASCII banner and hostname/interface IP summary
 
@@ -37,7 +43,6 @@ set_hostname() {
 mount_sbnb_usb() {
     SBNB_DEV=$(blkid | grep -i 'LABEL="sbnb"\|PARTLABEL="sbnb"' | awk -F: '{print $1}' | head -n 1) || true
     if [ -n "${SBNB_DEV}" ]; then
-        SBNB_MNT="/mnt/sbnb"
         mkdir -p "${SBNB_MNT}" || true
         mount -o ro "${SBNB_DEV}" "${SBNB_MNT}" || true
     else
@@ -57,7 +62,7 @@ mount_vmware_shared_folder() {
 # Function to find Tailscale key file
 find_ts_key() {
     local key_file=""
-    local search_paths="/mnt/sbnb/sbnb-tskey.txt /mnt/vmware/sbnb-tskey.txt"
+    local search_paths="${SBNB_MNT}/sbnb-tskey.txt /mnt/vmware/sbnb-tskey.txt"
 
     for path in ${search_paths}; do
         if [ -f "${path}" ]; then
@@ -69,8 +74,17 @@ find_ts_key() {
     echo "${key_file}"
 }
 
-# Function to start Tailscale
-start_tailscale() {
+# Function to start tunnel
+start_tunnel() {
+    # Check if a pre-assembled tunnel script exists
+    local tunnel_script="${SBNB_MNT}/${TUNNEL_START_SCRIPT}"
+    if [ -f "${tunnel_script}" ]; then
+        echo "[sbnb] Executing pre-assembled tunnel script from ${tunnel_script}"
+        sh "${tunnel_script}"
+        return 0
+    fi
+
+    # Backward compatibility: use key file if script doesn't exist
     local ts_key_file
     ts_key_file=$(find_ts_key)
 
@@ -107,7 +121,7 @@ display_banner() {
 # Function to find and execute sbnb-cmds.sh
 execute_sbnb_cmds() {
     local cmd_file=""
-    local search_paths="/mnt/sbnb/sbnb-cmds.sh /mnt/vmware/sbnb-cmds.sh"
+    local search_paths="${SBNB_MNT}/sbnb-cmds.sh /mnt/vmware/sbnb-cmds.sh"
 
     for path in ${search_paths}; do
         if [ -f "${path}" ]; then
@@ -128,6 +142,6 @@ execute_sbnb_cmds() {
 set_hostname
 mount_sbnb_usb
 mount_vmware_shared_folder
-start_tailscale
+start_tunnel
 execute_sbnb_cmds
 display_banner
