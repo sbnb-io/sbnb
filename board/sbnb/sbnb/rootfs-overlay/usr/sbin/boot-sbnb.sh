@@ -12,8 +12,8 @@ TUNNEL_START_SCRIPT="tunnel-start.sh"
 # 2. Mount sbnb USB flash identified by PARTLABEL="sbnb" or LABEL="sbnb"
 # 3. Mount VMware shared folder shared by the host and named "sbnb" if we started in a VMware VM
 # 4. Find Tailscale key file "sbnb-tskey.txt"
-# 5. Start tunnel
-# 6. Execute sbnb-cmds.sh if found
+# 5. Execute sbnb-cmds.sh if found
+# 6. Start tunnel
 # 7. Display ASCII banner and hostname/interface IP summary
 
 # Function to set unique hostname using platform serial number
@@ -79,8 +79,7 @@ start_tunnel() {
     # Check if a pre-assembled tunnel script exists
     local tunnel_script="${SBNB_MNT}/${TUNNEL_START_SCRIPT}"
     if [ -f "${tunnel_script}" ]; then
-        echo "[sbnb] Executing pre-assembled tunnel script from ${tunnel_script}"
-        sh "${tunnel_script}"
+        echo "[sbnb] Tunnel script found at ${tunnel_script}, systemd service will handle execution"
         return 0
     fi
 
@@ -142,6 +141,6 @@ execute_sbnb_cmds() {
 set_hostname
 mount_sbnb_usb
 mount_vmware_shared_folder
-start_tunnel
 execute_sbnb_cmds
+start_tunnel
 display_banner

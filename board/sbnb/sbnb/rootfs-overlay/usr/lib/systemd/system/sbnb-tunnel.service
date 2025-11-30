@@ -1,0 +1,15 @@
+[Unit]
+Description=sbnb tunnel service
+After=sbnb.service
+Requires=sbnb.service
+ConditionPathExists=/mnt/sbnb/tunnel-start.sh
+
+[Service]
+Type=simple
+ExecStart=/bin/sh /mnt/sbnb/tunnel-start.sh
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+
