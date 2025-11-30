@@ -1,6 +1,9 @@
 #!/bin/sh
 set -euxo pipefail
 
+# Mount point for sbnb boot folder (USB flash with PARTLABEL or LABEL "sbnb")
+SBNB_MNT="/mnt/sbnb"
+
 # Sbnb Linux boot script executed by systemd at startup to perform the following tasks:
 # 1. Set a unique hostname using the platform's serial number or a random value if no serial number found
 # 2. Mount sbnb USB flash identified by PARTLABEL="sbnb" or LABEL="sbnb"
@@ -37,7 +40,6 @@ set_hostname() {
 mount_sbnb_usb() {
     SBNB_DEV=$(blkid | grep -i 'LABEL="sbnb"\|PARTLABEL="sbnb"' | awk -F: '{print $1}' | head -n 1) || true
     if [ -n "${SBNB_DEV}" ]; then
-        SBNB_MNT="/mnt/sbnb"
         mkdir -p "${SBNB_MNT}" || true
         mount -o ro "${SBNB_DEV}" "${SBNB_MNT}" || true
     else
@@ -57,7 +59,7 @@ mount_vmware_shared_folder() {
 # Function to find Tailscale key file
 find_ts_key() {
     local key_file=""
-    local search_paths="/mnt/sbnb/sbnb-tskey.txt /mnt/vmware/sbnb-tskey.txt"
+    local search_paths="${SBNB_MNT}/sbnb-tskey.txt /mnt/vmware/sbnb-tskey.txt"
 
     for path in ${search_paths}; do
         if [ -f "${path}" ]; then
@@ -80,7 +82,16 @@ start_tailscale() {
     fi
 
     echo "[sbnb] Starting Tailscale"
-    tailscale up --ssh --auth-key "file:${ts_key_file}"
+    
+    # Check for tags file in SBNB_MNT folder
+    local tags_arg=""
+    if [ -n "${SBNB_MNT}" ] && [ -f "${SBNB_MNT}/sbnb-tags.txt" ]; then
+        local tags
+        tags=$(cat "${SBNB_MNT}/sbnb-tags.txt" | tr -d '\n\r' | xargs)
+        [ -n "${tags}" ] && tags_arg="--advertise-tags=${tags}"
+    fi
+    
+    tailscale up --ssh --auth-key "file:${ts_key_file}" ${tags_arg}
 }
 
 # Function to display ASCII banner and hostname/interface IP summary
@@ -107,7 +118,7 @@ display_banner() {
 # Function to find and execute sbnb-cmds.sh
 execute_sbnb_cmds() {
     local cmd_file=""
-    local search_paths="/mnt/sbnb/sbnb-cmds.sh /mnt/vmware/sbnb-cmds.sh"
+    local search_paths="${SBNB_MNT}/sbnb-cmds.sh /mnt/vmware/sbnb-cmds.sh"
 
     for path in ${search_paths}; do
         if [ -f "${path}" ]; then
