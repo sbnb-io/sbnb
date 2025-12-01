@@ -108,10 +108,14 @@ fi
 read -p "Please provide your Tailscale API key (starting with 'tskey-api-') (press Enter to skip): " tailscaleApiKey
 if [ -n "$tailscaleApiKey" ]; then
     # Validate that the API key starts with "tskey-api-"
-    if [[ ! "$tailscaleApiKey" =~ ^tskey-api- ]]; then
-        echo -e "${RED}Error: Tailscale API key must start with 'tskey-api-'${NC}"
-        exit 1
-    fi
+    case "$tailscaleApiKey" in
+        tskey-api-*)
+            ;;
+        *)
+            echo -e "${RED}Error: Tailscale API key must start with 'tskey-api-'${NC}"
+            exit 1
+            ;;
+    esac
     
     echo -e "${YELLOW}Generating Tailscale OAuth key...${NC}"
     
@@ -144,10 +148,8 @@ if [ -n "$tailscaleApiKey" ]; then
     # Write tunnel-start.sh script
     tunnelStartScript="$espPath/tunnel-start.sh"
     echo -e "${YELLOW}Writing tunnel-start.sh to $tunnelStartScript${NC}"
-    cat > "$tunnelStartScript" << EOF
-tailscale up --auth-key='$oauthKey' --ssh --advertise-tags="tag:sbnb"
-EOF
-    chmod +x "$tunnelStartScript"
+    echo "tailscale up --auth-key='$oauthKey' --ssh --advertise-tags=\"tag:sbnb\"" | sudo tee "$tunnelStartScript" > /dev/null
+    sudo chmod +x "$tunnelStartScript"
     echo -e "${GREEN}tunnel-start.sh written and made executable${NC}"
 else
     echo -e "${YELLOW}No Tailscale API key provided. Skipping this step.${NC}"
@@ -158,7 +160,7 @@ read -p "Please provide the path to your script file (this script will be saved 
 if [ -n "$scriptFilePath" ] && [ -f "$scriptFilePath" ]; then
     scriptContent=$(cat "$scriptFilePath")
     scriptPath="$espPath/sbnb-cmds.sh"
-    echo "$scriptContent" > $scriptPath
+    echo "$scriptContent" | sudo tee "$scriptPath" > /dev/null
     echo -e "${YELLOW}Script saved to $scriptPath${NC}"
 else
     echo -e "${YELLOW}No valid script file provided. Skipping this step.${NC}"
