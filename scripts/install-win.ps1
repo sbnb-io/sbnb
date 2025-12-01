@@ -114,15 +114,55 @@ if (-not [string]::IsNullOrEmpty($espDriveLetter)) {
     exit
 }
 
-# Step 7.1: Ask user to provide Tailscale key and place it on the ESP partition
-$tailscaleKey = Read-Host "Please provide your Tailscale key (press Enter to skip)"
-if (-not [string]::IsNullOrEmpty($tailscaleKey)) {
-    $tailscaleKeyPath = "$($espDriveLetter):\sbnb-tskey.txt"
-    Write-Host "Tailscale key saving to $tailscaleKeyPath" -ForegroundColor Yellow
-    [System.IO.File]::WriteAllText($tailscaleKeyPath, $tailscaleKey)
-    Write-Host "Tailscale key saved to $tailscaleKeyPath" -ForegroundColor Green
+# Step 7.1: Ask user to provide Tailscale API key and generate OAuth key
+$tailscaleApiKey = Read-Host "Please provide your Tailscale API key (starting with 'tskey-api-') (press Enter to skip)"
+if (-not [string]::IsNullOrEmpty($tailscaleApiKey)) {
+    # Validate that the API key starts with "tskey-api-"
+    if (-not $tailscaleApiKey.StartsWith("tskey-api-")) {
+        Write-Host "Error: Tailscale API key must start with 'tskey-api-'" -ForegroundColor Red
+        exit 1
+    }
+    
+    Write-Host "Generating Tailscale OAuth key..." -ForegroundColor Yellow
+    
+    # Generate OAuth key using Tailscale API
+    $headers = @{
+        "Content-Type" = "application/json"
+        "Authorization" = "Bearer $tailscaleApiKey"
+    }
+    
+    $body = @{
+        "description" = "sbnb access"
+        "keyType" = "client"
+        "scopes" = @("auth_keys")
+        "tags" = @("tag:sbnb")
+    } | ConvertTo-Json
+    
+    try {
+        $oauthKeyResponse = Invoke-RestMethod -Uri "https://api.tailscale.com/api/v2/tailnet/-/keys" -Method Post -Headers $headers -Body $body
+        
+        # Extract the OAuth key from the response
+        $oauthKey = $oauthKeyResponse.key
+        
+        if ([string]::IsNullOrEmpty($oauthKey)) {
+            Write-Host "Error: Failed to generate OAuth key. Response: $($oauthKeyResponse | ConvertTo-Json)" -ForegroundColor Red
+            exit 1
+        }
+        
+        Write-Host "OAuth key generated successfully" -ForegroundColor Green
+        
+        # Write tunnel-start.sh script
+        $tunnelStartScript = "$($espDriveLetter):\tunnel-start.sh"
+        Write-Host "Writing tunnel-start.sh to $tunnelStartScript" -ForegroundColor Yellow
+        $tunnelStartScriptContent = "tailscale up --auth-key='$oauthKey' --ssh --advertise-tags=`"tag:sbnb`"`n"
+        [System.IO.File]::WriteAllText($tunnelStartScript, $tunnelStartScriptContent)
+        Write-Host "tunnel-start.sh written" -ForegroundColor Green
+    } catch {
+        Write-Host "Error: Failed to generate OAuth key. $_" -ForegroundColor Red
+        exit 1
+    }
 } else {
-    Write-Host "No Tailscale key provided. Skipping this step." -ForegroundColor Yellow
+    Write-Host "No Tailscale API key provided. Skipping this step." -ForegroundColor Yellow
 }
 
 # Step 7.2: Ask user to provide the path to a script file and place it on the ESP partition

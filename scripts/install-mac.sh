@@ -109,15 +109,53 @@ else
     exit
 fi
 
-# Step 7.1: Ask user to provide Tailscale key and place it on the ESP partition
-read -p "Please provide your Tailscale key (press Enter to skip): " tailscaleKey
-if [ -n "$tailscaleKey" ]; then
-    tailscaleKeyPath="$espPath/sbnb-tskey.txt"
-    echo -e "${YELLOW}Tailscale key saving to $tailscaleKeyPath${NC}"
-    echo "$tailscaleKey" > $tailscaleKeyPath
-    echo -e "${YELLOW}Tailscale key saved to $tailscaleKeyPath${NC}"
+# Step 7.1: Ask user to provide Tailscale API key and generate OAuth key
+read -p "Please provide your Tailscale API key (starting with 'tskey-api-') (press Enter to skip): " tailscaleApiKey
+if [ -n "$tailscaleApiKey" ]; then
+    # Validate that the API key starts with "tskey-api-"
+    if [[ ! "$tailscaleApiKey" =~ ^tskey-api- ]]; then
+        echo -e "${RED}Error: Tailscale API key must start with 'tskey-api-'${NC}"
+        exit 1
+    fi
+    
+    echo -e "${YELLOW}Generating Tailscale OAuth key...${NC}"
+    
+    # Generate OAuth key using Tailscale API
+    oauthKeyResponse=$(curl -s 'https://api.tailscale.com/api/v2/tailnet/-/keys' \
+        --request POST \
+        --header 'Content-Type: application/json' \
+        --header "Authorization: Bearer $tailscaleApiKey" \
+        --data '{
+        "description": "sbnb access",
+        "keyType": "client",
+        "scopes": [
+            "auth_keys"
+        ],
+        "tags": [
+            "tag:sbnb"
+        ]
+    }')
+    
+    # Extract the OAuth key from the response
+    oauthKey=$(echo "$oauthKeyResponse" | grep -oE '"key":"tskey-client-[^"]+"' | cut -d '"' -f 4)
+    
+    if [ -z "$oauthKey" ]; then
+        echo -e "${RED}Error: Failed to generate OAuth key. Response: $oauthKeyResponse${NC}"
+        exit 1
+    fi
+    
+    echo -e "${GREEN}OAuth key generated successfully${NC}"
+    
+    # Write tunnel-start.sh script
+    tunnelStartScript="$espPath/tunnel-start.sh"
+    echo -e "${YELLOW}Writing tunnel-start.sh to $tunnelStartScript${NC}"
+    cat > "$tunnelStartScript" << EOF
+tailscale up --auth-key='$oauthKey' --ssh --advertise-tags="tag:sbnb"
+EOF
+    chmod +x "$tunnelStartScript"
+    echo -e "${GREEN}tunnel-start.sh written and made executable${NC}"
 else
-    echo -e "${YELLOW}No Tailscale key provided. Skipping this step.${NC}"
+    echo -e "${YELLOW}No Tailscale API key provided. Skipping this step.${NC}"
 fi
 
 # Step 7.2: Ask user to provide the path to a script file and place it on the ESP partition
