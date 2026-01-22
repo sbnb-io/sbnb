@@ -1,0 +1,23 @@
+---
+# Storage role defaults
+
+# Mount point for the LVM logical volume
+sbnb_storage_mount: /mnt/sbnb-data
+
+# LVM volume group name
+sbnb_vg_name: sbnb-vg
+
+# LVM logical volume name
+sbnb_lv_name: sbnb-lv
+
+# Filesystem type for the logical volume
+sbnb_fs_type: ext4
+
+# Filesystem options (no reserved space for root)
+sbnb_fs_opts: -m 0
+
+# Drive patterns to search for (unpartitioned drives)
+sbnb_drive_patterns:
+  - "sd"
+  - "hd"
+  - "nvme"

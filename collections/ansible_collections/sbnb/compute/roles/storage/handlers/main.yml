@@ -1,0 +1,3 @@
+---
+# Storage role handlers
+# Currently no handlers needed - mount is handled directly in tasks

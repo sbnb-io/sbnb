@@ -1,0 +1,120 @@
+---
+# VM role - orchestrates all components for SBNB VM deployment
+# This is the main entry point that replaces the original sbnb-start-vm.yaml playbook
+
+# =============================================================================
+# Validation
+# =============================================================================
+- name: Validate Tailscale key is provided
+  ansible.builtin.assert:
+    that:
+      - sbnb_vm_tskey is defined
+      - sbnb_vm_tskey | length > 0
+    fail_msg: >
+      sbnb_vm_tskey must be defined (Tailscale authentication key).
+      Provide it via group_vars, host_vars, or -e sbnb_vm_tskey=...
+    quiet: true
+  when: sbnb_vm_state in ['present', 'started']
+
+# =============================================================================
+# Host Preparation
+# =============================================================================
+- name: Configure storage
+  ansible.builtin.include_role:
+    name: sbnb.compute.storage
+  when: sbnb_configure_storage | bool
+
+- name: Configure networking
+  ansible.builtin.include_role:
+    name: sbnb.compute.networking
+  when: sbnb_configure_networking | bool
+
+- name: Configure Docker
+  ansible.builtin.include_role:
+    name: sbnb.compute.docker
+  when: sbnb_configure_docker | bool
+
+- name: Flush handlers to ensure Docker is restarted before starting VM
+  ansible.builtin.meta: flush_handlers
+
+# =============================================================================
+# VM Name Generation
+# =============================================================================
+- name: Include wordlists for VM naming
+  ansible.builtin.include_vars:
+    file: wordlists.yml
+  when: sbnb_vm_name is not defined
+
+- name: Generate human-readable VM name
+  ansible.builtin.set_fact:
+    sbnb_vm_name: "sbnb-vm-{{ sbnb_adverbs | random }}-{{ sbnb_adjectives | random }}-{{ sbnb_animals | random }}"
+  when: sbnb_vm_name is not defined
+
+# =============================================================================
+# Display Configuration
+# =============================================================================
+- name: Display VM configuration
+  ansible.builtin.debug:
+    msg: |
+      VM Configuration:
+        Name:                {{ sbnb_vm_name }}
+        State:               {{ sbnb_vm_state }}
+        vCPUs:               {{ sbnb_vm_vcpu }}
+        Memory:              {{ sbnb_vm_mem }}
+        Disk Size:           {{ sbnb_vm_image_size }}
+        GPUs:                {{ sbnb_vm_attach_gpus }}
+        Confidential:        {{ sbnb_vm_confidential_computing }}
+        Data Disk:           {{ sbnb_vm_data_disk_name | default('none') }}
+
+# =============================================================================
+# VM Management
+# =============================================================================
+- name: Manage VM
+  sbnb.compute.qemu_vm:
+    name: "{{ sbnb_vm_name }}"
+    state: "{{ sbnb_vm_state }}"
+    vcpu: "{{ sbnb_vm_vcpu }}"
+    mem: "{{ sbnb_vm_mem }}"
+    image_url: "{{ sbnb_vm_image_url }}"
+    image_size: "{{ sbnb_vm_image_size }}"
+    tskey: "{{ sbnb_vm_tskey | default(omit) }}"
+    gpus: "{{ sbnb_vm_attach_gpus }}"
+    pcie_devices: "{{ sbnb_vm_attach_pcie_devices }}"
+    confidential_computing: "{{ sbnb_vm_confidential_computing }}"
+    data_disk_name: "{{ sbnb_vm_data_disk_name | default(omit) }}"
+    data_disk_size: "{{ sbnb_vm_data_disk_size | default(omit) }}"
+    storage_path: "{{ sbnb_storage_mount }}"
+    bridge: "{{ sbnb_bridge_name }}"
+    container_image: "{{ sbnb_docker_image }}"
+    pull_image: "{{ sbnb_docker_pull }}"
+    persist_boot_image: "{{ sbnb_vm_persist_boot_image }}"
+    root_password: "{{ sbnb_vm_root_password | default(omit) }}"
+  register: vm_result
+
+# =============================================================================
+# Output
+# =============================================================================
+- name: Set VM result facts for use by caller
+  ansible.builtin.set_fact:
+    sbnb_vm_result: "{{ vm_result }}"
+
+- name: Display VM result
+  ansible.builtin.debug:
+    msg: |
+      ============================================
+      VM {{ 'Created' if vm_result.changed else 'Unchanged' }}
+      ============================================
+        Name:         {{ vm_result.name }}
+        State:        {{ vm_result.state }}
+      {% if vm_result.container_short_id is defined %}
+        Container:    {{ vm_result.container_short_id }}
+      {% endif %}
+      {% if vm_result.gpus_attached | default([]) | length > 0 %}
+        GPUs:         {{ vm_result.gpus_attached | join(', ') }}
+      {% endif %}
+      {% if vm_result.state == 'running' %}
+
+        Connect via Tailscale SSH once VM is ready:
+          ssh {{ vm_result.name }}
+      {% endif %}
+      ============================================

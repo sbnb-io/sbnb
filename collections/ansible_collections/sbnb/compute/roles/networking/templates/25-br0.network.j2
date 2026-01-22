@@ -1,0 +1,13 @@
+[Match]
+Name={{ sbnb_bridge_name }}
+
+[Network]
+{% if sbnb_bridge_dhcp %}
+DHCP=yes
+{% else %}
+Address={{ sbnb_bridge_address }}
+Gateway={{ sbnb_bridge_gateway }}
+{% for dns in sbnb_bridge_dns | default([]) %}
+DNS={{ dns }}
+{% endfor %}
+{% endif %}

@@ -1,0 +1,74 @@
+---
+# VM role defaults
+# This role orchestrates storage, networking, docker, and VM creation
+
+# =============================================================================
+# Feature Flags - control which components are configured
+# =============================================================================
+sbnb_configure_storage: true
+sbnb_configure_networking: true
+sbnb_configure_docker: true
+
+# =============================================================================
+# Storage Configuration (passed to storage role)
+# =============================================================================
+sbnb_storage_mount: /mnt/sbnb-data
+sbnb_vg_name: sbnb-vg
+sbnb_lv_name: sbnb-lv
+
+# =============================================================================
+# Networking Configuration (passed to networking role)
+# =============================================================================
+sbnb_bridge_name: br0
+
+# =============================================================================
+# Docker Configuration (passed to docker role)
+# =============================================================================
+sbnb_docker_image: sbnb/svsm
+sbnb_docker_pull: always
+
+# =============================================================================
+# VM Configuration
+# =============================================================================
+# VM naming - if not set, generates random name like "sbnb-vm-a1b2c3d4"
+# sbnb_vm_name: my-custom-vm-name
+
+# VM state: present, absent, started, stopped
+sbnb_vm_state: present
+
+# Compute resources
+# Set to "max" to auto-calculate: total vCPUs - 2 (reserves 2 for hypervisor)
+sbnb_vm_vcpu: 2
+# Set to "max" to auto-calculate: total memory - 2GB (reserves 2GB for hypervisor)
+sbnb_vm_mem: "4G"
+
+# Storage
+sbnb_vm_image_size: "10G"
+sbnb_vm_image_url: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+
+# Optional data disk (set name to enable)
+# sbnb_vm_data_disk_name: "my-data"
+# sbnb_vm_data_disk_size: "100G"
+
+# GPU and PCIe passthrough
+# Set to true or "auto" to attach all GPUs, or provide list of PCI addresses
+sbnb_vm_attach_gpus: true
+sbnb_vm_attach_pcie_devices: []
+
+# Confidential computing (AMD SEV-SNP)
+sbnb_vm_confidential_computing: false
+
+# Persist boot disk (keeps changes across restarts, not deleted on remove)
+sbnb_vm_persist_boot_image: true
+
+# =============================================================================
+# Tailscale Configuration
+# =============================================================================
+# REQUIRED - must be provided via group_vars, host_vars, or extra vars
+# sbnb_vm_tskey: "tskey-auth-xxxxx"
+
+# =============================================================================
+# Console Access
+# =============================================================================
+# Optional root password for console access (useful when Tailscale unavailable)
+# sbnb_vm_root_password: "your-password"

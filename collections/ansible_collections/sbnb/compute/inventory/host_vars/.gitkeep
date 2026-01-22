@@ -1,0 +1,9 @@
+# Host-specific variables go here
+# Example: inventory/host_vars/worker-gpu-01.yml
+#
+# ---
+# sbnb_vm_name: ml-trainer-01
+# sbnb_vm_vcpu: 64
+# sbnb_vm_mem: "128G"
+# sbnb_vm_data_disk_name: datasets
+# sbnb_vm_data_disk_size: "1T"

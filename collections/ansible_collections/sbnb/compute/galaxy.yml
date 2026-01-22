@@ -1,0 +1,33 @@
+---
+namespace: sbnb
+name: compute
+version: 1.0.0
+readme: README.md
+authors:
+  - SBNB Team
+description: >
+  Ansible collection for managing SBNB virtual machines with QEMU/SVSM support.
+  Includes roles for storage (LVM), networking (bridge), Docker configuration,
+  and a custom module for QEMU VM management with GPU passthrough and
+  AMD SEV-SNP confidential computing support.
+license_file: LICENSE
+tags:
+  - qemu
+  - kvm
+  - virtualization
+  - gpu
+  - sev
+  - confidential_computing
+  - tailscale
+dependencies:
+  community.general: ">=7.0.0"
+  community.docker: ">=3.0.0"
+  ansible.posix: ">=1.5.0"
+repository: https://github.com/sbnb-io/sbnb/tree/main/collections
+documentation: https://github.com/sbnb-io/sbnb
+homepage: https://github.com/sbnb-io/sbnb
+issues: https://github.com/sbnb-io/sbnb/issues
+build_ignore:
+  - "*.pyc"
+  - "__pycache__"
+  - ".git"

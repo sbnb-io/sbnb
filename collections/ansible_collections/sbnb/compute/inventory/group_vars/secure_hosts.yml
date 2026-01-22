@@ -1,0 +1,12 @@
+---
+# Configuration for confidential computing hosts (AMD SEV-SNP)
+#
+# These settings apply to all hosts in the secure_hosts group
+
+# Enable AMD SEV-SNP confidential computing
+sbnb_vm_confidential_computing: true
+
+# Moderate resource allocation
+sbnb_vm_vcpu: 8
+sbnb_vm_mem: "16G"
+sbnb_vm_image_size: "50G"

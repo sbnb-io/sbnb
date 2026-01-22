@@ -1,0 +1,36 @@
+---
+# Example playbook to stop an SBNB VM
+#
+# Usage:
+#   ansible-playbook sbnb.compute.stop-vm -i inventory/hosts.yml -e sbnb_vm_name=my-vm
+
+- name: Stop SBNB VM
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: false
+
+  collections:
+    - sbnb.compute
+
+  vars:
+    sbnb_vm_state: stopped
+    # Skip host configuration when just stopping
+    sbnb_configure_storage: false
+    sbnb_configure_networking: false
+    sbnb_configure_docker: false
+
+  tasks:
+    - name: Validate VM name is provided
+      ansible.builtin.assert:
+        that:
+          - sbnb_vm_name is defined
+        fail_msg: "sbnb_vm_name must be provided with -e sbnb_vm_name=..."
+
+    - name: Stop VM
+      sbnb.compute.qemu_vm:
+        name: "{{ sbnb_vm_name }}"
+        state: stopped
+      register: vm_result
+
+    - name: Display result
+      ansible.builtin.debug:
+        msg: "VM {{ sbnb_vm_name }} is now {{ vm_result.state }}"

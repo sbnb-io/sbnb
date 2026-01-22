@@ -1,0 +1,18 @@
+---
+# Networking role defaults
+
+# Bridge interface name
+sbnb_bridge_name: br0
+
+# Path to systemd-networkd configuration
+sbnb_networkd_path: /etc/systemd/network
+
+# Enable DHCP on bridge
+sbnb_bridge_dhcp: true
+
+# Optional: static IP configuration (if sbnb_bridge_dhcp is false)
+# sbnb_bridge_address: 192.168.1.100/24
+# sbnb_bridge_gateway: 192.168.1.1
+# sbnb_bridge_dns:
+#   - 8.8.8.8
+#   - 8.8.4.4

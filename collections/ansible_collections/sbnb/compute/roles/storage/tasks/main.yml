@@ -1,0 +1,189 @@
+---
+# Storage role - configures LVM storage for SBNB VMs
+# Replaces: scripts/sbnb-configure-storage.sh
+
+- name: Check if mount point is already mounted
+  ansible.builtin.command:
+    cmd: mountpoint -q {{ sbnb_storage_mount }}
+  register: mount_check
+  changed_when: false
+  failed_when: false
+
+- name: Set storage already configured fact
+  ansible.builtin.set_fact:
+    sbnb_storage_configured: "{{ mount_check.rc == 0 }}"
+
+# =============================================================================
+# Discover Available Drives
+# =============================================================================
+
+- name: Get list of block devices
+  ansible.builtin.shell:
+    cmd: lsblk -dn -o NAME | grep -E '^(sd|hd|nvme)'
+  register: block_devices
+  changed_when: false
+  failed_when: false
+
+- name: Find drives without partitions and not in LVM
+  ansible.builtin.shell:
+    cmd: |
+      for disk in {{ block_devices.stdout_lines | join(' ') }}; do
+        # Check if disk has no partitions
+        if [ -z "$(lsblk -n -o NAME /dev/$disk | grep -v "^$disk$")" ]; then
+          # Check if disk is not already a PV
+          if ! pvs --noheadings -o pv_name 2>/dev/null | grep -q "/dev/$disk"; then
+            echo "/dev/$disk"
+          fi
+        fi
+      done
+  register: available_drives
+  changed_when: false
+  when: block_devices.stdout_lines | length > 0
+
+- name: Set available drives fact
+  ansible.builtin.set_fact:
+    sbnb_available_drives: "{{ available_drives.stdout_lines | default([]) }}"
+
+- name: Display discovered drives
+  ansible.builtin.debug:
+    msg: "Available drives for LVM: {{ sbnb_available_drives | join(', ') | default('none') }}"
+
+# =============================================================================
+# Check Existing LVM State
+# =============================================================================
+
+- name: Check if volume group exists
+  ansible.builtin.command:
+    cmd: vgdisplay {{ sbnb_vg_name }}
+  register: vg_check
+  changed_when: false
+  failed_when: false
+
+- name: Set VG exists fact
+  ansible.builtin.set_fact:
+    sbnb_vg_exists: "{{ vg_check.rc == 0 }}"
+
+- name: Check if logical volume exists
+  ansible.builtin.command:
+    cmd: lvdisplay /dev/{{ sbnb_vg_name }}/{{ sbnb_lv_name }}
+  register: lv_check
+  changed_when: false
+  failed_when: false
+
+- name: Set LV exists fact
+  ansible.builtin.set_fact:
+    sbnb_lv_exists: "{{ lv_check.rc == 0 }}"
+
+# =============================================================================
+# Create New LVM Setup (when VG doesn't exist)
+# =============================================================================
+
+- name: Create LVM setup from scratch
+  when:
+    - not sbnb_vg_exists
+    - sbnb_available_drives | length > 0
+  block:
+    - name: Create physical volumes
+      ansible.builtin.command:
+        cmd: pvcreate {{ item }}
+      loop: "{{ sbnb_available_drives }}"
+      register: pv_create
+
+    - name: Create volume group
+      ansible.builtin.command:
+        cmd: vgcreate {{ sbnb_vg_name }} {{ sbnb_available_drives | join(' ') }}
+      register: vg_create
+
+    - name: Create logical volume
+      ansible.builtin.command:
+        cmd: lvcreate -l 100%FREE -Zy -Wy --yes -n {{ sbnb_lv_name }} {{ sbnb_vg_name }}
+      register: lv_create
+
+    - name: Format logical volume
+      community.general.filesystem:
+        dev: /dev/{{ sbnb_vg_name }}/{{ sbnb_lv_name }}
+        fstype: "{{ sbnb_fs_type }}"
+        opts: "{{ sbnb_fs_opts }}"
+
+# =============================================================================
+# Extend Existing LVM (when VG exists and new drives available)
+# =============================================================================
+
+- name: Extend existing LVM with new drives
+  when:
+    - sbnb_vg_exists
+    - sbnb_available_drives | length > 0
+  block:
+    - name: Create physical volumes for new drives
+      ansible.builtin.command:
+        cmd: pvcreate {{ item }}
+      loop: "{{ sbnb_available_drives }}"
+
+    - name: Extend volume group with new drives
+      ansible.builtin.command:
+        cmd: vgextend {{ sbnb_vg_name }} {{ sbnb_available_drives | join(' ') }}
+
+    - name: Extend logical volume to use all free space
+      ansible.builtin.command:
+        cmd: lvextend -l +100%FREE /dev/{{ sbnb_vg_name }}/{{ sbnb_lv_name }}
+      register: lv_extend
+      failed_when: false
+
+    - name: Run filesystem check before resize
+      ansible.builtin.command:
+        cmd: e2fsck -f -y /dev/{{ sbnb_vg_name }}/{{ sbnb_lv_name }}
+      when: lv_extend.rc == 0
+      failed_when: false
+
+    - name: Resize filesystem
+      ansible.builtin.command:
+        cmd: resize2fs /dev/{{ sbnb_vg_name }}/{{ sbnb_lv_name }}
+      when: lv_extend.rc == 0
+
+# =============================================================================
+# Mount the Logical Volume
+# =============================================================================
+
+- name: Check if LV exists after setup
+  ansible.builtin.command:
+    cmd: lvdisplay /dev/{{ sbnb_vg_name }}/{{ sbnb_lv_name }}
+  register: final_lv_check
+  changed_when: false
+  failed_when: false
+
+- name: Mount logical volume
+  when: final_lv_check.rc == 0
+  block:
+    - name: Create mount point directory
+      ansible.builtin.file:
+        path: "{{ sbnb_storage_mount }}"
+        state: directory
+        mode: '0755'
+
+    - name: Mount the logical volume
+      ansible.posix.mount:
+        path: "{{ sbnb_storage_mount }}"
+        src: /dev/{{ sbnb_vg_name }}/{{ sbnb_lv_name }}
+        fstype: "{{ sbnb_fs_type }}"
+        state: mounted
+
+    - name: Create images directory
+      ansible.builtin.file:
+        path: "{{ sbnb_storage_mount }}/images"
+        state: directory
+        mode: '0755'
+
+    - name: Create data directory
+      ansible.builtin.file:
+        path: "{{ sbnb_storage_mount }}/data"
+        state: directory
+        mode: '0755'
+
+- name: Display storage status
+  ansible.builtin.debug:
+    msg: |
+      Storage Configuration:
+        Mount point: {{ sbnb_storage_mount }}
+        Volume group: {{ sbnb_vg_name }}
+        Logical volume: {{ sbnb_lv_name }}
+        Status: {{ 'mounted' if final_lv_check.rc == 0 else 'not configured' }}

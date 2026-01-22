@@ -1,0 +1,23 @@
+---
+# Global defaults for all hosts
+#
+# These can be overridden in group-specific or host-specific vars
+
+# Tailscale key - REQUIRED
+# Best practice: use environment variable or Ansible Vault
+# sbnb_vm_tskey: "{{ lookup('env', 'SBNB_VM_TSKEY') }}"
+
+# Default VM configuration
+sbnb_vm_vcpu: 2
+sbnb_vm_mem: "4G"
+sbnb_vm_image_size: "10G"
+
+# Storage configuration
+sbnb_storage_mount: /mnt/sbnb-data
+
+# Networking configuration
+sbnb_bridge_name: br0
+
+# Docker image
+sbnb_docker_image: sbnb/svsm
+sbnb_docker_pull: always

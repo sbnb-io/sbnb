@@ -1,0 +1,21 @@
+---
+# Example playbook to start an SBNB VM
+#
+# Usage:
+#   ansible-playbook sbnb.compute.start-vm -i inventory/hosts.yml -e sbnb_vm_tskey=tskey-auth-xxx
+#
+# Or with specific host:
+#   ansible-playbook sbnb.compute.start-vm -i inventory/hosts.yml -l worker-01 -e sbnb_vm_tskey=tskey-auth-xxx
+#
+# Preview changes (dry run):
+#   ansible-playbook sbnb.compute.start-vm -i inventory/hosts.yml --check --diff
+
+- name: Start SBNB VM
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: true
+
+  collections:
+    - sbnb.compute
+
+  roles:
+    - role: sbnb.compute.vm

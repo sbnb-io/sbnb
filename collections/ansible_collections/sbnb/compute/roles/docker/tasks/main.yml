@@ -1,0 +1,99 @@
+---
+# Docker role - configures Docker daemon for SBNB
+# Replaces: configure_docker() from scripts/sbnb-configure-system.sh
+
+- name: Check if Docker is installed
+  ansible.builtin.command:
+    cmd: which docker
+  register: docker_installed
+  changed_when: false
+  failed_when: false
+
+- name: Fail if Docker is not installed
+  ansible.builtin.fail:
+    msg: "Docker is not installed. Please install Docker before running this role."
+  when: docker_installed.rc != 0
+
+# =============================================================================
+# Check Current Configuration
+# =============================================================================
+
+- name: Check if Docker config file exists
+  ansible.builtin.stat:
+    path: "{{ sbnb_docker_config_path }}"
+  register: docker_config_stat
+
+- name: Read current Docker configuration
+  ansible.builtin.slurp:
+    src: "{{ sbnb_docker_config_path }}"
+  register: current_docker_config
+  when: docker_config_stat.stat.exists
+
+- name: Parse current Docker configuration
+  ansible.builtin.set_fact:
+    current_docker_json: "{{ current_docker_config.content | b64decode | from_json }}"
+  when: docker_config_stat.stat.exists
+
+- name: Check if Docker is already configured correctly
+  ansible.builtin.set_fact:
+    docker_already_configured: >-
+      {{
+        (current_docker_json['data-root'] | default('')) == sbnb_docker_data_root and
+        (current_docker_json.get('builder', {}).get('gc', {}).get('defaultKeepStorage', '') | string) == (sbnb_docker_builder_keep_storage | string)
+      }}
+  when: docker_config_stat.stat.exists
+
+- name: Set docker_already_configured to false if config doesn't exist
+  ansible.builtin.set_fact:
+    docker_already_configured: false
+  when: not docker_config_stat.stat.exists
+
+# =============================================================================
+# Configure Docker
+# =============================================================================
+
+- name: Configure Docker daemon
+  when: not docker_already_configured
+  block:
+    - name: Create Docker config directory
+      ansible.builtin.file:
+        path: "{{ sbnb_docker_config_path | dirname }}"
+        state: directory
+        mode: '0755'
+
+    - name: Create Docker data root directory
+      ansible.builtin.file:
+        path: "{{ sbnb_docker_data_root }}"
+        state: directory
+        mode: '0711'
+
+    - name: Build Docker daemon configuration
+      ansible.builtin.set_fact:
+        docker_daemon_config: >-
+          {{
+            {
+              'data-root': sbnb_docker_data_root,
+              'builder': {
+                'gc': {
+                  'enabled': true,
+                  'defaultKeepStorage': sbnb_docker_builder_keep_storage
+                }
+              }
+            } | combine(sbnb_docker_daemon_options)
+          }}
+
+    - name: Write Docker daemon configuration
+      ansible.builtin.template:
+        src: daemon.json.j2
+        dest: "{{ sbnb_docker_config_path }}"
+        mode: '0644'
+      notify: Restart Docker
+
+    - name: Display Docker configuration
+      ansible.builtin.debug:
+        msg: "Docker daemon configured with data-root: {{ sbnb_docker_data_root }}"
+
+- name: Display skip message if already configured
+  ansible.builtin.debug:
+    msg: "Docker is already configured to use {{ sbnb_docker_data_root }}"
+  when: docker_already_configured

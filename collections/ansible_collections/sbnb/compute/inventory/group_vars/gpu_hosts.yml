@@ -1,0 +1,12 @@
+---
+# Configuration for GPU-enabled hosts
+#
+# These settings apply to all hosts in the gpu_hosts group
+
+# Enable GPU passthrough
+sbnb_vm_attach_gpus: auto
+
+# Higher resource allocation for GPU workloads
+sbnb_vm_vcpu: 32
+sbnb_vm_mem: "64G"
+sbnb_vm_image_size: "100G"

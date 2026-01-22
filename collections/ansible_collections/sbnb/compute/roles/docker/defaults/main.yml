@@ -1,0 +1,17 @@
+---
+# Docker role defaults
+
+# Docker daemon configuration file path
+sbnb_docker_config_path: /etc/docker/daemon.json
+
+# Docker data root (where images, containers, volumes are stored)
+# Defaults to storage mount + /docker
+sbnb_docker_data_root: "{{ sbnb_storage_mount | default('/mnt/sbnb-data') }}/docker"
+
+# Docker builder cache settings
+# Set to "0" to disable build cache (saves memory on constrained hosts)
+# Set to e.g. "5GB" to limit cache size
+sbnb_docker_builder_keep_storage: "0"
+
+# Additional Docker daemon options (merged with defaults)
+sbnb_docker_daemon_options: {}
