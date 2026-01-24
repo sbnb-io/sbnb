@@ -64,6 +64,6 @@ RUN git clone https://github.com/coconut-svsm/svsm \
 
 # Prepare the final container with binary artifacts
 FROM debian:sid
-RUN apt-get update && apt install -y qemu-system-x86
+RUN apt-get update && apt-get install -y qemu-system-x86 genisoimage curl
 COPY --from=build /usr/qemu-svsm /usr/qemu-svsm
 COPY --from=build /svsm/bin/coconut-qemu.igvm /usr/qemu-svsm/coconut-qemu.igvm
