@@ -67,6 +67,9 @@ sbnb_vm_persist_boot_image: true
 # REQUIRED - must be provided via group_vars, host_vars, or extra vars
 # sbnb_vm_tskey: "tskey-auth-xxxxx"
 
+# Tailscale tags to advertise (must be pre-authorized in ACL policy)
+sbnb_vm_tailscale_tags: "tag:sbnb"
+
 # =============================================================================
 # Console Access
 # =============================================================================

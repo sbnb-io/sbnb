@@ -145,6 +145,14 @@ options:
     type: str
     no_log: true
 
+  tailscale_tags:
+    description:
+      - Tailscale tags to advertise when joining the network
+      - Comma-separated list of tags (e.g., "tag:sbnb,tag:dev")
+      - Tags must be pre-authorized in Tailscale ACL policy
+    type: str
+    default: "tag:sbnb"
+
 requirements:
   - docker (Python library)
   - Docker daemon running on target host
@@ -713,7 +721,7 @@ runcmd:
   - curl -fsSL https://tailscale.com/install.sh | sh
   - systemctl daemon-reload
   - systemctl enable tailscale-up.service
-  - tailscale up --ssh --auth-key={self.params['tskey']}
+  - tailscale up --ssh --advertise-tags={self.params['tailscale_tags']} --auth-key={self.params['tskey']}
 """
         with open(user_data_path, 'w') as f:
             f.write(user_data)
@@ -928,6 +936,7 @@ def main():
                            choices=['always', 'missing', 'never']),
             persist_boot_image=dict(type='bool', default=True),
             root_password=dict(type='str', no_log=True),
+            tailscale_tags=dict(type='str', default='tag:sbnb'),
         ),
         supports_check_mode=True,
     )

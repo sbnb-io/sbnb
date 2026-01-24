@@ -89,6 +89,7 @@
     pull_image: "{{ sbnb_docker_pull }}"
     persist_boot_image: "{{ sbnb_vm_persist_boot_image }}"
     root_password: "{{ sbnb_vm_root_password | default(omit) }}"
+    tailscale_tags: "{{ sbnb_vm_tailscale_tags }}"
   register: vm_result
 
 # =============================================================================
