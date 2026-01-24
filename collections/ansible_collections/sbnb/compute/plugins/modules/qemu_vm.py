@@ -325,12 +325,12 @@ def get_system_cpu_count():
 
 
 def get_system_memory_mb():
-    """Get total system memory in MB from /proc/meminfo."""
+    """Get available system memory in MB from /proc/meminfo."""
     try:
         with open('/proc/meminfo', 'r') as f:
             for line in f:
-                if line.startswith('MemTotal:'):
-                    # MemTotal is in kB, convert to MB
+                if line.startswith('MemAvailable:'):
+                    # MemAvailable is in kB, convert to MB
                     return int(line.split()[1]) // 1024
     except (IOError, OSError, ValueError, IndexError):
         pass
