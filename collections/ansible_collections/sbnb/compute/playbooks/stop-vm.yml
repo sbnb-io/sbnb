@@ -1,36 +1,40 @@
 ---
-# Example playbook to stop an SBNB VM
+# Stop or remove an SBNB VM
 #
 # Usage:
-#   ansible-playbook sbnb.compute.stop-vm -i inventory/hosts.yml -e sbnb_vm_name=my-vm
+#   Stop VM (can restart later):
+#     ansible-playbook -i host, playbooks/stop-vm.yml -e sbnb_vm_name=my-vm
+#
+#   Remove VM (delete container, keep boot disk):
+#     ansible-playbook -i host, playbooks/stop-vm.yml -e sbnb_vm_name=my-vm -e sbnb_vm_remove=true
+#
+#   Remove VM and delete boot disk:
+#     ansible-playbook -i host, playbooks/stop-vm.yml -e sbnb_vm_name=my-vm -e sbnb_vm_remove=true -e sbnb_vm_persist_boot_image=false
 
-- name: Stop SBNB VM
+- name: Stop/Remove SBNB VM
   hosts: "{{ target_hosts | default('all') }}"
   gather_facts: false
-
-  collections:
-    - sbnb.compute
-
-  vars:
-    sbnb_vm_state: stopped
-    # Skip host configuration when just stopping
-    sbnb_configure_storage: false
-    sbnb_configure_networking: false
-    sbnb_configure_docker: false
 
   tasks:
     - name: Validate VM name is provided
       ansible.builtin.assert:
         that:
           - sbnb_vm_name is defined
+          - sbnb_vm_name | length > 0
         fail_msg: "sbnb_vm_name must be provided with -e sbnb_vm_name=..."
+        quiet: true
 
-    - name: Stop VM
+    - name: Stop/Remove VM
       sbnb.compute.qemu_vm:
         name: "{{ sbnb_vm_name }}"
-        state: stopped
+        state: "{{ 'absent' if (sbnb_vm_remove | default(false) | bool) else 'stopped' }}"
+        persist_boot_image: "{{ sbnb_vm_persist_boot_image | default(true) }}"
+        storage_path: "{{ sbnb_storage_mount | default('/mnt/sbnb-data') }}"
       register: vm_result
 
     - name: Display result
       ansible.builtin.debug:
-        msg: "VM {{ sbnb_vm_name }} is now {{ vm_result.state }}"
+        msg: >-
+          VM {{ sbnb_vm_name }}
+          {{ 'removed' if (sbnb_vm_remove | default(false) | bool) else 'stopped' }}.
+          {{ 'Boot disk deleted.' if (sbnb_vm_remove | default(false) | bool) and not (sbnb_vm_persist_boot_image | default(true) | bool) else '' }}
