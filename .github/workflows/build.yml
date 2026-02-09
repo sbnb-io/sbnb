@@ -53,7 +53,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ~/.buildroot-ccache
-        key: buildroot-ccache
+        key: buildroot-ccache-v2
 
     - name: Buildroot output cache
       # Restoring and saving cache using a single action
@@ -64,7 +64,7 @@ jobs:
           buildroot/output/host
           buildroot/output/staging
           buildroot/output/target
-        key: buildroot-output
+        key: buildroot-output-v2
 
     - name: Configure
       run: |
