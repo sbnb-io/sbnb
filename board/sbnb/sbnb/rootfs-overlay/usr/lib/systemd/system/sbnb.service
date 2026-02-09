@@ -7,7 +7,7 @@ After=dev-disk-by\x2dpartlabel-sbnb.device
 
 [Service]
 Type=oneshot
-ExecStart=/usr/sbin/boot-sbnb.sh
+ExecStart=/usr/bin/boot-sbnb.sh
 RemainAfterExit=true
 
 [Install]

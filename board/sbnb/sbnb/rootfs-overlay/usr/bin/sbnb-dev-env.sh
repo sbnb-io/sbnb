@@ -31,4 +31,4 @@ docker run -it -d --privileged \
         --ulimit nofile=262144:262144 \
         ${IMAGE}
 
-docker exec -it ${NAME} bash -c /host/usr/sbin/_sbnb-dev-env-container.sh
+docker exec -it ${NAME} bash -c /host/usr/bin/_sbnb-dev-env-container.sh
