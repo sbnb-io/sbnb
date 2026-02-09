@@ -1,3 +1,4 @@
 [submodule "buildroot"]
 	path = buildroot
-	url = https://github.com/buildroot/buildroot
+	url = https://github.com/sbnb-io/buildroot.git
+	branch = sbnb-2025.11.1
