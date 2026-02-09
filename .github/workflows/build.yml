@@ -47,6 +47,12 @@ jobs:
       run: |
         git submodule init
         git submodule update
+
+    - name: Configure GitHub token for wget
+      run: |
+        echo "machine github.com login x-access-token password ${{ secrets.GITHUB_TOKEN }}" >> ~/.netrc
+        echo "machine codeload.github.com login x-access-token password ${{ secrets.GITHUB_TOKEN }}" >> ~/.netrc
+        chmod 600 ~/.netrc
         
     - name: Buildroot CCache
       # Restoring and saving cache using a single action
