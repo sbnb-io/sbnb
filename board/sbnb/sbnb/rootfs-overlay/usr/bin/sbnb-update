@@ -1,0 +1,91 @@
+#!/bin/sh
+# Update sbnb EFI image
+# Usage: sbnb-update <path-to-efi-file> [-r]
+
+set -e
+
+SBNB_MNT="/mnt/sbnb"
+EFI_PATH="${SBNB_MNT}/EFI/Boot/bootx64.efi"
+REBOOT=0
+
+usage() {
+    echo "Usage: sbnb-update <efi-file> [-r]"
+    echo ""
+    echo "Update sbnb EFI boot image"
+    echo ""
+    echo "Arguments:"
+    echo "  efi-file   Path to new sbnb.efi file"
+    echo "  -r         Reboot after update"
+    echo ""
+    echo "Example:"
+    echo "  sbnb-update /tmp/sbnb.efi"
+    echo "  sbnb-update /tmp/sbnb.efi -r"
+    exit 1
+}
+
+# Parse arguments
+EFI_FILE=""
+for arg in "$@"; do
+    case "$arg" in
+        -r|--reboot)
+            REBOOT=1
+            ;;
+        -h|--help)
+            usage
+            ;;
+        *)
+            if [ -z "$EFI_FILE" ]; then
+                EFI_FILE="$arg"
+            fi
+            ;;
+    esac
+done
+
+# Validate input
+if [ -z "$EFI_FILE" ]; then
+    echo "Error: No EFI file specified"
+    usage
+fi
+
+if [ ! -f "$EFI_FILE" ]; then
+    echo "Error: File not found: $EFI_FILE"
+    exit 1
+fi
+
+# Check if sbnb partition is mounted
+if ! mountpoint -q "$SBNB_MNT"; then
+    echo "Error: $SBNB_MNT is not mounted"
+    exit 1
+fi
+
+# Check if EFI directory exists
+if [ ! -d "${SBNB_MNT}/EFI/Boot" ]; then
+    echo "Error: EFI directory not found at ${SBNB_MNT}/EFI/Boot"
+    exit 1
+fi
+
+echo "Updating sbnb EFI image..."
+echo "  Source: $EFI_FILE"
+echo "  Target: $EFI_PATH"
+
+# Remount read-write
+echo "Remounting $SBNB_MNT read-write..."
+mount -o remount,rw "$SBNB_MNT"
+
+# Copy new EFI file
+echo "Copying EFI file..."
+cp "$EFI_FILE" "$EFI_PATH"
+sync
+
+# Remount read-only
+echo "Remounting $SBNB_MNT read-only..."
+mount -o remount,ro "$SBNB_MNT"
+
+echo "Update complete!"
+
+# Reboot if requested
+if [ "$REBOOT" -eq 1 ]; then
+    echo "Rebooting in 3 seconds..."
+    sleep 3
+    reboot
+fi
