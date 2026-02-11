@@ -1,0 +1,100 @@
+#!/bin/sh
+# WiFi setup helper for sbnb
+# Usage: wifi-setup <SSID> <PASSWORD> [INTERFACE]
+
+set -e
+
+SSID="$1"
+PASSWORD="$2"
+IFACE="${3:-wlan0}"
+CONF_FILE="/etc/wpa_supplicant/wpa_supplicant-${IFACE}.conf"
+
+usage() {
+    echo "Usage: wifi-setup <SSID> <PASSWORD> [INTERFACE]"
+    echo ""
+    echo "Arguments:"
+    echo "  SSID       WiFi network name"
+    echo "  PASSWORD   WiFi password"
+    echo "  INTERFACE  Wireless interface (default: wlan0)"
+    echo ""
+    echo "Examples:"
+    echo "  wifi-setup MyNetwork MyPassword"
+    echo "  wifi-setup MyNetwork MyPassword wlan1"
+    echo ""
+    echo "Other commands:"
+    echo "  wifi-scan [INTERFACE]  - Scan for available networks"
+    echo "  wifi-status            - Show connection status"
+    exit 1
+}
+
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    usage
+fi
+
+if [ -z "$SSID" ] || [ -z "$PASSWORD" ]; then
+    usage
+fi
+
+# Check if interface exists
+if ! ip link show "$IFACE" >/dev/null 2>&1; then
+    echo "Error: Interface $IFACE not found"
+    echo "Available wireless interfaces:"
+    iw dev 2>/dev/null | grep Interface | awk '{print "  " $2}'
+    exit 1
+fi
+
+echo "Configuring WiFi for interface $IFACE..."
+
+# Generate wpa_supplicant configuration
+cat > "$CONF_FILE" << EOF
+ctrl_interface=/var/run/wpa_supplicant
+ctrl_interface_group=0
+update_config=1
+
+EOF
+
+# Append network config using wpa_passphrase for secure PSK
+wpa_passphrase "$SSID" "$PASSWORD" >> "$CONF_FILE"
+
+# Remove plaintext password comment from wpa_passphrase output
+sed -i '/#psk=/d' "$CONF_FILE"
+
+echo "Configuration written to $CONF_FILE"
+
+# Stop existing service if running
+systemctl stop "wpa_supplicant@${IFACE}" 2>/dev/null || true
+
+# Enable and start wpa_supplicant service
+echo "Starting wpa_supplicant@${IFACE}..."
+systemctl enable "wpa_supplicant@${IFACE}"
+systemctl start "wpa_supplicant@${IFACE}"
+
+# Wait for connection
+echo "Waiting for connection..."
+for i in $(seq 1 10); do
+    sleep 1
+    if iw dev "$IFACE" link 2>/dev/null | grep -q "Connected"; then
+        echo "Connected to $SSID"
+
+        # Trigger DHCP if systemd-networkd is running
+        if systemctl is-active systemd-networkd >/dev/null 2>&1; then
+            networkctl reconfigure "$IFACE" 2>/dev/null || true
+        fi
+
+        # Show IP address
+        sleep 2
+        IP=$(ip -4 addr show "$IFACE" 2>/dev/null | grep inet | awk '{print $2}')
+        if [ -n "$IP" ]; then
+            echo "IP address: $IP"
+        else
+            echo "Waiting for IP address..."
+        fi
+        exit 0
+    fi
+    printf "."
+done
+
+echo ""
+echo "Connection timeout. Check your credentials and try again."
+echo "Use 'journalctl -u wpa_supplicant@${IFACE}' for details."
+exit 1

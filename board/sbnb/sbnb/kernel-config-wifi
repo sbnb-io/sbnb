@@ -1,0 +1,9 @@
+# WiFi USB driver support for Realtek adapters
+# Enables RTW88 USB drivers for RTL8811AU/RTL8821AU and similar
+
+# RTW88 USB support (modern driver)
+CONFIG_RTW88_USB=m
+CONFIG_RTW88_8822BU=m
+CONFIG_RTW88_8822CU=m
+CONFIG_RTW88_8723DU=m
+CONFIG_RTW88_8821CU=m

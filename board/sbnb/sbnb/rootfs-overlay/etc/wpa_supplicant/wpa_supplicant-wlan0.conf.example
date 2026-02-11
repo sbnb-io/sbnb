@@ -1,0 +1,21 @@
+# WiFi Configuration Template for sbnb
+# Copy this file to wpa_supplicant-wlan0.conf and edit with your network details
+#
+# Quick setup using wpa_passphrase:
+#   wpa_passphrase "YourSSID" "YourPassword" > /etc/wpa_supplicant/wpa_supplicant-wlan0.conf
+#
+# Then enable and start the service:
+#   systemctl enable --now wpa_supplicant@wlan0
+
+ctrl_interface=/var/run/wpa_supplicant
+ctrl_interface_group=0
+update_config=1
+
+network={
+    ssid="YOUR_NETWORK_SSID"
+    psk="YOUR_PASSWORD"
+    key_mgmt=WPA-PSK
+    proto=RSN
+    pairwise=CCMP
+    group=CCMP
+}

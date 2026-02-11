@@ -1,0 +1,35 @@
+#!/bin/sh
+# Scan for available WiFi networks
+# Usage: wifi-scan [INTERFACE]
+
+IFACE="${1:-wlan0}"
+
+# Check if interface exists
+if ! ip link show "$IFACE" >/dev/null 2>&1; then
+    echo "Error: Interface $IFACE not found"
+    echo "Available wireless interfaces:"
+    iw dev 2>/dev/null | grep Interface | awk '{print "  " $2}'
+    exit 1
+fi
+
+# Bring interface up if down
+ip link set "$IFACE" up 2>/dev/null || true
+
+echo "Scanning for networks on $IFACE..."
+echo ""
+
+# Scan and display results
+iw dev "$IFACE" scan 2>/dev/null | grep -E "SSID:|signal:|freq:" | \
+    sed 'N;N;s/\n/ /g' | \
+    awk '{
+        signal=""; ssid=""; freq=""
+        for(i=1;i<=NF;i++) {
+            if($i=="signal:") signal=$(i+1)
+            if($i=="freq:") freq=$(i+1)
+            if($i=="SSID:") {ssid=""; for(j=i+1;j<=NF;j++) {if($j~/signal:|freq:/) break; ssid=ssid" "$j}}
+        }
+        if(ssid!="" && ssid!=" ") printf "%-30s %s dBm  %s MHz\n", ssid, signal, freq
+    }' | sort -t'd' -k1 -rn | head -20
+
+echo ""
+echo "Use 'wifi-setup <SSID> <PASSWORD>' to connect"
