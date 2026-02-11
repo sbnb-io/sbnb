@@ -38,29 +38,23 @@ Follow the instructions in [README-INSTALL.md](README-INSTALL.md). After booting
 ### **2. Connect Your Laptop to Tailscale**
 This guide assumes a MacBook, but any Linux-based machine will work similarly.
 
-### **3. Download Tailscale Dynamic Inventory Script**
+### **3. Clone the Sbnb Repository**
 ```sh
-curl https://raw.githubusercontent.com/m4wh6k/ansible-tailscale-inventory/refs/heads/main/ansible_tailscale_inventory.py -O
-chmod +x ansible_tailscale_inventory.py
-```
-
-### **4. Pull Ansible Playbook**
-```sh
-curl -O https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/automation/sbnb-configure-system.yaml
+git clone https://github.com/sbnb-io/sbnb.git
+cd sbnb
 ```
 
 Under the hood, the Ansible playbook executes three scripts, [sbnb-configure-storage.sh](https://github.com/sbnb-io/sbnb/blob/main/scripts/sbnb-configure-storage.sh), [sbnb-configure-networking.sh](https://github.com/sbnb-io/sbnb/blob/main/scripts/sbnb-configure-networking.sh), and [sbnb-configure-system.sh](https://github.com/sbnb-io/sbnb/blob/main/scripts/sbnb-configure-system.sh) for those interested in a deeper dive.
 
-### **5. Set Environment Variables**
-```sh
-export SBNB_HOSTS=sbnb-F6S0R8000719
-```
-Replace `sbnb-F6S0R8000719` to your hostname.
+### **4. Run Ansible Playbook**
 
-### **6. Run Ansible Playbook**
+Tailscale's Magic DNS allows you to use hostnames directly:
 ```sh
-ansible-playbook -i ./ansible_tailscale_inventory.py sbnb-configure-system.yaml
+ansible-playbook -i sbnb-F6S0R8000719, \
+  collections/ansible_collections/sbnb/compute/playbooks/configure-system.yml
 ```
+
+Replace `sbnb-F6S0R8000719` with your server's Tailscale hostname.
 
 **Congratulations!** Your storage and network configurations are now automated!
 

@@ -13,13 +13,7 @@ Confirm that the Sbnb Linux instance shows up in the Tailscale machine list. The
 ### 2. Connect Your Laptop to Tailscale
 We will use a MacBook in this tutorial, but any machine, such as a Linux instance, should work the same.
 
-### 3. Download Tailscale Dynamic Inventory Script
-```sh
-curl https://raw.githubusercontent.com/m4wh6k/ansible-tailscale-inventory/refs/heads/main/ansible_tailscale_inventory.py -O
-chmod +x ansible_tailscale_inventory.py
-```
-
-### 4. Create a Simple Ansible Playbook
+### 3. Create a Simple Ansible Playbook
 Create a file `docker.yaml`:
 
 ```yaml
@@ -38,15 +32,19 @@ Create a file `docker.yaml`:
 Replace `hosts: sbnb-F6S0R8000719` with your host.
 This Ansible Playbook will start an `ubuntu:24.04` container with an infinite sleep inside. This is only for demonstration purposes.
 
-### 5. Apply Ansible Playbook to the Real Server
+### 4. Apply Ansible Playbook to the Real Server
+
+Tailscale's Magic DNS allows you to use hostnames directly. Simply pass the hostname with a trailing comma:
 ```sh
-ansible-playbook -i ./ansible_tailscale_inventory.py docker.yml
+ansible-playbook -i sbnb-F6S0R8000719, docker.yml
 ```
+
+Replace `sbnb-F6S0R8000719` with your actual hostname.
 
 A successful output should look like this:
 
 ```
-# ansible-playbook -i ./ansible_tailscale_inventory.py docker.yml 
+# ansible-playbook -i sbnb-F6S0R8000719, docker.yml 
 
 PLAY [sbnb-F6S0R8000719] **********************************************************************************************************************
 
@@ -60,7 +58,7 @@ PLAY RECAP *********************************************************************
 sbnb-F6S0R8000719          : ok=2    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
 ```
 
-### 6. Control the Docker Container Started on the Bare Metal
+### 5. Control the Docker Container Started on the Bare Metal
 SSH into the Sbnb Linux instance and validate that the container with the name `sleepy` is running:
 ```sh
 # docker ps

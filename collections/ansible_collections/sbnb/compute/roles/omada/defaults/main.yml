@@ -1,0 +1,16 @@
+---
+# Omada role defaults
+
+# Container configuration
+sbnb_omada_container_name: omada
+sbnb_omada_image: mbentley/omada-controller:latest
+sbnb_omada_state: started
+sbnb_omada_pull: always
+sbnb_omada_recreate: true
+
+# Timezone
+sbnb_omada_timezone: "Etc/UTC"
+
+# Storage paths
+sbnb_omada_data_path: /mnt/sbnb-data/omada/omada-data
+sbnb_omada_logs_path: /mnt/sbnb-data/omada/omada-logs

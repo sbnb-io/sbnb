@@ -1,0 +1,131 @@
+---
+# Monitoring role - runs Grafana Alloy and optional IPMI exporter
+# Source: grafana.yaml
+
+- name: Copy Grafana Alloy config
+  ansible.builtin.template:
+    src: config.alloy.j2
+    dest: "{{ sbnb_monitoring_alloy_config_path }}"
+    mode: '0644'
+  when: sbnb_monitoring_state == 'started'
+
+# =============================================================================
+# IPMI Exporter (optional)
+# =============================================================================
+- name: Check if IPMI device exists
+  ansible.builtin.stat:
+    path: "{{ sbnb_monitoring_ipmi_device }}"
+  register: ipmi_dev_exist
+
+- name: Start IPMI exporter container
+  community.docker.docker_container:
+    name: "{{ sbnb_monitoring_ipmi_container_name }}"
+    image: "{{ sbnb_monitoring_ipmi_image }}"
+    state: started
+    network_mode: host
+    user: "0:0"
+    devices:
+      - "{{ sbnb_monitoring_ipmi_device }}:{{ sbnb_monitoring_ipmi_device }}:rwm"
+  register: ipmi_container_result
+  retries: 40
+  delay: 15
+  until: ipmi_container_result is succeeded
+  when: sbnb_monitoring_state == 'started' and ipmi_dev_exist.stat.exists and sbnb_monitoring_enable_ipmi | bool
+
+# =============================================================================
+# NVIDIA GPU Exporter (optional)
+# =============================================================================
+- name: Check if nvidia-smi exists
+  ansible.builtin.stat:
+    path: /usr/bin/nvidia-smi
+  register: nvidia_smi_exist
+
+- name: Start NVIDIA DCGM exporter container
+  community.docker.docker_container:
+    name: "{{ sbnb_monitoring_nvidia_container_name }}"
+    image: "{{ sbnb_monitoring_nvidia_image }}"
+    state: started
+    network_mode: host
+    runtime: nvidia
+    env:
+      DCGM_EXPORTER_NO_HOSTNAME: "1"
+    device_requests:
+      - driver: nvidia
+        count: -1
+        capabilities:
+          - - gpu
+  register: nvidia_container_result
+  retries: 40
+  delay: 15
+  until: nvidia_container_result is succeeded
+  when: sbnb_monitoring_state == 'started' and nvidia_smi_exist.stat.exists and sbnb_monitoring_enable_nvidia | bool
+
+# =============================================================================
+# Grafana Alloy
+# =============================================================================
+- name: Validate Grafana credentials are provided
+  ansible.builtin.assert:
+    that:
+      - sbnb_monitoring_grafana_url is defined
+      - sbnb_monitoring_grafana_username is defined
+      - sbnb_monitoring_grafana_password is defined
+    fail_msg: "Grafana credentials must be provided (url, username, password)"
+    quiet: true
+  when: sbnb_monitoring_state == 'started'
+
+- name: Start Grafana Alloy container
+  community.docker.docker_container:
+    name: "{{ sbnb_monitoring_alloy_container_name }}"
+    image: "{{ sbnb_monitoring_alloy_image }}"
+    state: started
+    privileged: true
+    network_mode: host
+    volumes:
+      - /proc:/proc
+      - "{{ sbnb_monitoring_alloy_config_path }}:/etc/alloy/config.alloy"
+    env:
+      GRAFANA_URL: "{{ sbnb_monitoring_grafana_url }}"
+      GRAFANA_USERNAME: "{{ sbnb_monitoring_grafana_username }}"
+      GRAFANA_PASSWORD: "{{ sbnb_monitoring_grafana_password }}"
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+  register: alloy_container_result
+  retries: 40
+  delay: 15
+  until: alloy_container_result is succeeded
+  when: sbnb_monitoring_state == 'started'
+
+# =============================================================================
+# Stop containers
+# =============================================================================
+- name: Stop Grafana Alloy container
+  community.docker.docker_container:
+    name: "{{ sbnb_monitoring_alloy_container_name }}"
+    state: absent
+  when: sbnb_monitoring_state == 'absent'
+
+- name: Stop IPMI exporter container
+  community.docker.docker_container:
+    name: "{{ sbnb_monitoring_ipmi_container_name }}"
+    state: absent
+  when: sbnb_monitoring_state == 'absent'
+
+- name: Stop NVIDIA GPU exporter container
+  community.docker.docker_container:
+    name: "{{ sbnb_monitoring_nvidia_container_name }}"
+    state: absent
+  when: sbnb_monitoring_state == 'absent'
+
+- name: Display monitoring status
+  ansible.builtin.debug:
+    msg: |
+      Monitoring:
+        State: {{ sbnb_monitoring_state }}
+        Grafana Alloy: {{ sbnb_monitoring_alloy_container_name }}
+        IPMI Exporter: {{ 'enabled' if (ipmi_dev_exist.stat.exists and sbnb_monitoring_enable_ipmi) else 'disabled' }}
+        NVIDIA Exporter: {{ 'enabled' if (nvidia_smi_exist.stat.exists and sbnb_monitoring_enable_nvidia) else 'disabled' }}
+        Alloy UI: http://{{ inventory_hostname }}:12345/
+  when: sbnb_monitoring_state == 'started'

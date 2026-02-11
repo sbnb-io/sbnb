@@ -1,0 +1,7 @@
+---
+# NVIDIA role handlers
+
+- name: Restart Docker for NVIDIA
+  ansible.builtin.service:
+    name: docker
+    state: restarted

@@ -1,0 +1,46 @@
+---
+# Data disk role - mounts encrypted LUKS data disk
+# Source: sbnb-mount-data-disk.yaml
+
+- name: Validate passphrase is provided
+  ansible.builtin.assert:
+    that:
+      - sbnb_data_disk_passphrase is defined
+      - sbnb_data_disk_passphrase | length > 0
+    fail_msg: "sbnb_data_disk_passphrase must be provided"
+    quiet: true
+
+- name: Open LUKS container
+  community.crypto.luks_device:
+    device: "{{ sbnb_data_disk_device }}"
+    state: opened
+    name: "{{ sbnb_data_disk_mapper_name }}"
+    passphrase: "{{ sbnb_data_disk_passphrase }}"
+
+- name: Create ext4 filesystem if not exists
+  community.general.filesystem:
+    fstype: ext4
+    dev: "/dev/mapper/{{ sbnb_data_disk_mapper_name }}"
+    opts: "-m 0"
+  when: sbnb_data_disk_format | bool
+
+- name: Ensure mount point exists
+  ansible.builtin.file:
+    path: "{{ sbnb_data_disk_mount_path }}"
+    state: directory
+    mode: '0755'
+
+- name: Mount data disk
+  ansible.posix.mount:
+    src: "/dev/mapper/{{ sbnb_data_disk_mapper_name }}"
+    path: "{{ sbnb_data_disk_mount_path }}"
+    fstype: ext4
+    state: mounted
+
+- name: Display data disk status
+  ansible.builtin.debug:
+    msg: |
+      Data Disk Mounted:
+        Device: {{ sbnb_data_disk_device }}
+        Mapper: /dev/mapper/{{ sbnb_data_disk_mapper_name }}
+        Mount: {{ sbnb_data_disk_mount_path }}

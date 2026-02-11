@@ -1,0 +1,23 @@
+---
+# External role dependencies for sbnb.compute collection
+#
+# Install with:
+#   ansible-galaxy install -r requirements.yml
+
+roles:
+  # Docker installation for VMs (stock Docker CE)
+  - name: geerlingguy.docker
+    version: "7.4.1"
+
+collections:
+  # Required for LUKS operations in data_disk role
+  - name: community.crypto
+
+  # Required for filesystem and mount operations
+  - name: community.general
+
+  # Required for mount operations
+  - name: ansible.posix
+
+  # Required for docker_container and docker_compose_v2
+  - name: community.docker

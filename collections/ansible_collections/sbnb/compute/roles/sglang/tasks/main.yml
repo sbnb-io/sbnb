@@ -1,0 +1,86 @@
+---
+# SGLang role - runs SGLang inference server
+# Source: run-sglang.yaml
+
+- name: Validate HuggingFace token is provided
+  ansible.builtin.assert:
+    that:
+      - sbnb_sglang_hf_token is defined
+      - sbnb_sglang_hf_token | length > 0
+    fail_msg: "sbnb_sglang_hf_token must be provided for model downloads"
+    quiet: true
+  when: sbnb_sglang_require_hf_token | bool
+
+- name: Ensure cache directory exists
+  ansible.builtin.file:
+    path: "{{ sbnb_sglang_cache_path }}"
+    state: directory
+    mode: '0755'
+
+- name: Set SGLang volumes
+  ansible.builtin.set_fact:
+    _sglang_volumes:
+      - "{{ sbnb_sglang_cache_path }}:/root/.cache/huggingface"
+      - "{{ sbnb_sglang_data_path }}:/mnt/sbnb-data/src"
+
+- name: Set SGLang environment
+  ansible.builtin.set_fact:
+    _sglang_env:
+      HF_TOKEN: "{{ sbnb_sglang_hf_token | default('') }}"
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+
+- name: Build SGLang command
+  ansible.builtin.set_fact:
+    _sglang_command: >-
+      python -m sglang.launch_server
+      --model-path {{ sbnb_sglang_model }}
+      --host 0.0.0.0 --port 8000
+      {{ sbnb_sglang_extra_args }}
+
+- name: Debug command
+  ansible.builtin.debug:
+    msg: |
+      Extra args: [{{ sbnb_sglang_extra_args }}]
+      Full command: [{{ _sglang_command }}]
+
+- name: Start SGLang container
+  community.docker.docker_container:
+    name: "{{ sbnb_sglang_container_name }}"
+    image: "{{ sbnb_sglang_image }}"
+    state: "{{ sbnb_sglang_state }}"
+    runtime: nvidia
+    ipc_mode: host
+    shm_size: "{{ sbnb_sglang_shm_size }}"
+    pull: "{{ sbnb_sglang_pull }}"
+    recreate: "{{ sbnb_sglang_recreate }}"
+    env: "{{ _sglang_env }}"
+    ports: "{{ sbnb_sglang_ports }}"
+    volumes: "{{ _sglang_volumes }}"
+    device_requests:
+      - driver: nvidia
+        count: -1
+        capabilities:
+          - - gpu
+            - nvidia
+    command: "{{ _sglang_command }}"
+  register: container_result
+  retries: 40
+  delay: 15
+  until: container_result is succeeded
+  when: sbnb_sglang_state == 'started'
+
+- name: Stop SGLang container
+  community.docker.docker_container:
+    name: "{{ sbnb_sglang_container_name }}"
+    state: absent
+  when: sbnb_sglang_state == 'absent'
+
+- name: Display SGLang status
+  ansible.builtin.debug:
+    msg: |
+      SGLang Container:
+        Name: {{ sbnb_sglang_container_name }}
+        State: {{ sbnb_sglang_state }}
+        Image: {{ sbnb_sglang_image }}
+        Command: {{ _sglang_command }}
+  when: sbnb_sglang_state == 'started'

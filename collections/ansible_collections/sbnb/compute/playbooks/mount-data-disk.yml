@@ -1,0 +1,31 @@
+---
+# Mount encrypted LUKS data disk
+#
+# Prerequisites (one time):
+#   ansible-galaxy install -r requirements.yml
+#
+# Usage:
+#   ansible-playbook -i host, playbooks/mount-data-disk.yml \
+#     -e sbnb_data_disk_passphrase="your-passphrase"
+#
+#   With custom device:
+#     ansible-playbook -i host, playbooks/mount-data-disk.yml \
+#       -e sbnb_data_disk_passphrase="your-passphrase" \
+#       -e sbnb_data_disk_device=/dev/nvme1n1
+
+- name: Mount Data Disk
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Wait for host to become reachable
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+        delay: 5
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+  roles:
+    - role: sbnb.compute.data_disk

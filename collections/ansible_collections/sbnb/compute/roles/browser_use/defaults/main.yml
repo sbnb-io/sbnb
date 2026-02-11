@@ -1,0 +1,4 @@
+---
+sbnb_browser_use_state: present
+sbnb_browser_use_model: "qwen2.5:7b"
+sbnb_browser_use_vnc_password: "youvncpassword"

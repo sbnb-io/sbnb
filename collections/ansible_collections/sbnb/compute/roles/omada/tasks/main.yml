@@ -1,0 +1,55 @@
+---
+# Omada role - runs TP-Link Omada Controller
+# Source: run-omada.yaml
+
+- name: Ensure data directory exists
+  ansible.builtin.file:
+    path: "{{ sbnb_omada_data_path }}"
+    state: directory
+    mode: '0755'
+  when: sbnb_omada_state == 'started'
+
+- name: Ensure logs directory exists
+  ansible.builtin.file:
+    path: "{{ sbnb_omada_logs_path }}"
+    state: directory
+    mode: '0755'
+  when: sbnb_omada_state == 'started'
+
+- name: Start TP-Link Omada Controller
+  community.docker.docker_container:
+    name: "{{ sbnb_omada_container_name }}"
+    image: "{{ sbnb_omada_image }}"
+    state: started
+    pull: "{{ sbnb_omada_pull }}"
+    recreate: "{{ sbnb_omada_recreate }}"
+    network_mode: host
+    stop_timeout: 60
+    env:
+      TZ: "{{ sbnb_omada_timezone }}"
+    ulimits:
+      - nofile:4096:8192
+    volumes:
+      - "{{ sbnb_omada_data_path }}:/opt/tplink/EAPController/data"
+      - "{{ sbnb_omada_logs_path }}:/opt/tplink/EAPController/logs"
+  register: container_result
+  retries: 40
+  delay: 15
+  until: container_result is succeeded
+  when: sbnb_omada_state == 'started'
+
+- name: Stop Omada Controller
+  community.docker.docker_container:
+    name: "{{ sbnb_omada_container_name }}"
+    state: absent
+  when: sbnb_omada_state == 'absent'
+
+- name: Display Omada status
+  ansible.builtin.debug:
+    msg: |
+      TP-Link Omada Controller:
+        Name: {{ sbnb_omada_container_name }}
+        State: {{ sbnb_omada_state }}
+        Image: {{ sbnb_omada_image }}
+        Web UI: https://{{ inventory_hostname }}:8043/
+  when: sbnb_omada_state == 'started'

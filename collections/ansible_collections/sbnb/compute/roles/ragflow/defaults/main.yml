@@ -1,0 +1,17 @@
+---
+# RAGFlow role defaults
+
+# Container state
+sbnb_ragflow_state: started
+sbnb_ragflow_pull: always
+sbnb_ragflow_recreate: auto
+
+# RAGFlow image version
+sbnb_ragflow_image: "infiniflow/ragflow:v0.17.2"
+
+# Git repository
+sbnb_ragflow_repo: "https://github.com/infiniflow/ragflow"
+sbnb_ragflow_version: main
+
+# Source path
+sbnb_ragflow_src_path: /mnt/sbnb-data/src/ragflow

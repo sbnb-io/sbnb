@@ -153,6 +153,30 @@ options:
     type: str
     default: "tag:sbnb"
 
+  use_standard_qemu:
+    description:
+      - Use standard Ubuntu QEMU instead of SVSM build
+      - When true, uses ubuntu:24.04 container and installs qemu-system-x86
+      - Useful for debugging or when SVSM QEMU has issues
+    type: bool
+    default: false
+
+  disable_kvm:
+    description:
+      - Disable KVM hardware acceleration and use TCG (software emulation)
+      - VM will be very slow but useful to isolate KVM-specific bugs
+      - For debugging only
+    type: bool
+    default: false
+
+  mem_prealloc:
+    description:
+      - Preallocate all VM memory at startup
+      - May help with memory-related corruption issues
+      - For debugging only
+    type: bool
+    default: false
+
 requirements:
   - docker (Python library)
   - Docker daemon running on target host
@@ -541,15 +565,26 @@ class QemuVm:
 
     def start_container(self, qemu_cmd):
         """Start the QEMU container"""
+        use_standard = self.params.get('use_standard_qemu', False)
+
+        # Determine container image
+        if use_standard:
+            # Use pre-built standard QEMU image (no on-the-fly installation)
+            container_image = 'sbnb/qemu-standard'
+            full_cmd = qemu_cmd
+        else:
+            container_image = self.params['container_image']
+            full_cmd = qemu_cmd
+
         # Pull image if requested
         pull = self.params['pull_image']
         if pull == 'always':
-            self.docker.images.pull(self.params['container_image'])
+            self.docker.images.pull(container_image)
         elif pull == 'missing':
             try:
-                self.docker.images.get(self.params['container_image'])
+                self.docker.images.get(container_image)
             except DockerImageNotFound:
-                self.docker.images.pull(self.params['container_image'])
+                self.docker.images.pull(container_image)
 
         # Prepare devices list
         devices = ['/dev/kvm:/dev/kvm']
@@ -562,9 +597,9 @@ class QemuVm:
         # Use sh -c to run the command string (includes mkdir/echo for bridge.conf)
         # tty and stdin_open enable interactive serial console via 'docker attach'
         container = self.docker.containers.run(
-            image=self.params['container_image'],
+            image=container_image,
             name=self.name,
-            command=['sh', '-c', qemu_cmd],
+            command=['sh', '-c', full_cmd],
             detach=True,
             tty=True,
             stdin_open=True,
@@ -585,14 +620,22 @@ class QemuVm:
     # =========================================================================
 
     def run_in_container(self, cmd, check_rc=True):
-        """Run a command inside the sbnb/svsm container
+        """Run a command inside a container for VM preparation
 
         Args:
             cmd: Command to run
             check_rc: Whether to fail on non-zero return code
         """
+        use_standard = self.params.get('use_standard_qemu', False)
+
+        if use_standard:
+            # Use pre-built standard QEMU image (has qemu-utils, wget, curl)
+            container_image = 'sbnb/qemu-standard'
+        else:
+            container_image = self.params['container_image']
+        prep_cmd = cmd
+
         # Ensure image is available
-        container_image = self.params['container_image']
         pull = self.params['pull_image']
 
         if pull == 'always':
@@ -611,7 +654,7 @@ class QemuVm:
             'docker', 'run', '--rm',
             '-v', f'{self.storage_path}:{self.storage_path}',
             container_image,
-            'sh', '-c', cmd
+            'sh', '-c', prep_cmd
         ]
 
         rc, stdout, stderr = self.module.run_command(full_cmd, check_rc=check_rc)
@@ -834,22 +877,52 @@ runcmd:
         """Build the QEMU command line"""
         mac_address = self.generate_mac_address()
         bridge = self.params['bridge']
+        use_standard = self.params.get('use_standard_qemu', False)
+        disable_kvm = self.params.get('disable_kvm', False)
+        mem_prealloc = self.params.get('mem_prealloc', False)
 
-        # Create bridge config and then run QEMU
-        cmd_parts = [
-            'mkdir -p /usr/qemu-svsm/etc/qemu &&',
-            'echo "allow all" > /usr/qemu-svsm/etc/qemu/bridge.conf &&',
-            '/usr/qemu-svsm/bin/qemu-system-x86_64',
-            '-enable-kvm',
-            '-cpu', 'host',
-            '-smp', str(self.params['vcpu']),
-            '-object', 'iothread,id=iothread0',
-            '-device', 'virtio-scsi-pci,id=scsi0,disable-legacy=on,iommu_platform=on,iothread=iothread0',
-            '-nographic',
-            '-serial', 'mon:stdio',
-        ]
+        # KVM or TCG (software emulation)
+        if disable_kvm:
+            accel_opts = ['-accel', 'tcg']
+            cpu_opts = ['-cpu', 'qemu64']  # Can't use host CPU without KVM
+        else:
+            accel_opts = ['-enable-kvm']
+            cpu_opts = ['-cpu', 'host']
 
-        # Boot disk
+        if use_standard:
+            # Standard QEMU from Ubuntu packages
+            cmd_parts = [
+                'mkdir -p /etc/qemu &&',
+                'echo "allow all" > /etc/qemu/bridge.conf &&',
+                '/usr/bin/qemu-system-x86_64',
+            ]
+            cmd_parts.extend(accel_opts)
+            cmd_parts.extend(cpu_opts)
+            cmd_parts.extend([
+                '-smp', str(self.params['vcpu']),
+                '-object', 'iothread,id=iothread0',
+                '-device', 'virtio-scsi-pci,id=scsi0,iothread=iothread0',
+                '-nographic',
+                '-serial', 'mon:stdio',
+            ])
+        else:
+            # SVSM QEMU build with IOMMU support
+            cmd_parts = [
+                'mkdir -p /usr/qemu-svsm/etc/qemu &&',
+                'echo "allow all" > /usr/qemu-svsm/etc/qemu/bridge.conf &&',
+                '/usr/qemu-svsm/bin/qemu-system-x86_64',
+            ]
+            cmd_parts.extend(accel_opts)
+            cmd_parts.extend(cpu_opts)
+            cmd_parts.extend([
+                '-smp', str(self.params['vcpu']),
+                '-object', 'iothread,id=iothread0',
+                '-device', 'virtio-scsi-pci,id=scsi0,disable-legacy=on,iommu_platform=on,iothread=iothread0',
+                '-nographic',
+                '-serial', 'mon:stdio',
+            ])
+
+        # Boot disk - use cache=none to bypass host page cache (matches working config)
         cmd_parts.extend([
             '-drive', f'file={self.boot_image},if=none,id=disk0,format=qcow2,snapshot=off,cache=none',
             '-device', 'scsi-hd,drive=disk0,bootindex=0',
@@ -863,10 +936,10 @@ runcmd:
                 '-device', 'scsi-hd,drive=datadisk0,serial=sbnb-data-disk',
             ])
 
-        # Networking
+        # Networking - use bridge for proper network connectivity
         cmd_parts.extend([
-            '-device', f'virtio-net-pci,netdev=br0,mac={mac_address}',
-            '-netdev', f'bridge,id=br0,br={bridge}',
+            '-device', f'virtio-net-pci,netdev=net0,mac={mac_address}',
+            '-netdev', f'bridge,id=net0,br={bridge}',
         ])
 
         # Machine type and memory
@@ -883,6 +956,9 @@ runcmd:
                 '-m', self.params['mem'],
                 '-bios', '/usr/share/ovmf/OVMF.fd',
             ])
+            # Optional memory preallocation for debugging
+            if mem_prealloc:
+                cmd_parts.append('-mem-prealloc')
 
         # GPU passthrough
         for gpu in gpus:
@@ -937,6 +1013,9 @@ def main():
             persist_boot_image=dict(type='bool', default=True),
             root_password=dict(type='str', no_log=True),
             tailscale_tags=dict(type='str', default='tag:sbnb'),
+            use_standard_qemu=dict(type='bool', default=False),
+            disable_kvm=dict(type='bool', default=False),
+            mem_prealloc=dict(type='bool', default=False),
         ),
         supports_check_mode=True,
     )

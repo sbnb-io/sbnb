@@ -1,0 +1,20 @@
+---
+# Run NVIDIA GenAI-Perf benchmark against OpenAI-compatible APIs
+# Works with vLLM, SGLang, Ollama, or any OpenAI-compatible endpoint
+#
+# Usage:
+#   ansible-playbook -i hostname, playbooks/run-genai-perf.yml \
+#     -e sbnb_genai_perf_model="Qwen/Qwen3-0.6B"
+#
+# Parameters:
+#   sbnb_genai_perf_url: API endpoint (default: http://localhost:8000)
+#   sbnb_genai_perf_model: Model name to benchmark
+#   sbnb_genai_perf_endpoint_type: chat, completions, or embeddings
+#   sbnb_genai_perf_concurrency: Number of concurrent requests
+#   sbnb_genai_perf_num_prompts: Number of prompts to send
+
+- name: Run GenAI-Perf benchmark
+  hosts: all
+  gather_facts: false
+  roles:
+    - role: sbnb.compute.genai_perf

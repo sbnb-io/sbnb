@@ -31,37 +31,26 @@ For more details on automatic hostname assignments, refer to [README-SERIAL-NUMB
 ### 2. Connect Your Laptop to Tailscale
 We will use a MacBook in this tutorial, but any machine, such as a Linux instance, should work the same.
 
-### 3. Download Tailscale Dynamic Inventory Script
-```sh
-curl https://raw.githubusercontent.com/m4wh6k/ansible-tailscale-inventory/refs/heads/main/ansible_tailscale_inventory.py -O
-chmod +x ansible_tailscale_inventory.py
-```
+### 3. Clone the Sbnb Repository
 
-### 4. Pull Sbnb Linux Repo with All Required Grafana Configs and Ansible Playbooks
 ```sh
 git clone https://github.com/sbnb-io/sbnb.git
-cd sbnb/automation/
+cd sbnb
 ```
 
-### 5. Configure VM Settings
-Open `sbnb-example-vm.json` file with an editor of your choice and configure the following parameters:
-```json
-{
-    "vcpu": 2,
-    "mem": "4G",
-    "tskey": "your-tskey-auth",
-    "attach_gpus": true,
-    "image_size": "10G"
-}
-```
-Replace `"your-tskey-auth"` with your actual Tailscale key.
+### 4. Start a VM with GPU Passthrough
 
-### 6. Start VM with Ansible Playbook
 ```sh
-export SBNB_HOSTS=sbnb-F6S0R8000719
-
-ansible-playbook -i ./ansible_tailscale_inventory.py sbnb-start-vm.yaml
+ansible-playbook -i sbnb-F6S0R8000719, \
+  collections/ansible_collections/sbnb/compute/playbooks/start-vm.yml \
+  -e sbnb_vm_tskey="tskey-auth-xxxxx" \
+  -e sbnb_vm_attach_gpus=true \
+  -e sbnb_vm_vcpu=8 \
+  -e sbnb_vm_mem=16G \
+  -e sbnb_vm_image_size=100G
 ```
+
+Replace `sbnb-F6S0R8000719` with your server's Tailscale hostname and `tskey-auth-xxxxx` with your Tailscale auth key.
 
 Once the VM starts, you should see it appear in the Tailscale network as `sbnb-vm-VMID`. For example, `sbnb-vm-67f97659333f`.
 
@@ -69,88 +58,91 @@ All Nvidia GPUs present in the system will be attached to this VM using a low-ov
 
 ![nvidia-vfio-sbnb-linux](images/nvidia-vfio-sbnb-linux.png)
 
-### 7. Configure vLLM
+### 5. Install Docker and NVIDIA Drivers in the VM
 
-By default, `run-vllm.yaml` has the following settings:
+```sh
+export VM_HOST=sbnb-vm-67f97659333f
 
-```text
---max-model-len 2048
---gpu-memory-utilization 0.9
---tensor-parallel-size 2
---max-num-seqs 32
---enforce-eager
---model "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/install-docker.yml
+
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/install-nvidia.yml
 ```
 
-We’re setting tensor parallelization `--tensor-parallel-size 2` because we have 2 Nvidia GPU cards in the system. We also choose a small model `"TinyLlama/TinyLlama-1.1B-Chat-v1.0"` to fit our limited GPU memory (12GB * 2 = 24GB) in this setup.
+### 6. Start vLLM
 
-Please refer to the vLLM engine arguments for more details:  
-https://docs.vllm.ai/en/latest/serving/engine_args.html
+Start vLLM with default settings (serves on port 8000):
 
-### 8. Start vLLM in the VM
-
-Run on the laptop:
-
-```bash
-export SBNB_HOSTS=sbnb-vm-67f97659333f
-
-for playbook in install-docker.yaml install-nvidia.yaml install-nvidia-container-toolkit.yaml run-vllm.yaml; do
-  ansible-playbook -i ./ansible_tailscale_inventory.py $playbook
-done
+```sh
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-vllm.yml \
+  -e sbnb_vllm_model="Qwen/Qwen3-0.6B"
 ```
 
-> Note that this time we set `SBNB_HOSTS` to the hostname of the VM we started in the previous step.
+For gated models (like Llama), you need a HuggingFace token:
 
-These commands will install Docker, Nvidia drivers, Nvidia container toolkit, and vLLM into the VM.
+```sh
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-vllm.yml \
+  -e sbnb_vllm_model="meta-llama/Llama-3.1-8B-Instruct" \
+  -e sbnb_vllm_hf_token="hf_xxxxx"
+```
+
+For multi-GPU setups, use extra args (JSON format for arguments with spaces):
+
+```sh
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-vllm.yml \
+  -e '{"sbnb_vllm_model": "TinyLlama/TinyLlama-1.1B-Chat-v1.0", "sbnb_vllm_extra_args": "--tensor-parallel-size 2 --max-model-len 2048"}'
+```
 
 **Congratulations!** Now you have vLLM up and running.
 
-## Run vLLM Benchmark
+Please refer to the vLLM engine arguments for more details:
+https://docs.vllm.ai/en/latest/serving/engine_args.html
 
-Run on the laptop:
+## Run Benchmark with NVIDIA GenAI-Perf
+
+Run on the laptop using NVIDIA's GenAI-Perf tool (works with any OpenAI-compatible API):
 
 ```bash
-ansible-playbook -i ./ansible_tailscale_inventory.py run-vllm-benchmark.yaml
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-genai-perf.yml \
+  -e sbnb_genai_perf_model="Qwen/Qwen3-0.6B" \
+  -e sbnb_genai_perf_concurrency=24
 ```
 
-### Example Output of the Benchmark
+### Example Output of the Benchmark (RTX 5060 Ti 16GB)
 
 ```text
-    Starting initial single prompt test run...                                                                                                 
-    Initial test run completed. Starting main benchmark run...                                                                                 
-    Traffic request rate: inf                                          
-    Burstiness factor: 1.0 (Poisson process)                                                                                                   
-    Maximum request concurrency: None                                  
-    ============ Serving Benchmark Result ============                 
-    Successful requests:                     10000                     
-    Benchmark duration (s):                  1628.80                   
-    Total input tokens:                      10240000                                                                                          
-    Total generated tokens:                  1254908                                                                                           
-    Request throughput (req/s):              6.14                                                                                              
-    Output token throughput (tok/s):         770.45                    
-    Total Token throughput (tok/s):          7057.28                                                                                           
-    ---------------Time to First Token----------------                                                                                         
-    Mean TTFT (ms):                          814414.55                                                                                         
-    Median TTFT (ms):                        815241.73                 
-    P99 TTFT (ms):                           1606278.41                
-    -----Time per Output Token (excl. 1st token)------                 
-    Mean TPOT (ms):                          40.77
-    Median TPOT (ms):                        40.62
-    P99 TPOT (ms):                           46.13                     
-    ---------------Inter-token Latency----------------                 
-    Mean ITL (ms):                           40.51                     
-    Median ITL (ms):                         13.16                     
-    P99 ITL (ms):                            145.59                    
-    ==================================================      
+                                      NVIDIA GenAI-Perf | LLM Metrics
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━┓
+┃                         Statistic ┃       avg ┃      min ┃       max ┃       p99 ┃       p90 ┃       p75 ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━┩
+│              Request Latency (ms) │ 10,483.07 │ 5,538.97 │ 16,605.04 │ 16,426.85 │ 12,728.09 │ 12,029.73 │
+│   Output Sequence Length (tokens) │    885.89 │   453.00 │  1,395.00 │  1,383.95 │  1,092.00 │  1,016.75 │
+│    Input Sequence Length (tokens) │    550.14 │   550.00 │    551.00 │    551.00 │    551.00 │    550.00 │
+│ Output Token Throughput (per sec) │  1,674.54 │      N/A │       N/A │       N/A │       N/A │       N/A │
+│      Request Throughput (per sec) │      1.89 │      N/A │       N/A │       N/A │       N/A │       N/A │
+│             Request Count (count) │     66.00 │      N/A │       N/A │       N/A │       N/A │       N/A │
+└───────────────────────────────────┴───────────┴──────────┴───────────┴───────────┴───────────┴───────────┘
 ```
 
 ## Display GPU Utilization in Grafana
 
-Follow this guide:  
+Follow this guide:
 [README-NVIDIA-GPU-FRYER-GRAFANA.md](README-NVIDIA-GPU-FRYER-GRAFANA.md)
 
+## Stopping vLLM
 
-## ✅ Summary
+```sh
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-vllm.yml \
+  -e sbnb_vllm_state=absent
+```
+
+## Summary
 
 You now have:
 

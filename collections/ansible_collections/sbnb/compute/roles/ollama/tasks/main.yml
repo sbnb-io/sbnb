@@ -1,0 +1,67 @@
+---
+# Ollama role - runs Ollama inference server
+
+- name: Ensure data directory exists
+  ansible.builtin.file:
+    path: "{{ sbnb_ollama_data_path }}"
+    state: directory
+    mode: '0755'
+
+- name: Start Ollama container
+  community.docker.docker_container:
+    name: "{{ sbnb_ollama_container_name }}"
+    image: "{{ sbnb_ollama_image }}"
+    state: "{{ sbnb_ollama_state }}"
+    runtime: nvidia
+    network_mode: host
+    pull: "{{ sbnb_ollama_pull }}"
+    recreate: "{{ sbnb_ollama_recreate }}"
+    volumes:
+      - "{{ sbnb_ollama_data_path }}:/root/.ollama"
+    device_requests:
+      - driver: nvidia
+        count: -1
+        capabilities:
+          - - gpu
+            - nvidia
+  register: container_result
+  retries: 40
+  delay: 15
+  until: container_result is succeeded
+  when: sbnb_ollama_state == 'started'
+
+- name: Wait for Ollama to be ready
+  ansible.builtin.uri:
+    url: "http://localhost:11434/api/tags"
+    method: GET
+  register: ollama_health
+  retries: 30
+  delay: 2
+  until: ollama_health.status == 200
+  when: sbnb_ollama_state == 'started' and sbnb_ollama_models | length > 0
+
+- name: Pull Ollama models
+  ansible.builtin.command:
+    cmd: "docker exec {{ sbnb_ollama_container_name }} ollama pull {{ item }}"
+  loop: "{{ sbnb_ollama_models }}"
+  register: pull_result
+  retries: 3
+  delay: 5
+  until: pull_result is succeeded
+  when: sbnb_ollama_state == 'started' and sbnb_ollama_models | length > 0
+
+- name: Stop Ollama container
+  community.docker.docker_container:
+    name: "{{ sbnb_ollama_container_name }}"
+    state: absent
+  when: sbnb_ollama_state == 'absent'
+
+- name: Display Ollama status
+  ansible.builtin.debug:
+    msg: |
+      Ollama Container:
+        Name: {{ sbnb_ollama_container_name }}
+        State: {{ sbnb_ollama_state }}
+        Image: {{ sbnb_ollama_image }}
+        Models: {{ sbnb_ollama_models | join(', ') | default('none') }}
+  when: sbnb_ollama_state == 'started'

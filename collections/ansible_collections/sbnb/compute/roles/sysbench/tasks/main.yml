@@ -1,0 +1,15 @@
+---
+- name: Start CPU stress test with sysbench
+  docker_container:
+    name: sysbench
+    image: perconalab/sysbench
+    state: "{{ 'started' if sbnb_sysbench_state == 'present' else 'absent' }}"
+    command: >
+      /usr/bin/sysbench --time={{ sbnb_sysbench_time }} --threads={{ sbnb_sysbench_threads }} cpu run
+  when: sbnb_sysbench_state == "present"
+
+- name: Stop sysbench container
+  docker_container:
+    name: sysbench
+    state: absent
+  when: sbnb_sysbench_state == "absent"

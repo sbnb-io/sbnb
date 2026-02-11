@@ -1,0 +1,33 @@
+---
+# Install Docker using geerlingguy.docker role
+#
+# Prerequisites (one time):
+#   ansible-galaxy install -r requirements.yml
+#
+# Usage:
+#   Install Docker:
+#     ansible-playbook -i host, playbooks/install-docker.yml
+
+- name: Install Docker
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Wait for host to become reachable
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+        delay: 5
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+  roles:
+    - role: geerlingguy.docker
+      vars:
+        docker_packages:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+        docker_install_compose_plugin: true

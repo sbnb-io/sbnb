@@ -1,4 +1,4 @@
-# 🚀 Run RAGFlow on a Bare Metal Server in Minutes (Fully Automated)
+# Run RAGFlow on a Bare Metal Server in Minutes (Fully Automated)
 
 * **Note:** We also have a separate guide for running **LightRAG** using the same approach. Check it out here: [README-LightRAG.md](README-LightRAG.md) if you're interested.
 
@@ -12,27 +12,27 @@ This guide walks you through setting up a full RAG pipeline on your own bare met
 
 ---
 
-## ✅ Why Run RAG on Your Own Bare Metal Server?
+## Why Run RAG on Your Own Bare Metal Server?
 
-### 🔐 Privacy & Security
-- Full control over your data - nothing leaves your server  
-- Ideal for **sensitive or regulated data** (e.g., healthcare, finance, legal)  
-- Compliant with **data sovereignty** requirements (e.g., store and process data within specific countries or jurisdictions)  
-- No vendor lock-in - run everything locally or in your own cloud  
+### Privacy & Security
+- Full control over your data - nothing leaves your server
+- Ideal for **sensitive or regulated data** (e.g., healthcare, finance, legal)
+- Compliant with **data sovereignty** requirements (e.g., store and process data within specific countries or jurisdictions)
+- No vendor lock-in - run everything locally or in your own cloud
 
-### 🔥 Performance
+### Performance
 - Faster retrieval and inference
 
-### 💸 Cost Efficiency
+### Cost Efficiency
 - No pay-per-call fees
 - Predictable, one-time hardware investment
 
-### 🛠️ Customization
+### Customization
 - Your own retrievers, embeddings, chunking strategy
 - Fine-tuned or quantized LLMs
 - Flexible RAG pipelines (filters, rerankers, etc.)
 
-### 🌐 Offline / Edge Ready
+### Offline / Edge Ready
 - Fully local operation
 - Great for air-gapped or remote deployments
 
@@ -46,7 +46,7 @@ This guide walks you through setting up a full RAG pipeline on your own bare met
 
 ---
 
-## ⚙️ Step-by-Step Setup
+## Step-by-Step Setup
 
 ### 1. Boot Bare Metal Server into Sbnb Linux
 
@@ -64,48 +64,28 @@ We use a MacBook in this tutorial, but any Linux/Unix laptop should work.
 
 ---
 
-### 3. Download Tailscale Dynamic Inventory Script
-
-```sh
-curl https://raw.githubusercontent.com/m4wh6k/ansible-tailscale-inventory/refs/heads/main/ansible_tailscale_inventory.py -O
-chmod +x ansible_tailscale_inventory.py
-```
-
----
-
-### 4. Pull Sbnb Linux Repo
+### 3. Clone the Sbnb Repository
 
 ```sh
 git clone https://github.com/sbnb-io/sbnb.git
-cd sbnb/automation/
+cd sbnb
 ```
 
 ---
 
-### 5. Configure VM Settings
-
-Edit `sbnb-example-vm.json`:
-
-```json
-{
-    "vcpu": 16,
-    "mem": "64G",
-    "tskey": "your-tskey-auth",
-    "attach_gpus": true,
-    "image_size": "100G"
-}
-```
-
-Replace `"your-tskey-auth"` with your actual **Tailscale auth key**.
-
----
-
-### 6. Start VM with Ansible Playbook
+### 4. Start a VM with GPU Passthrough
 
 ```sh
-export SBNB_HOSTS=sbnb-F6S0R8000719
-ansible-playbook -i ./ansible_tailscale_inventory.py sbnb-start-vm.yaml
+ansible-playbook -i sbnb-F6S0R8000719, \
+  collections/ansible_collections/sbnb/compute/playbooks/start-vm.yml \
+  -e sbnb_vm_tskey="tskey-auth-xxxxx" \
+  -e sbnb_vm_attach_gpus=true \
+  -e sbnb_vm_vcpu=8 \
+  -e sbnb_vm_mem=16G \
+  -e sbnb_vm_image_size=100G
 ```
+
+Replace `sbnb-F6S0R8000719` with your server's Tailscale hostname and `tskey-auth-xxxxx` with your Tailscale auth key.
 
 You should see the VM appear in Tailscale as `sbnb-vm-<VMID>` (e.g., `sbnb-vm-67f97659333f`).
 
@@ -115,19 +95,17 @@ You should see the VM appear in Tailscale as `sbnb-vm-<VMID>` (e.g., `sbnb-vm-67
 
 ---
 
-### 7. Install Nvidia Drivers and Tools in the VM
+### 5. Install Docker and NVIDIA Drivers in the VM
 
-```bash
-export SBNB_HOSTS=sbnb-vm-67f97659333f
+```sh
+export VM_HOST=sbnb-vm-67f97659333f
 
-for playbook in install-docker.yaml install-nvidia.yaml install-nvidia-container-toolkit.yaml; do
-  ansible-playbook -i ./ansible_tailscale_inventory.py $playbook
-done
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/install-docker.yml
+
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/install-nvidia.yml
 ```
-
-> Note that this time we set `SBNB_HOSTS` to the hostname of the VM we started in the previous step.
-
-These commands will install Docker, Nvidia drivers, Nvidia container toolkit, and SGLang into the VM.
 
 ---
 
@@ -135,52 +113,46 @@ At this point, you have a VM running **Ubuntu 24.04** with **Nvidia GPU** attach
 
 ---
 
-## 🤖 Run vLLM
+## Run vLLM
 
-## 1. Configure vLLM
+Start vLLM with a vision-capable model:
 
-```bash
-export LLM_ARGS="--max-model-len 2048
-  --gpu-memory-utilization 0.9
-  --tensor-parallel-size 2
-  --max-num-seqs 32
-  --enforce-eager
-  --model Qwen/Qwen2.5-VL-3B-Instruct
-  --dtype bfloat16
-  --limit-mm-per-prompt image=5,video=5"
+```sh
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-vllm.yml \
+  -e 'sbnb_vllm_args="--model Qwen/Qwen2.5-VL-3B-Instruct --tensor-parallel-size 2 --max-model-len 2048 --dtype bfloat16 --limit-mm-per-prompt image=5,video=5"'
 ```
 
 > We use `--tensor-parallel-size 2` for 2 GPUs, and choose a small model to fit into 24GB total GPU RAM.
 
 For full options, see [vLLM Engine Args](https://docs.vllm.ai/en/latest/serving/engine_args.html).
 
+vLLM is now up and running!
+
 ---
 
-## 2. Start vLLM
+## Run RAGFlow
 
 ```bash
-ansible-playbook -i ./ansible_tailscale_inventory.py run-vllm.yaml
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-ragflow.yml
 ```
 
-✅ vLLM is now up and running!
+RAGFlow is up!
 
 ---
 
-## 🔁 Run RAGFlow
-
-```bash
-ansible-playbook -i ./ansible_tailscale_inventory.py run-ragflow.yaml
-```
-
-✅ RAGFlow is up!
-
----
-
-## 🧠 Configure RAGFlow
+## Configure RAGFlow
 
 ### 1. Access the Web UI
 
-Open a browser and navigate to the **VM hostname** from Tailscale. Create an admin account.
+Open a browser and navigate to the **VM hostname** from Tailscale, using port `80`. Example URL:
+
+```
+http://sbnb-vm-67f97659333f/
+```
+
+Create an admin account.
 
 ---
 
@@ -203,7 +175,7 @@ Fill in:
 
 ### 3. Set System Models
 
-Go to: `Settings → System Model Settings`  
+Go to: `Settings → System Model Settings`
 Select:
 
 - **Chat model:** `Qwen/Qwen2.5-VL-3B-Instruct`
@@ -222,7 +194,7 @@ Navigate to `Knowledge Base → Create`, give it a name.
 
 ### 5. Upload Documents
 
-For demo purposes, download the latest 2024 US government financial report (latest at the time of writing this tutorial):  
+For demo purposes, download the latest 2024 US government financial report (latest at the time of writing this tutorial):
 [executive-summary-2024.pdf](https://www.fiscal.treasury.gov/files/reports-statements/financial-report/2024/executive-summary-2024.pdf)
 
 Then:
@@ -255,13 +227,30 @@ Try this question (answer is only in the PDF):
 
 > "How much tax was collected in the US in 2024?"
 
-✅ RAGFlow responds with the answer **"... 5.0 trillion for FY 2024"** and cites the PDF source.
+RAGFlow responds with the answer **"... 5.0 trillion for FY 2024"** and cites the PDF source.
 
 ![rag-ask-question](images/rag-ask-question.png)
 
 ---
 
-🎉 That’s it! You've successfully combined a stock LLM with your own custom knowledge base.
+## Stopping Services
+
+To stop RAGFlow:
+```sh
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-ragflow.yml \
+  -e sbnb_ragflow_state=absent
+```
+
+To stop vLLM:
+```sh
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-vllm.yml \
+  -e sbnb_vllm_state=absent
+```
+
+---
+
+That's it! You've successfully combined a stock LLM with your own custom knowledge base.
 
 Happy experimenting - and solving real-world problems!
-

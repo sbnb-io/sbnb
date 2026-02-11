@@ -1,0 +1,46 @@
+---
+# LightRAG role - runs LightRAG API server
+# Ollama is started via role dependency (sbnb.compute.ollama)
+
+- name: Create temporary directory for compose file
+  ansible.builtin.file:
+    path: /dev/shm/lightrag
+    state: directory
+    mode: '0755'
+  when: sbnb_lightrag_state == 'started'
+
+- name: Copy docker-compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /dev/shm/lightrag/docker-compose.yml
+    mode: '0644'
+  when: sbnb_lightrag_state == 'started'
+
+- name: Start LightRAG with docker-compose
+  community.docker.docker_compose_v2:
+    project_src: /dev/shm/lightrag
+    files: docker-compose.yml
+    state: present
+    pull: "{{ sbnb_lightrag_pull }}"
+  register: compose_result
+  retries: 40
+  delay: 15
+  until: compose_result is succeeded
+  when: sbnb_lightrag_state == 'started'
+
+- name: Stop LightRAG
+  community.docker.docker_compose_v2:
+    project_src: /dev/shm/lightrag
+    files: docker-compose.yml
+    state: absent
+  when: sbnb_lightrag_state == 'absent'
+
+- name: Display LightRAG status
+  ansible.builtin.debug:
+    msg: |
+      LightRAG:
+        State: {{ sbnb_lightrag_state }}
+        Ollama Port: {{ sbnb_lightrag_ollama_port }}
+        Models: {{ sbnb_lightrag_models | join(', ') }}
+        LightRAG Port: {{ sbnb_lightrag_port }}
+  when: sbnb_lightrag_state == 'started'

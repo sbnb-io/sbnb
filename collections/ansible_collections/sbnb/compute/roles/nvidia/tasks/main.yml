@@ -1,0 +1,134 @@
+---
+# NVIDIA role - installs NVIDIA drivers and container toolkit
+# Combines: install-nvidia.yaml + install-nvidia-container-toolkit.yaml
+
+# =============================================================================
+# NVIDIA Driver Installation
+# =============================================================================
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+
+- name: Set kernel module package name
+  ansible.builtin.set_fact:
+    _nvidia_kernel_module: "linux-modules-nvidia-{{ sbnb_nvidia_driver_branch }}-server{{ '-open' if sbnb_nvidia_open_modules | bool else '' }}-{{ ansible_kernel }}"
+
+- name: Install NVIDIA kernel modules and utilities
+  ansible.builtin.apt:
+    pkg:
+      - "nvidia-utils-{{ sbnb_nvidia_driver_branch }}-server"
+      - "{{ _nvidia_kernel_module }}"
+      - "libnvidia-decode-{{ sbnb_nvidia_driver_branch }}-server"
+    state: present
+  when: sbnb_nvidia_install_driver | bool
+
+# =============================================================================
+# CUDA Compatibility Libraries (for containers with CUDA version mismatch)
+# =============================================================================
+- name: Add NVIDIA CUDA repository key
+  ansible.builtin.apt_key:
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/3bf863cc.pub
+    state: present
+  when: sbnb_nvidia_install_cuda_compat | bool
+
+- name: Add NVIDIA CUDA repository
+  ansible.builtin.apt_repository:
+    repo: "deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/ /"
+    state: present
+    filename: cuda
+    update_cache: true
+  when: sbnb_nvidia_install_cuda_compat | bool
+
+- name: Install CUDA compatibility libraries
+  ansible.builtin.apt:
+    pkg:
+      - cuda-compat-12-9
+    state: present
+  when: sbnb_nvidia_install_cuda_compat | bool
+
+# =============================================================================
+# NVIDIA Container Toolkit Installation
+# =============================================================================
+- name: Add NVIDIA container toolkit apt key
+  ansible.builtin.apt_key:
+    url: https://nvidia.github.io/libnvidia-container/gpgkey
+    state: present
+  when: sbnb_nvidia_install_container_toolkit | bool
+
+- name: Add NVIDIA container toolkit apt repository
+  ansible.builtin.apt_repository:
+    repo: "deb https://nvidia.github.io/libnvidia-container/stable/deb/$(ARCH) /"
+    state: present
+    update_cache: true
+  when: sbnb_nvidia_install_container_toolkit | bool
+
+- name: Install nvidia-container-toolkit
+  ansible.builtin.apt:
+    pkg:
+      - nvidia-container-toolkit
+    state: present
+  when: sbnb_nvidia_install_container_toolkit | bool
+
+- name: Check if NVIDIA runtime already configured in Docker
+  ansible.builtin.shell:
+    cmd: docker info 2>/dev/null | grep -q 'Runtimes:.*nvidia'
+  register: nvidia_runtime_check
+  changed_when: false
+  failed_when: false
+  when: sbnb_nvidia_install_container_toolkit | bool
+
+- name: Configure Docker runtime for NVIDIA (preserving existing settings)
+  when: sbnb_nvidia_install_container_toolkit | bool and nvidia_runtime_check.rc != 0
+  block:
+    - name: Read existing daemon.json before nvidia-ctk
+      ansible.builtin.slurp:
+        src: /etc/docker/daemon.json
+      register: daemon_json_before
+      failed_when: false
+
+    - name: Parse existing daemon.json
+      ansible.builtin.set_fact:
+        existing_daemon_config: "{{ (daemon_json_before.content | b64decode | from_json) if daemon_json_before.content is defined else {} }}"
+
+    - name: Run nvidia-ctk runtime configure
+      ansible.builtin.command:
+        cmd: nvidia-ctk runtime configure --runtime=docker
+
+    - name: Read daemon.json after nvidia-ctk
+      ansible.builtin.slurp:
+        src: /etc/docker/daemon.json
+      register: daemon_json_after
+
+    - name: Merge existing settings back into daemon.json
+      ansible.builtin.copy:
+        content: "{{ (daemon_json_after.content | b64decode | from_json) | combine(existing_daemon_config) | to_nice_json }}"
+        dest: /etc/docker/daemon.json
+        mode: '0644'
+      when: existing_daemon_config | length > 0
+      notify: Restart Docker for NVIDIA
+
+    - name: Notify Docker restart when no merge needed
+      ansible.builtin.debug:
+        msg: "NVIDIA runtime configured"
+      changed_when: true
+      when: existing_daemon_config | length == 0
+      notify: Restart Docker for NVIDIA
+
+# Ensure Docker is restarted if nvidia runtime is not available
+# (covers case where daemon.json was already configured but Docker wasn't restarted)
+- name: Restart Docker if nvidia runtime not available
+  ansible.builtin.systemd:
+    name: docker
+    state: restarted
+  when: sbnb_nvidia_install_container_toolkit | bool and nvidia_runtime_check.rc != 0
+
+- name: Flush handlers to restart Docker before next role
+  ansible.builtin.meta: flush_handlers
+
+- name: Display NVIDIA installation summary
+  ansible.builtin.debug:
+    msg: |
+      NVIDIA Installation Complete:
+        Driver Branch: {{ sbnb_nvidia_driver_branch }}
+        Driver Installed: {{ sbnb_nvidia_install_driver }}
+        Container Toolkit: {{ sbnb_nvidia_install_container_toolkit }}

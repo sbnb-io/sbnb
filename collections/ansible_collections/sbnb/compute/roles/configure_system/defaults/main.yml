@@ -1,0 +1,5 @@
+---
+sbnb_configure_system_scripts:
+  - sbnb-configure-system.sh
+  - sbnb-configure-networking.sh
+  - sbnb-configure-storage.sh

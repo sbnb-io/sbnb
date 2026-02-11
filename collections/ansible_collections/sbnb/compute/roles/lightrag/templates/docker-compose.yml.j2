@@ -1,0 +1,10 @@
+services:
+  lightrag:
+    image: {{ sbnb_lightrag_image }}
+    network_mode: host
+    environment:
+      PORT: {{ sbnb_lightrag_port }}
+      LLM_BINDING_HOST: http://127.0.0.1:{{ sbnb_lightrag_ollama_port }}
+      EMBEDDING_BINDING_HOST: http://127.0.0.1:{{ sbnb_lightrag_ollama_port }}
+    volumes:
+      - {{ sbnb_lightrag_data_path }}:/app/data

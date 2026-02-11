@@ -1,0 +1,17 @@
+---
+# Data disk role defaults
+
+# Block device for LUKS container
+sbnb_data_disk_device: /dev/sdb
+
+# LUKS mapper name
+sbnb_data_disk_mapper_name: sbnb-data
+
+# Mount path
+sbnb_data_disk_mount_path: /mnt/sbnb-data
+
+# Format disk if needed (creates ext4 filesystem)
+sbnb_data_disk_format: true
+
+# REQUIRED - must be provided
+# sbnb_data_disk_passphrase: "your-luks-passphrase"

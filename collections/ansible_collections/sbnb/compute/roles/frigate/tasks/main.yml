@@ -1,0 +1,162 @@
+---
+# Frigate role - runs Frigate NVR
+# Source: run-frigate.yaml
+
+- name: Ensure config directory exists
+  ansible.builtin.file:
+    path: "{{ sbnb_frigate_config_path }}"
+    state: directory
+    mode: '0755'
+  when: sbnb_frigate_state == 'started'
+
+- name: Ensure media directory exists
+  ansible.builtin.file:
+    path: "{{ sbnb_frigate_media_path }}"
+    state: directory
+    mode: '0755'
+  when: sbnb_frigate_state == 'started'
+
+- name: Set absolute path for local config
+  ansible.builtin.set_fact:
+    _frigate_local_config_path: "{{ sbnb_frigate_local_config if sbnb_frigate_local_config.startswith('/') else (lookup('env', 'PWD') + '/' + sbnb_frigate_local_config) }}"
+  when: sbnb_frigate_state == 'started' and sbnb_frigate_local_config is defined
+
+- name: Check if Frigate config exists locally
+  ansible.builtin.stat:
+    path: "{{ _frigate_local_config_path }}"
+  delegate_to: localhost
+  become: false
+  register: frigate_config_file
+  when: sbnb_frigate_state == 'started' and sbnb_frigate_local_config is defined
+
+- name: Fail if local config specified but not found
+  ansible.builtin.fail:
+    msg: "Local config file not found: {{ _frigate_local_config_path }}"
+  when: sbnb_frigate_state == 'started' and sbnb_frigate_local_config is defined and not frigate_config_file.stat.exists
+
+- name: Copy Frigate config if exists
+  ansible.builtin.copy:
+    src: "{{ _frigate_local_config_path }}"
+    dest: "{{ sbnb_frigate_config_path }}/config.yaml"
+    force: "{{ sbnb_frigate_config_force | bool }}"
+    mode: '0644'
+  when: sbnb_frigate_state == 'started' and sbnb_frigate_local_config is defined
+
+- name: Check if config already exists on remote
+  ansible.builtin.stat:
+    path: "{{ sbnb_frigate_config_path }}/config.yaml"
+  register: remote_config_file
+  when: sbnb_frigate_state == 'started'
+
+- name: Deploy minimal Frigate config if none exists
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ sbnb_frigate_config_path }}/config.yaml"
+    mode: '0644'
+  when: sbnb_frigate_state == 'started' and not remote_config_file.stat.exists
+
+- name: Copy model file if provided
+  ansible.builtin.copy:
+    src: "{{ sbnb_frigate_model_file }}"
+    dest: "{{ sbnb_frigate_config_path }}/{{ sbnb_frigate_model_file | basename }}"
+  when: sbnb_frigate_state == 'started' and sbnb_frigate_model_file is defined
+
+- name: Extract models from container
+  when: sbnb_frigate_state == 'started' and sbnb_frigate_models_image is defined
+  block:
+    - name: Check if model already exists
+      ansible.builtin.stat:
+        path: "{{ sbnb_frigate_config_path }}/yolo_nas_s.onnx"
+      register: model_file
+
+    - name: Pull and extract models
+      when: not model_file.stat.exists
+      block:
+        - name: Pull models container
+          community.docker.docker_image:
+            name: "{{ sbnb_frigate_models_image }}"
+            source: pull
+
+        - name: Create temporary container for model extraction
+          ansible.builtin.command:
+            cmd: docker create --name frigate-models-temp {{ sbnb_frigate_models_image }} .
+          register: create_result
+          changed_when: create_result.rc == 0
+
+        - name: Copy models from container
+          ansible.builtin.command:
+            cmd: docker cp frigate-models-temp:/models/. {{ sbnb_frigate_config_path }}/
+          register: copy_result
+          changed_when: copy_result.rc == 0
+
+        - name: Remove temporary container
+          ansible.builtin.command:
+            cmd: docker rm frigate-models-temp
+          changed_when: true
+
+- name: Copy extra files to config directory
+  ansible.builtin.copy:
+    src: "{{ item if item.startswith('/') else (lookup('env', 'PWD') + '/' + item) }}"
+    dest: "{{ sbnb_frigate_config_path }}/{{ item | basename }}"
+    mode: '0644'
+  loop: "{{ sbnb_frigate_extra_files }}"
+  when: sbnb_frigate_state == 'started' and sbnb_frigate_extra_files is defined
+
+- name: Start Frigate NVR container
+  community.docker.docker_container:
+    name: "{{ sbnb_frigate_container_name }}"
+    image: "{{ sbnb_frigate_image }}"
+    state: started
+    runtime: nvidia
+    shm_size: "{{ sbnb_frigate_shm_size }}"
+    stop_timeout: 30
+    restart_policy: unless-stopped
+    pull: "{{ sbnb_frigate_pull }}"
+    recreate: "{{ sbnb_frigate_recreate }}"
+    ports: "{{ sbnb_frigate_ports }}"
+    env: "{{ sbnb_frigate_env | default({}) }}"
+    volumes:
+      - "{{ sbnb_frigate_media_path }}:/media/frigate"
+      - "{{ sbnb_frigate_config_path }}:/config"
+      - /etc/localtime:/etc/localtime:ro
+    device_requests:
+      - driver: nvidia
+        count: -1
+        capabilities:
+          - - gpu
+            - nvidia
+  register: container_result
+  retries: 40
+  delay: 15
+  until: container_result is succeeded
+  when: sbnb_frigate_state == 'started'
+
+- name: Wait for Frigate to initialize
+  ansible.builtin.pause:
+    seconds: 10
+  when: sbnb_frigate_state == 'started' and container_result is changed
+
+- name: Extract admin password from logs
+  ansible.builtin.shell:
+    cmd: docker logs {{ sbnb_frigate_container_name }} 2>&1 | grep -oP 'Password:\s+\K\S+'
+  register: frigate_password
+  changed_when: false
+  failed_when: false
+  when: sbnb_frigate_state == 'started' and sbnb_frigate_auth_enabled | bool
+
+- name: Stop Frigate container
+  community.docker.docker_container:
+    name: "{{ sbnb_frigate_container_name }}"
+    state: absent
+  when: sbnb_frigate_state == 'absent'
+
+- name: Display Frigate status
+  ansible.builtin.debug:
+    msg: |
+      Frigate NVR:
+        Name: {{ sbnb_frigate_container_name }}
+        State: {{ sbnb_frigate_state }}
+        Image: {{ sbnb_frigate_image }}
+        Web UI: http://{{ inventory_hostname }}:8971/
+        Auth: {{ 'enabled - password: ' + (frigate_password.stdout | default('check logs')) if sbnb_frigate_auth_enabled | bool else 'disabled (Tailscale protected)' }}
+  when: sbnb_frigate_state == 'started'

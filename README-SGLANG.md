@@ -3,7 +3,7 @@
 
 This tutorial will show how to get SGLang on a Bare Metal server up & running with Nvidia GPU in minutes.
 
-We also start monitoring using Grafana and run a benchmark from [vLLM](https://github.com/vllm-project/vllm) project. At the end, you will be able to see the following benchmark results and monitoring graphs from your Bare Metal server.
+We also start monitoring using Grafana and run a benchmark using NVIDIA GenAI-Perf. At the end, you will be able to see the following benchmark results and monitoring graphs from your Bare Metal server.
 
 The graph below shows GPU load during a benchmark test for a few minutes, leading to a GPU load spike to 100%.
 
@@ -29,37 +29,26 @@ For more details on automatic hostname assignments, refer to [README-SERIAL-NUMB
 ### 2. Connect Your Laptop to Tailscale
 We will use a MacBook in this tutorial, but any machine, such as a Linux instance, should work the same.
 
-### 3. Download Tailscale Dynamic Inventory Script
-```sh
-curl https://raw.githubusercontent.com/m4wh6k/ansible-tailscale-inventory/refs/heads/main/ansible_tailscale_inventory.py -O
-chmod +x ansible_tailscale_inventory.py
-```
+### 3. Clone the Sbnb Repository
 
-### 4. Pull Sbnb Linux Repo with All Required Grafana Configs and Ansible Playbooks
 ```sh
 git clone https://github.com/sbnb-io/sbnb.git
-cd sbnb/automation/
+cd sbnb
 ```
 
-### 5. Configure VM Settings
-Open `sbnb-example-vm.json` file with an editor of your choice and configure the following parameters:
-```json
-{
-    "vcpu": 2,
-    "mem": "4G",
-    "tskey": "your-tskey-auth",
-    "attach_gpus": true,
-    "image_size": "10G"
-}
-```
-Replace `"your-tskey-auth"` with your actual Tailscale key.
+### 4. Start a VM with GPU Passthrough
 
-### 6. Start VM with Ansible Playbook
 ```sh
-export SBNB_HOSTS=sbnb-F6S0R8000719
-
-ansible-playbook -i ./ansible_tailscale_inventory.py sbnb-start-vm.yaml
+ansible-playbook -i sbnb-F6S0R8000719, \
+  collections/ansible_collections/sbnb/compute/playbooks/start-vm.yml \
+  -e sbnb_vm_tskey="tskey-auth-xxxxx" \
+  -e sbnb_vm_attach_gpus=true \
+  -e sbnb_vm_vcpu=8 \
+  -e sbnb_vm_mem=16G \
+  -e sbnb_vm_image_size=100G
 ```
+
+Replace `sbnb-F6S0R8000719` with your server's Tailscale hostname and `tskey-auth-xxxxx` with your Tailscale auth key.
 
 Once the VM starts, you should see it appear in the Tailscale network as `sbnb-vm-VMID`. For example, `sbnb-vm-67f97659333f`.
 
@@ -67,87 +56,91 @@ All Nvidia GPUs present in the system will be attached to this VM using a low-ov
 
 ![nvidia-vfio-sbnb-linux](images/nvidia-vfio-sbnb-linux.png)
 
-### 7. Configure SGLang
+### 5. Install Docker and NVIDIA Drivers in the VM
 
-By default, `run-sglang.yaml` has the following settings:
+```sh
+export VM_HOST=sbnb-vm-67f97659333f
 
-```text
-  -m sglang.launch_server
-  --host 0.0.0.0
-  --port 30000
-  --model-path TinyLlama/TinyLlama-1.1B-Chat-v1.0
-  --dp 2
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/install-docker.yml
+
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/install-nvidia.yml
 ```
 
-We’re setting data parallelization `--dp 2` because we have 2 Nvidia GPU cards in the system. We also choose a small model `"TinyLlama/TinyLlama-1.1B-Chat-v1.0"` to fit our limited GPU memory (12GB * 2 = 24GB) in this setup.
+### 6. Start SGLang
 
-Please refer to the SGLang engine arguments for more details:  
-https://github.com/sgl-project/sglang/blob/main/docs/backend/server_arguments.md
+Start SGLang with default settings (serves on port 8000):
 
-### 8. Start SGLang in the VM
-
-Run on the laptop:
-
-```bash
-export SBNB_HOSTS=sbnb-vm-67f97659333f
-
-for playbook in install-docker.yaml install-nvidia.yaml install-nvidia-container-toolkit.yaml run-sglang.yaml; do
-  ansible-playbook -i ./ansible_tailscale_inventory.py $playbook
-done
+```sh
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-sglang.yml \
+  -e sbnb_sglang_model="Qwen/Qwen3-0.6B"
 ```
 
-> Note that this time we set `SBNB_HOSTS` to the hostname of the VM we started in the previous step.
+For gated models (like Llama), you need a HuggingFace token:
 
-These commands will install Docker, Nvidia drivers, Nvidia container toolkit, and SGLang into the VM.
+```sh
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-sglang.yml \
+  -e sbnb_sglang_model="meta-llama/Llama-3.1-8B-Instruct" \
+  -e sbnb_sglang_hf_token="hf_xxxxx"
+```
+
+For multi-GPU setups, use extra args (JSON format for arguments with spaces):
+
+```sh
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-sglang.yml \
+  -e '{"sbnb_sglang_model": "TinyLlama/TinyLlama-1.1B-Chat-v1.0", "sbnb_sglang_extra_args": "--dp 2"}'
+```
 
 **Congratulations!** Now you have SGLang up and running.
 
-## Run Benchmark
+Please refer to the SGLang engine arguments for more details:
+https://github.com/sgl-project/sglang/blob/main/docs/backend/server_arguments.md
 
-Run on the laptop:
+## Run Benchmark with NVIDIA GenAI-Perf
+
+Run on the laptop using NVIDIA's GenAI-Perf tool (works with any OpenAI-compatible API):
 
 ```bash
-ansible-playbook -i ./ansible_tailscale_inventory.py run-sglang-benchmark.yaml
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-genai-perf.yml \
+  -e sbnb_genai_perf_model="Qwen/Qwen3-0.6B" \
+  -e sbnb_genai_perf_concurrency=24
 ```
 
-### Example Output of the Benchmark
+### Example Output of the Benchmark (RTX 5060 Ti 16GB)
 
 ```text
-    Starting initial single prompt test run...                                                                                                 
-    Initial test run completed. Starting main benchmark run...                                                                                 
-    Traffic request rate: inf                                          
-    Burstiness factor: 1.0 (Poisson process)                                                                                                   
-    Maximum request concurrency: None                                                                                                          
-    ============ Serving Benchmark Result ============                                                                                         
-    Successful requests:                     10000                                                                                             
-    Benchmark duration (s):                  640.00                                                                                            
-    Total input tokens:                      10240000                                                                                          
-    Total generated tokens:                  1255483                                                                                           
-    Request throughput (req/s):              15.63                                                                                             
-    Output token throughput (tok/s):         1961.70                                                                                           
-    Total Token throughput (tok/s):          17961.80                                                                                          
-    ---------------Time to First Token----------------                                                                                         
-    Mean TTFT (ms):                          305092.39                                                                                         
-    Median TTFT (ms):                        302889.37                                                                                         
-    P99 TTFT (ms):                           610125.77                 
-    -----Time per Output Token (excl. 1st token)------                                                                                         
-    Mean TPOT (ms):                          283.72                                                                                            
-    Median TPOT (ms):                        199.65                                                                                            
-    P99 TPOT (ms):                           3285.50                                                                                           
-    ---------------Inter-token Latency----------------                                                                                         
-    Mean ITL (ms):                           231.37
-    Median ITL (ms):                         60.73
-    P99 ITL (ms):                            1533.73
-    ==================================================  
+                                      NVIDIA GenAI-Perf | LLM Metrics
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━┓
+┃                         Statistic ┃       avg ┃      min ┃       max ┃       p99 ┃       p90 ┃       p75 ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━┩
+│              Request Latency (ms) │ 11,527.18 │ 5,207.06 │ 15,932.18 │ 15,705.92 │ 14,238.86 │ 13,135.92 │
+│   Output Sequence Length (tokens) │  1,006.87 │   444.00 │  1,336.00 │  1,324.41 │  1,219.30 │  1,155.00 │
+│    Input Sequence Length (tokens) │    550.13 │   550.00 │    551.00 │    551.00 │    551.00 │    550.00 │
+│ Output Token Throughput (per sec) │  1,745.56 │      N/A │       N/A │       N/A │       N/A │       N/A │
+│      Request Throughput (per sec) │      1.73 │      N/A │       N/A │       N/A │       N/A │       N/A │
+│             Request Count (count) │     62.00 │      N/A │       N/A │       N/A │       N/A │       N/A │
+└───────────────────────────────────┴───────────┴──────────┴───────────┴───────────┴───────────┴───────────┘
 ```
 
 ## Display GPU Utilization in Grafana
 
-Follow this guide:  
+Follow this guide:
 [README-NVIDIA-GPU-FRYER-GRAFANA.md](README-NVIDIA-GPU-FRYER-GRAFANA.md)
 
+## Stopping SGLang
 
-## ✅ Summary
+```sh
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-sglang.yml \
+  -e sbnb_sglang_state=absent
+```
+
+## Summary
 
 You now have:
 

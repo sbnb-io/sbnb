@@ -1,0 +1,4 @@
+---
+sbnb_sysbench_state: present
+sbnb_sysbench_time: 600
+sbnb_sysbench_threads: "{{ ansible_facts['processor_nproc'] }}"

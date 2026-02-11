@@ -1,0 +1,72 @@
+---
+# GenAI-Perf role - NVIDIA's benchmarking tool for OpenAI-compatible APIs
+# Works with vLLM, SGLang, Ollama, or any OpenAI-compatible endpoint
+
+- name: Build genai-perf command
+  ansible.builtin.set_fact:
+    _genai_perf_cmd: >-
+      genai-perf profile
+      -m {{ sbnb_genai_perf_model }}
+      --service-kind {{ sbnb_genai_perf_service_kind }}
+      --endpoint-type {{ sbnb_genai_perf_endpoint_type }}
+      --url {{ sbnb_genai_perf_url }}
+      --concurrency {{ sbnb_genai_perf_concurrency }}
+      --num-prompts {{ sbnb_genai_perf_num_prompts }}
+      {% if sbnb_genai_perf_tokenizer %}--tokenizer {{ sbnb_genai_perf_tokenizer }}{% endif %}
+      {{ sbnb_genai_perf_extra_args }}
+
+- name: Display benchmark configuration
+  ansible.builtin.debug:
+    msg: |
+      GenAI-Perf Benchmark:
+        Target URL: {{ sbnb_genai_perf_url }}
+        Model: {{ sbnb_genai_perf_model }}
+        Endpoint: {{ sbnb_genai_perf_endpoint_type }}
+        Concurrency: {{ sbnb_genai_perf_concurrency }}
+        Prompts: {{ sbnb_genai_perf_num_prompts }}
+
+- name: Pull GenAI-Perf image
+  community.docker.docker_image:
+    name: "{{ sbnb_genai_perf_image }}"
+    source: pull
+  when: sbnb_genai_perf_pull | bool
+
+- name: Ensure artifacts directory exists
+  ansible.builtin.file:
+    path: /tmp/genai-perf-artifacts
+    state: directory
+    mode: '0755'
+
+- name: Run GenAI-Perf benchmark
+  ansible.builtin.command:
+    cmd: >
+      docker run --rm --net=host
+      -e COLUMNS=200
+      -v /tmp/genai-perf-artifacts:/workspace/artifacts
+      {{ sbnb_genai_perf_image }}
+      {{ _genai_perf_cmd }}
+  register: benchmark_result
+  changed_when: true
+
+- name: Print benchmark output
+  ansible.builtin.debug:
+    var: benchmark_result.stdout_lines
+
+- name: Find generated CSV file
+  ansible.builtin.find:
+    paths: /tmp/genai-perf-artifacts
+    patterns: "profile_export_genai_perf.csv"
+    recurse: true
+  register: csv_files
+
+- name: Read CSV results
+  ansible.builtin.command:
+    cmd: cat {{ csv_files.files[0].path }}
+  register: csv_result
+  when: csv_files.matched > 0
+  changed_when: false
+
+- name: Print CSV results
+  ansible.builtin.debug:
+    msg: "{{ csv_result.stdout }}"
+  when: csv_files.matched > 0

@@ -1,0 +1,52 @@
+---
+# Run Ollama standalone
+#
+# Prerequisites (one time):
+#   ansible-galaxy install -r requirements.yml
+#
+# Usage:
+#   Start Ollama:
+#     ansible-playbook -i host, playbooks/run-ollama.yml
+#
+#   With models to pull:
+#     ansible-playbook -i host, playbooks/run-ollama.yml \
+#       -e '{"sbnb_ollama_models": ["llama3.1:8b", "qwen3:0.6b"]}'
+#
+#   Stop Ollama:
+#     ansible-playbook -i host, playbooks/run-ollama.yml -e sbnb_ollama_state=absent
+#
+# Query API:
+#   List models:
+#     curl -s http://localhost:11434/api/tags | jq
+#
+#   Pull a model:
+#     curl -X POST http://localhost:11434/api/pull -d '{"name": "qwen3:0.6b"}'
+#
+#   Chat (non-streaming):
+#     curl -s http://localhost:11434/api/chat -d '{
+#       "model": "qwen3:0.6b",
+#       "messages": [{"role": "user", "content": "Hello!"}],
+#       "stream": false
+#     }' | jq
+#
+#   OpenAI-compatible endpoint:
+#     curl -s http://localhost:11434/v1/models | jq
+
+- name: Deploy Ollama
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Wait for host to become reachable
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+        delay: 5
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+  roles:
+    - role: sbnb.compute.docker_vm
+    - role: sbnb.compute.nvidia
+    - role: sbnb.compute.ollama

@@ -1,0 +1,22 @@
+---
+# Ollama role defaults
+
+# Container configuration
+sbnb_ollama_container_name: ollama
+sbnb_ollama_image: ollama/ollama:latest
+sbnb_ollama_state: started
+sbnb_ollama_pull: true
+sbnb_ollama_recreate: false
+
+# Port (host network mode - Ollama listens on 11434)
+sbnb_ollama_port: 11434
+
+# Storage path for models
+sbnb_ollama_data_path: /mnt/sbnb-data/ollama
+
+# Models to pull after start
+sbnb_ollama_models: []
+# Example:
+# sbnb_ollama_models:
+#   - llama3.1:8b
+#   - qwen3:0.6b

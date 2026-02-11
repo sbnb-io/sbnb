@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  author: sbnb
+  description: Run Ollama inference server
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+
+dependencies: []

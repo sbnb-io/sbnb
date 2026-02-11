@@ -1,0 +1,32 @@
+---
+# Install NVIDIA drivers and container toolkit
+#
+# Prerequisites (one time):
+#   ansible-galaxy install -r requirements.yml
+#
+# Usage:
+#   Install driver and container toolkit:
+#     ansible-playbook -i host, playbooks/install-nvidia.yml
+#
+#   Install only container toolkit (driver already installed):
+#     ansible-playbook -i host, playbooks/install-nvidia.yml -e sbnb_nvidia_install_driver=false
+#
+#   Use specific driver branch:
+#     ansible-playbook -i host, playbooks/install-nvidia.yml -e sbnb_nvidia_driver_branch=550
+
+- name: Install NVIDIA
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Wait for host to become reachable
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+        delay: 5
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+  roles:
+    - role: sbnb.compute.nvidia

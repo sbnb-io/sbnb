@@ -1,0 +1,29 @@
+---
+# Monitoring role defaults
+
+# Container state
+sbnb_monitoring_state: started
+
+# Grafana Alloy configuration
+sbnb_monitoring_alloy_container_name: grafana-alloy
+sbnb_monitoring_alloy_image: grafana/alloy
+sbnb_monitoring_alloy_config_path: /etc/config.alloy
+
+# IPMI Exporter configuration
+sbnb_monitoring_enable_ipmi: true
+sbnb_monitoring_ipmi_container_name: ipmi-exporter
+sbnb_monitoring_ipmi_image: prometheuscommunity/ipmi-exporter
+sbnb_monitoring_ipmi_device: /dev/ipmi0
+
+# NVIDIA GPU Exporter configuration (DCGM - official NVIDIA exporter)
+sbnb_monitoring_enable_nvidia: true
+sbnb_monitoring_nvidia_container_name: dcgm-exporter
+sbnb_monitoring_nvidia_image: nvcr.io/nvidia/k8s/dcgm-exporter:3.3.5-3.4.0-ubuntu22.04
+
+# Scrape intervals
+sbnb_monitoring_scrape_interval: "60s"
+
+# REQUIRED - Grafana Cloud credentials
+# sbnb_monitoring_grafana_url: "https://prometheus-xxx.grafana.net/api/prom/push"
+# sbnb_monitoring_grafana_username: "123456"
+# sbnb_monitoring_grafana_password: "glc_xxx"

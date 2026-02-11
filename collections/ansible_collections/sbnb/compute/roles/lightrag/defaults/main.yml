@@ -1,0 +1,22 @@
+---
+# LightRAG role defaults
+# Note: Ollama is started via role dependency (sbnb.compute.ollama)
+
+# Container state
+sbnb_lightrag_state: started
+sbnb_lightrag_pull: always
+
+# Ports (LightRAG uses 9000 to avoid conflict with vLLM/SGLang on 8000)
+sbnb_lightrag_port: 9000
+sbnb_lightrag_ollama_port: 11434
+
+# Storage paths
+sbnb_lightrag_data_path: /mnt/sbnb-data/lightrag
+
+# Container image
+sbnb_lightrag_image: sbnb/lightrag
+
+# Ollama models to pull (passed to ollama role dependency)
+sbnb_lightrag_models:
+  - bge-m3
+  - mistral-nemo:latest

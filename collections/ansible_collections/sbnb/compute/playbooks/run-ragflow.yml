@@ -1,0 +1,30 @@
+---
+# Run RAGFlow RAG platform
+#
+# Prerequisites (one time):
+#   ansible-galaxy install -r requirements.yml
+#
+# Usage:
+#   Start RAGFlow:
+#     ansible-playbook -i host, playbooks/run-ragflow.yml
+#
+#   Stop RAGFlow:
+#     ansible-playbook -i host, playbooks/run-ragflow.yml -e sbnb_ragflow_state=absent
+
+- name: Deploy RAGFlow
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Wait for host to become reachable
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+        delay: 5
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+  roles:
+    - role: sbnb.compute.docker_vm
+    - role: sbnb.compute.ragflow

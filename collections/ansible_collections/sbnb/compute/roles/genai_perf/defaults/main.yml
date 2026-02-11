@@ -1,0 +1,24 @@
+---
+# GenAI-Perf role defaults
+# NVIDIA's benchmarking tool for OpenAI-compatible APIs
+
+# Container configuration
+sbnb_genai_perf_container_name: genai-perf
+sbnb_genai_perf_image: nvcr.io/nvidia/tritonserver:25.01-py3-sdk
+sbnb_genai_perf_pull: true
+
+# Target API endpoint
+sbnb_genai_perf_url: "http://localhost:8000"
+sbnb_genai_perf_service_kind: openai
+sbnb_genai_perf_endpoint_type: chat
+
+# Model to benchmark
+sbnb_genai_perf_model: "Qwen/Qwen3-0.6B"
+
+# Benchmark parameters
+sbnb_genai_perf_concurrency: 1
+sbnb_genai_perf_num_prompts: 100
+sbnb_genai_perf_tokenizer: ""
+
+# Extra arguments
+sbnb_genai_perf_extra_args: ""

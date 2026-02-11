@@ -75,3 +75,15 @@ sbnb_vm_tailscale_tags: "tag:sbnb"
 # =============================================================================
 # Optional root password for console access (useful when Tailscale unavailable)
 # sbnb_vm_root_password: "your-password"
+
+# =============================================================================
+# QEMU Configuration
+# =============================================================================
+# Use standard Ubuntu QEMU instead of SVSM build (for debugging)
+sbnb_vm_use_standard_qemu: false
+
+# Disable KVM and use TCG software emulation (very slow, for debugging)
+sbnb_vm_disable_kvm: false
+
+# Preallocate all VM memory at startup (for debugging memory issues)
+sbnb_vm_mem_prealloc: false

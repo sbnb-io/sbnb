@@ -1,5 +1,5 @@
 
-# 🚀 Run Browser Use AI Agent on a Bare Metal Server in Minutes (Fully Automated)
+# Run Browser Use AI Agent on a Bare Metal Server in Minutes (Fully Automated)
 
 This guide walks you through setting up AI Agent on your own bare metal server in just minutes. You'll launch:
 
@@ -10,7 +10,7 @@ This guide walks you through setting up AI Agent on your own bare metal server i
 
 ---
 
-## ✅ How Does an AI Agent Compare to RAG?
+## How Does an AI Agent Compare to RAG?
 
 In a separate how-to (https://github.com/sbnb-io/sbnb/edit/main/README-LightRAG.md), we manually searched for information on the internet and uploaded it into RAG for processing.
 In contrast, an AI Agent skips this manual step and autonomously finds the required information for us.
@@ -26,15 +26,15 @@ Then, the AI Agent analyzed the results and prepared a final answer, as shown in
 
 ---
 
-## ✅ Why Run AI Agent on Your Own Bare Metal Server?
+## Why Run AI Agent on Your Own Bare Metal Server?
 
-### 🔐 Privacy & Security
-- Full control over your data - nothing leaves your server  
-- Ideal for **sensitive or regulated data** (e.g., healthcare, finance, legal)  
-- Compliant with **data sovereignty** requirements (e.g., store and process data within specific countries or jurisdictions)  
+### Privacy & Security
+- Full control over your data - nothing leaves your server
+- Ideal for **sensitive or regulated data** (e.g., healthcare, finance, legal)
+- Compliant with **data sovereignty** requirements (e.g., store and process data within specific countries or jurisdictions)
 - No vendor lock-in - run everything locally or in your own cloud
 
-### 💸 Cost Efficiency
+### Cost Efficiency
 - No pay-per-call fees
 - Predictable, one-time hardware investment
 
@@ -48,7 +48,7 @@ Then, the AI Agent analyzed the results and prepared a final answer, as shown in
 
 ---
 
-## ⚙️ Step-by-Step Setup
+## Step-by-Step Setup
 
 ### 1. Boot Bare Metal Server into Sbnb Linux
 
@@ -64,7 +64,7 @@ See [README-SERIAL-NUMBER.md](README-SERIAL-NUMBER.md) for automatic hostname as
 
 Connect your laptop to the same Tailscale network as your server using the instructions at [https://tailscale.com/](https://tailscale.com/). This allows your laptop to directly reach your server using SSH, which is the primary transport protocol used by Ansible automation.
 
-We use a MacBook in this tutorial, but any Linux/Unix laptop should work.  
+We use a MacBook in this tutorial, but any Linux/Unix laptop should work.
 To install Ansible on macOS using Homebrew:
 
 ```sh
@@ -76,57 +76,34 @@ At this point, your network should resemble the diagram below - with both your l
 
 ![Sbnb Linux: laptop and server able to communicate directly over the Tailscale network](images/sbnb-control.png)
 
-### ⚠️ Warning: Run All Commands From Your Laptop
+### Warning: Run All Commands From Your Laptop
 
 All commands below should be executed on your **laptop**, not the server.
 
 ---
 
-### 3. Download Tailscale Dynamic Inventory Script
-
-```sh
-curl https://raw.githubusercontent.com/m4wh6k/ansible-tailscale-inventory/refs/heads/main/ansible_tailscale_inventory.py -O
-chmod +x ansible_tailscale_inventory.py
-```
-
----
-
-### 4. Pull Sbnb Linux Repo
+### 3. Clone the Sbnb Repository
 
 ```sh
 git clone https://github.com/sbnb-io/sbnb.git
-cd sbnb/automation/
+cd sbnb
 ```
 
 ---
 
-### 5. Configure VM Settings
-
-Edit `sbnb-example-vm.json`:
-
-```json
-{
-    "vcpu": 16,
-    "mem": "64G",
-    "tskey": "your-tskey-auth",
-    "attach_gpus": true,
-    "image_size": "100G"
-}
-```
-
-Replace `"your-tskey-auth"` with your actual **Tailscale auth key**.
-
----
-
-### 6. Start VM with Ansible Playbook
+### 4. Start a VM with GPU Passthrough
 
 ```sh
-export SBNB_HOSTS=sbnb-F6S0R8000719
+ansible-playbook -i sbnb-F6S0R8000719, \
+  collections/ansible_collections/sbnb/compute/playbooks/start-vm.yml \
+  -e sbnb_vm_tskey="tskey-auth-xxxxx" \
+  -e sbnb_vm_attach_gpus=true \
+  -e sbnb_vm_vcpu=8 \
+  -e sbnb_vm_mem=16G \
+  -e sbnb_vm_image_size=100G
 ```
 
-```sh
-ansible-playbook -i ./ansible_tailscale_inventory.py sbnb-start-vm.yaml
-```
+Replace `sbnb-F6S0R8000719` with your server's Tailscale hostname and `tskey-auth-xxxxx` with your Tailscale auth key.
 
 You should see the VM appear in Tailscale as `sbnb-vm-<VMID>` (e.g., `sbnb-vm-67f97659333f`).
 
@@ -136,21 +113,17 @@ You should see the VM appear in Tailscale as `sbnb-vm-<VMID>` (e.g., `sbnb-vm-67
 
 ---
 
-### 7. Install Nvidia Drivers and Tools in the VM
+### 5. Install Docker and NVIDIA Drivers in the VM
 
-```bash
-export SBNB_HOSTS=sbnb-vm-67f97659333f
+```sh
+export VM_HOST=sbnb-vm-67f97659333f
+
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/install-docker.yml
+
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/install-nvidia.yml
 ```
-
-```bash
-for playbook in install-docker.yaml install-nvidia.yaml install-nvidia-container-toolkit.yaml; do
-  ansible-playbook -i ./ansible_tailscale_inventory.py $playbook
-done
-```
-
-> Note that this time we set `SBNB_HOSTS` to the hostname of the VM we started in the previous step.
-
-These commands will install Docker, Nvidia drivers, Nvidia container toolkit, and SGLang into the VM.
 
 ---
 
@@ -158,10 +131,11 @@ At this point, you have a VM running **Ubuntu 24.04** with **Nvidia GPU** attach
 
 ---
 
-## 🔁 Run Browser Use AI Agent
+## Run Browser Use AI Agent
 
-```bash
-ansible-playbook -i ./ansible_tailscale_inventory.py run-browser-use.yaml
+```sh
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-browser-use.yml
 ```
 
 This command will:
@@ -170,25 +144,25 @@ This command will:
 - Download default LLM model for Browser Use AI Agent ("qwen2.5:7b")
 - Launch Browser Use AI Agent
 
-✅ **Browser Use AI Agent is up!**
+**Browser Use AI Agent is up!**
 
 ---
 
-## 🧠 Using Browser Use AI Agent
+## Using Browser Use AI Agent
 
 ### 1. Access the Web UI to control AI Agent
 
 Navigate to the VM hostname via Tailscale, using port `7788`. Example URL:
 
 ```
-http://sbnb-0123456789-vm.tail730ca.ts.net:7788/
+http://sbnb-vm-67f97659333f:7788/
 ```
 
 ### 2. Access the VNC Graphic Interface to Watch Browser Interactions
 
 Navigate to the VM hostname via Tailscale, using the following example URL:
 ```
-http://sbnb-0123456789-vm.tail730ca.ts.net:6080/vnc.html
+http://sbnb-vm-67f97659333f:6080/vnc.html
 ```
 
 (Default VNC password: `youvncpassword`)
@@ -201,7 +175,7 @@ In the AI Agent Web UI, navigate to the `Run Agent` section and ask:
 
 > "How much tax was collected in the US in 2024?"
 
-✅ After accessing the internet and processing the data, the AI Agent responds with the answer:
+After accessing the internet and processing the data, the AI Agent responds with the answer:
 ```
 Task Completed
 
@@ -219,7 +193,18 @@ Below is an animated GIF showing all the steps taken by the AI Agent in autonomo
 
 ---
 
-🎉 **That's it!** You've successfully run the AI Agent to find the necessary information in autonomous mode.
+## Stopping Services
+
+To stop Browser Use AI Agent:
+```sh
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-browser-use.yml \
+  -e sbnb_browser_use_state=absent
+```
+
+---
+
+**That's it!** You've successfully run the AI Agent to find the necessary information in autonomous mode.
 This is just a basic example, but the possibilities unlocked by AI Agents are enormous.
 
 Be sure to follow the amazing [Browser Use](https://github.com/browser-use/web-ui) project for more use cases and examples!

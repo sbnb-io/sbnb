@@ -1,0 +1,33 @@
+---
+# Run Grafana Alloy monitoring
+#
+# Prerequisites (one time):
+#   ansible-galaxy install -r requirements.yml
+#
+# Usage:
+#   Start monitoring:
+#     ansible-playbook -i host, playbooks/run-monitoring.yml \
+#       -e sbnb_monitoring_grafana_url="https://prometheus-xxx.grafana.net/api/prom/push" \
+#       -e sbnb_monitoring_grafana_username="123456" \
+#       -e sbnb_monitoring_grafana_password="glc_xxx"
+#
+#   Stop monitoring:
+#     ansible-playbook -i host, playbooks/run-monitoring.yml -e sbnb_monitoring_state=absent
+
+- name: Deploy Monitoring
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Wait for host to become reachable
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+        delay: 5
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+  roles:
+    - role: sbnb.compute.docker_vm
+    - role: sbnb.compute.monitoring

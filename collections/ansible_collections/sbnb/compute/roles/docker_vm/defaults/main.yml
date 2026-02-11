@@ -1,0 +1,8 @@
+---
+# Docker VM role defaults
+
+# Docker data root path
+sbnb_docker_vm_data_root: /mnt/sbnb-data/docker
+
+# Containerd data root path (where images are actually stored)
+sbnb_docker_vm_containerd_root: /mnt/sbnb-data/containerd

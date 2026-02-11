@@ -175,6 +175,39 @@ Configures Docker daemon to use storage mount.
         sbnb_docker_data_root: /mnt/sbnb-data/docker
 ```
 
+### sbnb.compute.monitoring
+
+Deploys Grafana Alloy with optional IPMI and NVIDIA DCGM exporters.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `sbnb_monitoring_grafana_url` | **required** | Grafana Cloud Prometheus push URL |
+| `sbnb_monitoring_grafana_username` | **required** | Grafana Cloud username |
+| `sbnb_monitoring_grafana_password` | **required** | Grafana Cloud API key |
+| `sbnb_monitoring_enable_ipmi` | `true` | Enable IPMI exporter |
+| `sbnb_monitoring_enable_nvidia` | `true` | Enable NVIDIA DCGM exporter |
+| `sbnb_monitoring_scrape_interval` | `"60s"` | Metrics scrape interval |
+
+### sbnb.compute.frigate
+
+Deploys Frigate NVR for video surveillance with object detection.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `sbnb_frigate_image` | `ghcr.io/blakeblackshear/frigate:0.16.0-tensorrt` | Container image |
+| `sbnb_frigate_config_path` | `/mnt/sbnb-data/fg/config` | Config directory |
+| `sbnb_frigate_media_path` | `/mnt/sbnb-data/fg/media` | Media storage |
+| `sbnb_frigate_auth_enabled` | `true` | Enable authentication |
+
+### sbnb.compute.gpu_fryer
+
+GPU stress testing using Hugging Face gpu-fryer.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `sbnb_gpu_fryer_duration` | `60` | Test duration in seconds |
+| `sbnb_gpu_fryer_image` | `ghcr.io/huggingface/gpu-fryer:latest` | Container image |
+
 ## Modules
 
 ### sbnb.compute.qemu_vm
@@ -232,11 +265,99 @@ Manages QEMU VMs running in Docker containers.
 
 ## Playbooks
 
-The collection includes example playbooks:
+The collection includes the following playbooks:
 
-- `sbnb.compute.start-vm` - Start a VM
-- `sbnb.compute.stop-vm` - Stop a VM
-- `sbnb.compute.remove-vm` - Remove a VM
+### VM Management
+- `start-vm.yml` - Start a QEMU VM
+- `stop-vm.yml` - Stop a VM
+- `remove-vm.yml` - Remove a VM
+
+### Infrastructure Setup
+- `install-docker.yml` - Install Docker on VMs
+- `install-nvidia.yml` - Install NVIDIA drivers and container toolkit
+- `mount-data-disk.yml` - Mount data disk
+
+### Monitoring
+```bash
+# Start monitoring with Grafana Cloud
+ansible-playbook -i host, playbooks/run-monitoring.yml \
+  -e sbnb_monitoring_grafana_url="https://prometheus-xxx.grafana.net/api/prom/push" \
+  -e sbnb_monitoring_grafana_username="123456" \
+  -e sbnb_monitoring_grafana_password="glc_xxx"
+```
+Includes: Grafana Alloy, IPMI exporter (if /dev/ipmi0 exists), NVIDIA DCGM exporter (if nvidia-smi exists)
+
+### Services
+
+**Frigate NVR:**
+```bash
+ansible-playbook -i host, playbooks/run-frigate.yml
+# With custom config:
+ansible-playbook -i host, playbooks/run-frigate.yml \
+  -e sbnb_frigate_local_config=/path/to/config.yaml
+```
+
+**TP-Link Omada Controller:**
+```bash
+ansible-playbook -i host, playbooks/run-omada.yml
+```
+
+**Ollama (LLM inference):**
+```bash
+ansible-playbook -i host, playbooks/run-ollama.yml
+```
+
+**vLLM (high-performance LLM inference):**
+```bash
+# Open models (no token needed)
+ansible-playbook -i host, playbooks/run-vllm.yml \
+  -e 'sbnb_vllm_args="--model Qwen/Qwen2.5-7B-Instruct"'
+
+# Gated models (HF token required)
+ansible-playbook -i host, playbooks/run-vllm.yml \
+  -e 'sbnb_vllm_args="--model meta-llama/Llama-3.1-8B-Instruct"' \
+  -e sbnb_vllm_hf_token="hf_xxx"
+```
+
+**SGLang (LLM inference):**
+```bash
+# Open models (no token needed)
+ansible-playbook -i host, playbooks/run-sglang.yml \
+  -e sbnb_sglang_model="Qwen/Qwen2.5-7B-Instruct"
+
+# Gated models (HF token required)
+ansible-playbook -i host, playbooks/run-sglang.yml \
+  -e sbnb_sglang_model="meta-llama/Llama-3.1-8B-Instruct" \
+  -e sbnb_sglang_hf_token="hf_xxx"
+```
+
+**LightRAG:**
+```bash
+ansible-playbook -i host, playbooks/run-lightrag.yml
+```
+
+**RAGFlow:**
+```bash
+ansible-playbook -i host, playbooks/run-ragflow.yml
+```
+
+### Testing
+
+**GPU Stress Test:**
+```bash
+# Run for 60 seconds (default)
+ansible-playbook -i host, playbooks/run-gpu-fryer.yml
+
+# Run for 5 minutes
+ansible-playbook -i host, playbooks/run-gpu-fryer.yml -e sbnb_gpu_fryer_duration=300
+```
+
+### Stopping Services
+Add `-e sbnb_<service>_state=absent` to stop any service:
+```bash
+ansible-playbook -i host, playbooks/run-monitoring.yml -e sbnb_monitoring_state=absent
+ansible-playbook -i host, playbooks/run-frigate.yml -e sbnb_frigate_state=absent
+```
 
 ## Variable Precedence
 

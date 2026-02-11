@@ -1,0 +1,101 @@
+---
+# Docker VM role - installs Docker with custom data-root
+# Pre-configures daemon.json BEFORE Docker is installed
+# Configures containerd AFTER installation (containerd.io creates its own config)
+
+- name: Check if Docker is already installed
+  ansible.builtin.command:
+    cmd: docker --version
+  register: docker_check
+  changed_when: false
+  failed_when: false
+
+- name: Install Docker if not present
+  when: docker_check.rc != 0
+  block:
+    - name: Create Docker config directory
+      ansible.builtin.file:
+        path: /etc/docker
+        state: directory
+        mode: '0755'
+
+    - name: Pre-configure Docker daemon.json before installation
+      ansible.builtin.copy:
+        content: |
+          {
+            "data-root": "{{ sbnb_docker_vm_data_root }}"
+          }
+        dest: /etc/docker/daemon.json
+        mode: '0644'
+        force: false  # Don't overwrite if exists
+
+    - name: Install Docker via geerlingguy.docker
+      ansible.builtin.include_role:
+        name: geerlingguy.docker
+      vars:
+        docker_daemon_options:
+          data-root: "{{ sbnb_docker_vm_data_root }}"
+
+- name: Read current daemon.json
+  ansible.builtin.slurp:
+    src: /etc/docker/daemon.json
+  register: daemon_json_content
+  failed_when: false
+
+- name: Ensure data-root is set in daemon.json
+  when: daemon_json_content.content is defined
+  block:
+    - name: Parse daemon.json
+      ansible.builtin.set_fact:
+        daemon_config: "{{ daemon_json_content.content | b64decode | from_json }}"
+
+    - name: Update daemon.json with data-root if missing
+      ansible.builtin.copy:
+        content: "{{ daemon_config | combine({'data-root': sbnb_docker_vm_data_root}) | to_nice_json }}"
+        dest: /etc/docker/daemon.json
+        mode: '0644'
+      when: daemon_config['data-root'] is not defined or daemon_config['data-root'] != sbnb_docker_vm_data_root
+      notify: Restart Docker
+
+- name: Check if containerd root is already configured
+  ansible.builtin.shell:
+    cmd: grep -q '^root = "{{ sbnb_docker_vm_containerd_root }}"' /etc/containerd/config.toml
+  register: containerd_root_check
+  changed_when: false
+  failed_when: false
+
+- name: Configure containerd root directory
+  when: containerd_root_check.rc != 0
+  block:
+    - name: Stop Docker before reconfiguring containerd
+      ansible.builtin.systemd:
+        name: docker
+        state: stopped
+
+    - name: Stop containerd before reconfiguring
+      ansible.builtin.systemd:
+        name: containerd
+        state: stopped
+
+    - name: Remove commented root line
+      ansible.builtin.lineinfile:
+        path: /etc/containerd/config.toml
+        regexp: '^#\s*root\s*='
+        state: absent
+
+    - name: Set containerd root directory
+      ansible.builtin.lineinfile:
+        path: /etc/containerd/config.toml
+        regexp: '^root\s*='
+        line: 'root = "{{ sbnb_docker_vm_containerd_root }}"'
+        insertafter: '^disabled_plugins'
+
+    - name: Start containerd with new configuration
+      ansible.builtin.systemd:
+        name: containerd
+        state: started
+
+    - name: Start Docker
+      ansible.builtin.systemd:
+        name: docker
+        state: started

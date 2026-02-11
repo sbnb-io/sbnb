@@ -1,0 +1,37 @@
+---
+# GPU Fryer role - runs GPU stress test
+
+- name: Start GPU Fryer container
+  community.docker.docker_container:
+    name: "{{ sbnb_gpu_fryer_container_name }}"
+    image: "{{ sbnb_gpu_fryer_image }}"
+    state: started
+    runtime: nvidia
+    device_requests:
+      - driver: nvidia
+        count: -1
+        capabilities:
+          - - gpu
+            - nvidia
+    command: "{{ sbnb_gpu_fryer_duration }}"
+  register: gpu_fryer_result
+  retries: 40
+  delay: 15
+  until: gpu_fryer_result is succeeded
+  when: sbnb_gpu_fryer_state == 'started'
+
+- name: Stop GPU Fryer container
+  community.docker.docker_container:
+    name: "{{ sbnb_gpu_fryer_container_name }}"
+    state: absent
+  when: sbnb_gpu_fryer_state == 'absent'
+
+- name: Display GPU Fryer status
+  ansible.builtin.debug:
+    msg: |
+      GPU Fryer:
+        Name: {{ sbnb_gpu_fryer_container_name }}
+        Duration: {{ sbnb_gpu_fryer_duration }}s
+        Image: {{ sbnb_gpu_fryer_image }}
+        Note: Container will exit automatically after stress test completes
+  when: sbnb_gpu_fryer_state == 'started'

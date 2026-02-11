@@ -1,0 +1,26 @@
+---
+# Run GPU stress test using Hugging Face gpu-fryer
+#
+# Usage:
+#   Run for 60 seconds (default):
+#     ansible-playbook -i host, playbooks/run-gpu-fryer.yml
+#
+#   Run for 5 minutes:
+#     ansible-playbook -i host, playbooks/run-gpu-fryer.yml -e sbnb_gpu_fryer_duration=300
+#
+#   Stop:
+#     ansible-playbook -i host, playbooks/run-gpu-fryer.yml -e sbnb_gpu_fryer_state=absent
+
+- name: Run GPU Fryer
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Wait for host to become reachable
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+        delay: 5
+
+  roles:
+    - role: sbnb.compute.gpu_fryer

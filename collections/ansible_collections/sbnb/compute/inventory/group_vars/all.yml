@@ -18,6 +18,6 @@ sbnb_storage_mount: /mnt/sbnb-data
 # Networking configuration
 sbnb_bridge_name: br0
 
-# Docker image
+# Docker configuration
 sbnb_docker_image: sbnb/svsm
 sbnb_docker_pull: always

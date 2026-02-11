@@ -1,0 +1,19 @@
+---
+galaxy_info:
+  author: SBNB Team
+  description: Run vLLM OpenAI-compatible inference server
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+  galaxy_tags:
+    - vllm
+    - llm
+    - inference
+    - gpu
+    - nvidia
+
+dependencies: []

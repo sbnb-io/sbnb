@@ -90,6 +90,9 @@
     persist_boot_image: "{{ sbnb_vm_persist_boot_image }}"
     root_password: "{{ sbnb_vm_root_password | default(omit) }}"
     tailscale_tags: "{{ sbnb_vm_tailscale_tags }}"
+    use_standard_qemu: "{{ sbnb_vm_use_standard_qemu }}"
+    disable_kvm: "{{ sbnb_vm_disable_kvm }}"
+    mem_prealloc: "{{ sbnb_vm_mem_prealloc }}"
   register: vm_result
 
 # =============================================================================

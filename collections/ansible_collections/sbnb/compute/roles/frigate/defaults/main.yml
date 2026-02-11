@@ -1,0 +1,48 @@
+---
+# Frigate role defaults
+
+# Container configuration
+sbnb_frigate_container_name: frigate
+sbnb_frigate_image: ghcr.io/blakeblackshear/frigate:0.16.0-tensorrt
+sbnb_frigate_state: started
+sbnb_frigate_pull: always
+sbnb_frigate_recreate: true
+sbnb_frigate_shm_size: "512M"
+
+# Ports
+sbnb_frigate_ports:
+  - "8971:8971"
+  - "8554:8554"
+  - "8555:8555/tcp"
+  - "8555:8555/udp"
+
+# Storage paths
+sbnb_frigate_config_path: /mnt/sbnb-data/fg/config
+sbnb_frigate_media_path: /mnt/sbnb-data/fg/media
+
+# Optional local config file to copy
+# sbnb_frigate_local_config: frigate-config.yaml
+
+# Force overwrite config on server (use with sbnb_frigate_local_config)
+sbnb_frigate_config_force: false
+
+# Models container image (pulls model files from container)
+sbnb_frigate_models_image: sbnb/frigate-models:latest
+
+# Optional model file to copy (deprecated, use models_image instead)
+# sbnb_frigate_model_file: yolo_nas_s.onnx
+
+# List of extra files to copy to config directory (models, certificates, etc.)
+# sbnb_frigate_extra_files:
+#   - /path/to/yolo_nas_s.onnx
+#   - /path/to/another_model.pt
+#   - relative/path/to/file.txt
+
+# Additional environment variables (dict)
+# sbnb_frigate_env: {}
+
+# Authentication (set to false to disable auth behind Tailscale)
+sbnb_frigate_auth_enabled: true
+
+# Note: If auth is enabled, password is auto-generated on first run and displayed in playbook output.
+# To reset password: add 'auth: { reset_admin_password: true }' to config.yaml

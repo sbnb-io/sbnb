@@ -1,0 +1,10 @@
+---
+- name: Download configuration scripts
+  get_url:
+    url: "https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/scripts/{{ item }}"
+    dest: /dev/shm/
+    mode: u+x
+  loop: "{{ sbnb_configure_system_scripts }}"
+
+- name: Execute host configuration script
+  command: sh /dev/shm/sbnb-configure-system.sh

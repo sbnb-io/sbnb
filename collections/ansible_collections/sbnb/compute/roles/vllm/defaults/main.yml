@@ -1,0 +1,34 @@
+---
+# vLLM role defaults
+
+# Container configuration
+sbnb_vllm_container_name: vllm
+# v0.15.1 supports Blackwell (sm_120) with driver 590 (CUDA 13.1)
+# Uses LD_LIBRARY_PATH fix to prefer host libcuda over container cuda-compat
+sbnb_vllm_image: vllm/vllm-openai:v0.15.1
+sbnb_vllm_state: started
+sbnb_vllm_pull: true
+sbnb_vllm_recreate: false
+
+# Ports
+sbnb_vllm_ports:
+  - "8000:8000"
+
+# Storage paths
+sbnb_vllm_cache_path: /mnt/sbnb-data/huggingface
+sbnb_vllm_data_path: /mnt/sbnb-data/src
+
+# HuggingFace token (required for gated models)
+# sbnb_vllm_hf_token: "hf_xxx"
+sbnb_vllm_require_hf_token: false
+
+# Model to serve
+sbnb_vllm_model: "Qwen/Qwen3-0.6B"
+
+# Enforce eager mode (disable CUDA graphs) - helps with compatibility
+# Set to false to enable CUDA graphs for potentially better performance
+sbnb_vllm_enforce_eager: true
+
+# vLLM extra arguments (appended to default command)
+# Example: "--max-model-len 4096 --tensor-parallel-size 2"
+sbnb_vllm_extra_args: ""

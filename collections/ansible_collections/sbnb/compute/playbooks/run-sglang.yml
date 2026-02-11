@@ -1,0 +1,37 @@
+---
+# Run SGLang inference server
+#
+# Prerequisites (one time):
+#   ansible-galaxy install -r requirements.yml
+#
+# Usage:
+#   Start SGLang with a model:
+#     ansible-playbook -i host, playbooks/run-sglang.yml \
+#       -e sbnb_sglang_args="python -m sglang.launch_server --model meta-llama/Llama-3.1-8B-Instruct"
+#
+#   With HuggingFace token:
+#     ansible-playbook -i host, playbooks/run-sglang.yml \
+#       -e sbnb_sglang_hf_token=hf_xxx \
+#       -e 'sbnb_sglang_args="python -m sglang.launch_server --model meta-llama/Llama-3.1-70B-Instruct --tp 4"'
+#
+#   Stop SGLang:
+#     ansible-playbook -i host, playbooks/run-sglang.yml -e sbnb_sglang_state=absent
+
+- name: Deploy SGLang
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Wait for host to become reachable
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+        delay: 5
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+  roles:
+    - role: sbnb.compute.docker_vm
+    - role: sbnb.compute.nvidia
+    - role: sbnb.compute.sglang

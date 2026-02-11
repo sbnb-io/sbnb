@@ -1,0 +1,35 @@
+---
+# Run LightRAG with Ollama
+#
+# Prerequisites (one time):
+#   ansible-galaxy install -r requirements.yml
+#
+# Usage:
+#   Start LightRAG:
+#     ansible-playbook -i host, playbooks/run-lightrag.yml
+#
+#   With custom models:
+#     ansible-playbook -i host, playbooks/run-lightrag.yml \
+#       -e '{"sbnb_lightrag_models": ["llama3.1:8b", "bge-m3"]}'
+#
+#   Stop LightRAG:
+#     ansible-playbook -i host, playbooks/run-lightrag.yml -e sbnb_lightrag_state=absent
+
+- name: Deploy LightRAG
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Wait for host to become reachable
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+        delay: 5
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+  roles:
+    - role: sbnb.compute.docker_vm
+    - role: sbnb.compute.nvidia
+    - role: sbnb.compute.lightrag

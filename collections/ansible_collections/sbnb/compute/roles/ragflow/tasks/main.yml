@@ -1,0 +1,42 @@
+---
+# RAGFlow role - runs RAGFlow RAG platform
+# Source: run-ragflow.yaml
+
+- name: Clone RAGFlow repository
+  ansible.builtin.git:
+    repo: "{{ sbnb_ragflow_repo }}"
+    version: "{{ sbnb_ragflow_version }}"
+    force: true
+    dest: "{{ sbnb_ragflow_src_path }}"
+  when: sbnb_ragflow_state == 'started'
+
+- name: Start RAGFlow with docker-compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ sbnb_ragflow_src_path }}/docker"
+    files: docker-compose.yml
+    state: present
+    pull: "{{ sbnb_ragflow_pull }}"
+    recreate: "{{ sbnb_ragflow_recreate }}"
+  environment:
+    RAGFLOW_IMAGE: "{{ sbnb_ragflow_image }}"
+  register: compose_result
+  retries: 40
+  delay: 15
+  until: compose_result is succeeded
+  when: sbnb_ragflow_state == 'started'
+
+- name: Stop RAGFlow
+  community.docker.docker_compose_v2:
+    project_src: "{{ sbnb_ragflow_src_path }}/docker"
+    files: docker-compose.yml
+    state: absent
+  when: sbnb_ragflow_state == 'absent'
+
+- name: Display RAGFlow status
+  ansible.builtin.debug:
+    msg: |
+      RAGFlow:
+        State: {{ sbnb_ragflow_state }}
+        Image: {{ sbnb_ragflow_image }}
+        Source: {{ sbnb_ragflow_src_path }}
+  when: sbnb_ragflow_state == 'started'

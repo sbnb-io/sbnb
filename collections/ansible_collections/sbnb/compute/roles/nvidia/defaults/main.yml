@@ -1,0 +1,22 @@
+---
+# NVIDIA role defaults
+
+# NVIDIA driver branch version
+# Driver 590 provides CUDA 13.1 - use with cuda-compat-12-9 for vLLM latest
+# Driver 580 provides CUDA 13.0 - also works with cuda-compat-12-9
+# Driver 570 provides CUDA 12.8 - causes error 804 with vLLM latest (forward compat fails)
+sbnb_nvidia_driver_branch: "590"
+
+# Install NVIDIA driver
+sbnb_nvidia_install_driver: true
+
+# Install NVIDIA container toolkit for Docker GPU support
+sbnb_nvidia_install_container_toolkit: true
+
+# Use open-source kernel modules (required for RTX 50 series / Blackwell GPUs)
+sbnb_nvidia_open_modules: true
+
+# Install CUDA 12.9 compatibility libraries for containers with CUDA version mismatch
+# Note: Does NOT help with CUDA 13.x backward compatibility issues
+# Only useful for forward compatibility (newer CUDA in container than driver)
+sbnb_nvidia_install_cuda_compat: false

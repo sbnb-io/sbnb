@@ -1,6 +1,6 @@
 # Run Grafana Monitoring under Sbnb Linux
 
-This tutorial will show how to get a Bare Metal server up & running with CPU Temperature, Fan speed, and Power consumption (Watt) monitoring using Grafana in minutes with Sbnb Linux. At the end, you will be able to see the following monitoring graphs from your Bare Metal server. The graph below shows a CPU stress test for 10 minutes, leading to a CPU load spike to 100%, a temperature rise from 40°C to around 80°C, a Fan speed increase from 8000 RPM to 18000 RPM, and power consumption rising from 50 Watts to 200 Watts.  
+This tutorial will show how to get a Bare Metal server up & running with CPU Temperature, Fan speed, and Power consumption (Watt) monitoring using Grafana in minutes with Sbnb Linux. At the end, you will be able to see the following monitoring graphs from your Bare Metal server. The graph below shows a CPU stress test for 10 minutes, leading to a CPU load spike to 100%, a temperature rise from 40°C to around 80°C, a Fan speed increase from 8000 RPM to 18000 RPM, and power consumption rising from 50 Watts to 200 Watts.
 
 ![Sbnb Linux: Monitoring CPU Temp, FAN speed, Power consumption (Watt) with Grafana](images/sbnb-grafana-cpu-temp-power.png)
 
@@ -20,74 +20,63 @@ For more details on automatic hostname assignments, refer to [README-SERIAL-NUMB
 ### 2. Connect Your Laptop to Tailscale
 We will use a MacBook in this tutorial, but any machine, such as a Linux instance, should work the same.
 
-### 3. Download Tailscale Dynamic Inventory Script
-```sh
-curl https://raw.githubusercontent.com/m4wh6k/ansible-tailscale-inventory/refs/heads/main/ansible_tailscale_inventory.py -O
-chmod +x ansible_tailscale_inventory.py
-```
-
-### 4. Pull Grafana Alloy Config and Ansible Playbook
-```sh
-curl -O https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/automation/grafana.yaml
-curl -O https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/automation/ansible.cfg
-curl -O https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/automation/config.alloy
-```
-
-### 5. Set environment variables
+### 3. Clone the Sbnb Repository
 
 ```sh
-export SBNB_HOSTS=sbnb-F6S0R8000719
-export GRAFANA_URL="https://prometheus-prod-13-prod-us-east-0.grafana.net/api/prom/push"
-export GRAFANA_USERNAME="1962802"
-export GRAFANA_PASSWORD="glc_<REDACTED>"
+git clone https://github.com/sbnb-io/sbnb.git
+cd sbnb
 ```
 
-Replace `GRAFANA_URL`, `GRAFANA_USERNAME`, and `GRAFANA_PASSWORD` with your own credentials, which you can obtain from your Grafana Cloud account under:
+### 4. Run Monitoring Playbook
 
-```
-Home -> Connections -> Data sources -> Your Prometheus Data Source -> Authentication
-```
+Tailscale's Magic DNS allows you to use hostnames directly. Run the monitoring playbook with your Grafana Cloud credentials:
 
-### 6. Run Ansible Playbook
 ```sh
-ansible-playbook -i ./ansible_tailscale_inventory.py grafana.yaml
+ansible-playbook -i sbnb-F6S0R8000719, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-monitoring.yml \
+  -e sbnb_monitoring_grafana_url="https://prometheus-prod-13-prod-us-east-0.grafana.net/api/prom/push" \
+  -e sbnb_monitoring_grafana_username="1962802" \
+  -e sbnb_monitoring_grafana_password="glc_<YOUR_API_KEY>"
 ```
 
-A successful output should look like this:
-```
-# ansible-playbook -i ./ansible_tailscale_inventory.py grafana.yaml
+Replace:
+- `sbnb-F6S0R8000719` with your server's Tailscale hostname
+- Grafana credentials with your own, which you can obtain from your Grafana Cloud account under:
+  ```
+  Home -> Connections -> Data sources -> Your Prometheus Data Source -> Authentication
+  ```
 
-PLAY [sbnb-F6S0R8000719] **********************************************************************************************************************
+The monitoring role automatically detects and starts:
+- **Grafana Alloy** - metrics collection and forwarding
+- **IPMI Exporter** - if `/dev/ipmi0` exists (CPU temp, fan speed, power)
+- **NVIDIA DCGM Exporter** - if `nvidia-smi` is available (GPU metrics)
 
-TASK [ping] ***********************************************************************************************************************************
-ok: [sbnb-F6S0R8000719]
-
-TASK [Copy Grafana config] ********************************************************************************************************************
-ok: [sbnb-F6S0R8000719]
-
-TASK [Check if "/dev/ipmi0" exists] ************************************************************************************************************
-ok: [sbnb-F6S0R8000719]
-
-TASK [Start an ipmi-exporter container] ********************************************************************************************************
-ok: [sbnb-F6S0R8000719]
-
-TASK [Start a Grafana Alloy container] ********************************************************************************************************
-changed: [sbnb-F6S0R8000719]
-
-PLAY RECAP ************************************************************************************************************************************
-sbnb-F6S0R8000719          : ok=5    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
-```
-
-### 7. Import Grafana Dashboard and Start Monitoring Your Bare Metal Server!
+### 5. Import Grafana Dashboard and Start Monitoring Your Bare Metal Server!
 Import [this Grafana dashboard](https://grafana.com/grafana/dashboards/22906-linux-node-overview/) created for simplicity. It displays CPU load and metrics gathered from IPMI, such as various component temperatures, Fan speed, and power consumption in Watts.
 
 ### Bonus: Run CPU Stress Test
 
-The following playbook will run a CPU stress test using sysbench for 10 minutes:
+Run a CPU stress test using sysbench for 10 minutes:
 
 ```bash
-curl -O https://raw.githubusercontent.com/sbnb-io/sbnb/refs/heads/main/automation/sysbench.yaml
-ansible-playbook -i ./ansible_tailscale_inventory.py sysbench.yaml
+ansible-playbook -i sbnb-F6S0R8000719, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-sysbench.yml
 ```
 
 As a result, you should see the corresponding graphs in Grafana as shown at the top of this tutorial!
+
+To stop the sysbench stress test:
+```bash
+ansible-playbook -i sbnb-F6S0R8000719, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-sysbench.yml \
+  -e sbnb_sysbench_state=absent
+```
+
+### Stopping Monitoring
+
+To stop the monitoring containers:
+```bash
+ansible-playbook -i sbnb-F6S0R8000719, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-monitoring.yml \
+  -e sbnb_monitoring_state=absent
+```

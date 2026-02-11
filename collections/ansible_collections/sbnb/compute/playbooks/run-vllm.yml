@@ -1,0 +1,37 @@
+---
+# Run vLLM inference server
+#
+# Prerequisites (one time):
+#   ansible-galaxy install -r requirements.yml
+#
+# Usage:
+#   Start vLLM with a model:
+#     ansible-playbook -i host, playbooks/run-vllm.yml \
+#       -e sbnb_vllm_args="--model meta-llama/Llama-3.1-8B-Instruct"
+#
+#   With HuggingFace token for gated models:
+#     ansible-playbook -i host, playbooks/run-vllm.yml \
+#       -e sbnb_vllm_hf_token=hf_xxx \
+#       -e sbnb_vllm_args="--model meta-llama/Llama-3.1-70B-Instruct --tensor-parallel-size 4"
+#
+#   Stop vLLM:
+#     ansible-playbook -i host, playbooks/run-vllm.yml -e sbnb_vllm_state=absent
+
+- name: Deploy vLLM
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Wait for host to become reachable
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+        delay: 5
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+  roles:
+    - role: sbnb.compute.docker_vm
+    - role: sbnb.compute.nvidia
+    - role: sbnb.compute.vllm

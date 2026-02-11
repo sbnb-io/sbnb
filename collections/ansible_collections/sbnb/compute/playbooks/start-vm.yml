@@ -12,7 +12,7 @@
 
 - name: Start SBNB VM
   hosts: "{{ target_hosts | default('all') }}"
-  gather_facts: true
+  gather_facts: false
 
   collections:
     - sbnb.compute

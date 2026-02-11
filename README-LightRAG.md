@@ -1,5 +1,5 @@
 
-# 🚀 Run LightRAG on a Bare Metal Server in Minutes (Fully Automated)
+# Run LightRAG on a Bare Metal Server in Minutes (Fully Automated)
 
 * **Note:** We also have a separate guide for running **RAGFlow** using the same approach. Check it out here: [README-RAG.md](README-RAG.md) if you're interested.
 
@@ -12,27 +12,27 @@ This guide walks you through setting up a full RAG pipeline on your own bare met
 
 ---
 
-## ✅ Why Run RAG on Your Own Bare Metal Server?
+## Why Run RAG on Your Own Bare Metal Server?
 
-### 🔐 Privacy & Security
-- Full control over your data - nothing leaves your server  
-- Ideal for **sensitive or regulated data** (e.g., healthcare, finance, legal)  
-- Compliant with **data sovereignty** requirements (e.g., store and process data within specific countries or jurisdictions)  
-- No vendor lock-in - run everything locally or in your own cloud  
+### Privacy & Security
+- Full control over your data - nothing leaves your server
+- Ideal for **sensitive or regulated data** (e.g., healthcare, finance, legal)
+- Compliant with **data sovereignty** requirements (e.g., store and process data within specific countries or jurisdictions)
+- No vendor lock-in - run everything locally or in your own cloud
 
-### 🔥 Performance
+### Performance
 - Faster retrieval and inference
 
-### 💸 Cost Efficiency
+### Cost Efficiency
 - No pay-per-call fees
 - Predictable, one-time hardware investment
 
-### 🛠️ Customization
+### Customization
 - Your own retrievers, embeddings, chunking strategy
 - Fine-tuned or quantized LLMs
 - Flexible RAG pipelines (filters, rerankers, etc.)
 
-### 🌐 Offline / Edge Ready
+### Offline / Edge Ready
 - Fully local operation
 - Great for air-gapped or remote deployments
 
@@ -46,7 +46,7 @@ This guide walks you through setting up a full RAG pipeline on your own bare met
 
 ---
 
-## ⚙️ Step-by-Step Setup
+## Step-by-Step Setup
 
 ### 1. Boot Bare Metal Server into Sbnb Linux
 
@@ -62,7 +62,7 @@ See [README-SERIAL-NUMBER.md](README-SERIAL-NUMBER.md) for automatic hostname as
 
 Connect your laptop to the same Tailscale network as your server using the instructions at [https://tailscale.com/](https://tailscale.com/). This allows your laptop to directly reach your server using SSH, which is the primary transport protocol used by Ansible automation.
 
-We use a MacBook in this tutorial, but any Linux/Unix laptop should work.  
+We use a MacBook in this tutorial, but any Linux/Unix laptop should work.
 To install Ansible on macOS using Homebrew:
 
 ```sh
@@ -74,57 +74,34 @@ At this point, your network should resemble the diagram below - with both your l
 
 ![Sbnb Linux: laptop and server able to communicate directly over the Tailscale network](images/sbnb-control.png)
 
-### ⚠️ Warning: Run All Commands From Your Laptop
+### Warning: Run All Commands From Your Laptop
 
 All commands below should be executed on your **laptop**, not the server.
 
 ---
 
-### 3. Download Tailscale Dynamic Inventory Script
-
-```sh
-curl https://raw.githubusercontent.com/m4wh6k/ansible-tailscale-inventory/refs/heads/main/ansible_tailscale_inventory.py -O
-chmod +x ansible_tailscale_inventory.py
-```
-
----
-
-### 4. Pull Sbnb Linux Repo
+### 3. Clone the Sbnb Repository
 
 ```sh
 git clone https://github.com/sbnb-io/sbnb.git
-cd sbnb/automation/
+cd sbnb
 ```
 
 ---
 
-### 5. Configure VM Settings
-
-Edit `sbnb-example-vm.json`:
-
-```json
-{
-    "vcpu": 16,
-    "mem": "64G",
-    "tskey": "your-tskey-auth",
-    "attach_gpus": true,
-    "image_size": "100G"
-}
-```
-
-Replace `"your-tskey-auth"` with your actual **Tailscale auth key**.
-
----
-
-### 6. Start VM with Ansible Playbook
+### 4. Start a VM with GPU Passthrough
 
 ```sh
-export SBNB_HOSTS=sbnb-F6S0R8000719
+ansible-playbook -i sbnb-F6S0R8000719, \
+  collections/ansible_collections/sbnb/compute/playbooks/start-vm.yml \
+  -e sbnb_vm_tskey="tskey-auth-xxxxx" \
+  -e sbnb_vm_attach_gpus=true \
+  -e sbnb_vm_vcpu=8 \
+  -e sbnb_vm_mem=16G \
+  -e sbnb_vm_image_size=100G
 ```
 
-```sh
-ansible-playbook -i ./ansible_tailscale_inventory.py sbnb-start-vm.yaml
-```
+Replace `sbnb-F6S0R8000719` with your server's Tailscale hostname and `tskey-auth-xxxxx` with your Tailscale auth key.
 
 You should see the VM appear in Tailscale as `sbnb-vm-<VMID>` (e.g., `sbnb-vm-67f97659333f`).
 
@@ -134,21 +111,17 @@ You should see the VM appear in Tailscale as `sbnb-vm-<VMID>` (e.g., `sbnb-vm-67
 
 ---
 
-### 7. Install Nvidia Drivers and Tools in the VM
+### 5. Install Docker and NVIDIA Drivers in the VM
 
-```bash
-export SBNB_HOSTS=sbnb-vm-67f97659333f
+```sh
+export VM_HOST=sbnb-vm-67f97659333f
+
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/install-docker.yml
+
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/install-nvidia.yml
 ```
-
-```bash
-for playbook in install-docker.yaml install-nvidia.yaml install-nvidia-container-toolkit.yaml; do
-  ansible-playbook -i ./ansible_tailscale_inventory.py $playbook
-done
-```
-
-> Note that this time we set `SBNB_HOSTS` to the hostname of the VM we started in the previous step.
-
-These commands will install Docker, Nvidia drivers, Nvidia container toolkit, and SGLang into the VM.
 
 ---
 
@@ -156,10 +129,11 @@ At this point, you have a VM running **Ubuntu 24.04** with **Nvidia GPU** attach
 
 ---
 
-## 🔁 Run LightRAG
+## Run LightRAG
 
 ```bash
-ansible-playbook -i ./ansible_tailscale_inventory.py run-lightrag.yaml
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-lightrag.yml
 ```
 
 This command will:
@@ -168,25 +142,25 @@ This command will:
 - Download default LLM models for LightRAG ("bge-m3" and "mistral-nemo:latest")
 - Launch LightRAG
 
-✅ **LightRAG is up!**
+**LightRAG is up!**
 
 ---
 
-## 🧠 Using LightRAG
+## Using LightRAG
 
 ### 1. Access the Web UI
 
 Navigate to the VM hostname via Tailscale, using port `8000`. Example URL:
 
 ```
-http://sbnb-0123456789-vm.tail730ca.ts.net:8000/
+http://sbnb-vm-67f97659333f:8000/
 ```
 
 ---
 
 ### 2. Upload Documents
 
-For demo purposes, download the latest 2024 US government financial report (latest at the time of writing this tutorial):  
+For demo purposes, download the latest 2024 US government financial report (latest at the time of writing this tutorial):
 
 [executive-summary-2024.pdf](https://www.fiscal.treasury.gov/files/reports-statements/financial-report/2024/executive-summary-2024.pdf)
 
@@ -215,12 +189,22 @@ Navigate to the `Retrieval` section and ask:
 
 > "How much tax was collected in the US in 2024?"
 
-✅ LightRAG responds with the answer **"... $5.0 trillion in FY 2024"** and cites the PDF.
+LightRAG responds with the answer **"... $5.0 trillion in FY 2024"** and cites the PDF.
 
 ![rag-ask-question](images/lightrag-ask-question.png)
 
 ---
 
-🎉 **That's it!** You've successfully combined an LLM with your custom knowledge base.
+## Stopping LightRAG
+
+```sh
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-lightrag.yml \
+  -e sbnb_lightrag_state=absent
+```
+
+---
+
+**That's it!** You've successfully combined an LLM with your custom knowledge base.
 
 Happy experimenting—and solving real-world problems!

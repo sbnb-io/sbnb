@@ -1,0 +1,21 @@
+---
+galaxy_info:
+  author: SBNB Team
+  description: Run LightRAG with Ollama
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+  galaxy_tags:
+    - lightrag
+    - rag
+    - ollama
+    - llm
+
+dependencies:
+  - role: sbnb.compute.ollama
+    vars:
+      sbnb_ollama_models: "{{ sbnb_lightrag_models }}"

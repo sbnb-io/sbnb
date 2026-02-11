@@ -1,0 +1,29 @@
+---
+# SGLang role defaults
+
+# Container configuration
+sbnb_sglang_container_name: sglang
+sbnb_sglang_image: lmsysorg/sglang:latest
+sbnb_sglang_state: started
+sbnb_sglang_pull: true
+sbnb_sglang_recreate: false
+sbnb_sglang_shm_size: "32g"
+
+# Ports
+sbnb_sglang_ports:
+  - "8000:8000"
+
+# Storage paths
+sbnb_sglang_cache_path: /mnt/sbnb-data/huggingface
+sbnb_sglang_data_path: /mnt/sbnb-data/src
+
+# HuggingFace token (required for gated models)
+# sbnb_sglang_hf_token: "hf_xxx"
+sbnb_sglang_require_hf_token: false
+
+# Model to serve
+sbnb_sglang_model: "Qwen/Qwen3-0.6B"
+
+# SGLang server arguments (appended to default command)
+# Example: "--max-total-tokens 4096 --quantization awq"
+sbnb_sglang_extra_args: ""

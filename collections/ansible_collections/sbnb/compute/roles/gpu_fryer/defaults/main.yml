@@ -1,0 +1,10 @@
+---
+# GPU Fryer role defaults
+
+# Container configuration
+sbnb_gpu_fryer_container_name: gpu-fryer
+sbnb_gpu_fryer_image: ghcr.io/huggingface/gpu-fryer:latest
+sbnb_gpu_fryer_state: started
+
+# Duration in seconds (default 60 seconds)
+sbnb_gpu_fryer_duration: 60

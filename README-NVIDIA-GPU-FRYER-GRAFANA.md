@@ -1,6 +1,6 @@
 # Run Nvidia GPU Monitoring and Huggingface gpu-fryer under Sbnb Linux in Automated Way
 
-This tutorial will show how to get a Bare Metal server up & running with Nvidia GPU monitoring using "nvidia-smi-exporter" and Grafana and run a stress test using Huggingface gpu-fryer in minutes with Sbnb Linux. At the end, you will be able to see the following monitoring graphs from your Bare Metal server. The graph below shows a GPU stress test for a few minutes, leading to a GPU load spike to 100%.
+This tutorial will show how to get a Bare Metal server up & running with Nvidia GPU monitoring using NVIDIA DCGM Exporter and Grafana, and run a stress test using Huggingface gpu-fryer in minutes with Sbnb Linux. At the end, you will be able to see the following monitoring graphs from your Bare Metal server. The graph below shows a GPU stress test for a few minutes, leading to a GPU load spike to 100%.
 
 ![Sbnb Linux: Monitoring GPU Load, Memory, Temp, FAN speed, Power consumption (Watt) with Grafana](images/huggingface-gpu-fryer-grafana.png)
 
@@ -21,37 +21,26 @@ For more details on automatic hostname assignments, refer to [README-SERIAL-NUMB
 ### 2. Connect Your Laptop to Tailscale
 We will use a MacBook in this tutorial, but any machine, such as a Linux instance, should work the same.
 
-### 3. Download Tailscale Dynamic Inventory Script
-```sh
-curl https://raw.githubusercontent.com/m4wh6k/ansible-tailscale-inventory/refs/heads/main/ansible_tailscale_inventory.py -O
-chmod +x ansible_tailscale_inventory.py
-```
+### 3. Clone the Sbnb Repository
 
-### 4. Pull Sbnb Linux Repo with All Required Grafana Configs and Ansible Playbooks
 ```sh
 git clone https://github.com/sbnb-io/sbnb.git
-cd sbnb/automation/
+cd sbnb
 ```
 
-### 5. Configure VM Settings
-Open `sbnb-example-vm.json` file with an editor of your choice and configure the following parameters:
-```json
-{
-    "vcpu": 2,
-    "mem": "4G",
-    "tskey": "your-tskey-auth",
-    "attach_gpus": true,
-    "image_size": "10G"
-}
-```
-Replace `"your-tskey-auth"` with your actual Tailscale key.
+### 4. Start a VM with GPU Passthrough
 
-### 6. Start VM with Ansible Playbook
 ```sh
-export SBNB_HOSTS=sbnb-F6S0R8000719
-
-ansible-playbook -i ./ansible_tailscale_inventory.py sbnb-start-vm.yaml
+ansible-playbook -i sbnb-F6S0R8000719, \
+  collections/ansible_collections/sbnb/compute/playbooks/start-vm.yml \
+  -e sbnb_vm_tskey="tskey-auth-xxxxx" \
+  -e sbnb_vm_attach_gpus=true \
+  -e sbnb_vm_vcpu=8 \
+  -e sbnb_vm_mem=16G \
+  -e sbnb_vm_image_size=100G
 ```
+
+Replace `sbnb-F6S0R8000719` with your server's Tailscale hostname and `tskey-auth-xxxxx` with your Tailscale auth key.
 
 Once the VM starts, you should see it appear in the Tailscale network as `sbnb-vm-VMID`. For example, `sbnb-vm-67f97659333f`.
 
@@ -59,40 +48,67 @@ All Nvidia GPUs present in the system will be attached to this VM using a low-ov
 
 ![nvidia-vfio-sbnb-linux](images/nvidia-vfio-sbnb-linux.png)
 
-
-### 7. Set Grafana Cloud Environment Variables
+### 5. Install Docker and NVIDIA Drivers in the VM
 
 ```sh
-export GRAFANA_URL="https://prometheus-prod-13-prod-us-east-0.grafana.net/api/prom/push"
-export GRAFANA_USERNAME="1962802"
-export GRAFANA_PASSWORD="glc_<REDACTED>"
+export VM_HOST=sbnb-vm-67f97659333f
+
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/install-docker.yml
+
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/install-nvidia.yml
 ```
 
-Replace `GRAFANA_URL`, `GRAFANA_USERNAME`, and `GRAFANA_PASSWORD` with your own credentials, which you can obtain from your Grafana Cloud account under:
+### 6. Start Monitoring with Grafana Cloud
 
+```sh
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-monitoring.yml \
+  -e sbnb_monitoring_grafana_url="https://prometheus-prod-13-prod-us-east-0.grafana.net/api/prom/push" \
+  -e sbnb_monitoring_grafana_username="1962802" \
+  -e sbnb_monitoring_grafana_password="glc_<YOUR_API_KEY>"
+```
+
+Replace Grafana credentials with your own, which you can obtain from your Grafana Cloud account under:
 ```
 Home -> Connections -> Data sources -> Your Prometheus Data Source -> Authentication
 ```
 
-### 8. Start All Required Services in the VM
-Run on the laptop:
-```sh
-export SBNB_HOSTS=sbnb-vm-67f97659333f
+The monitoring role automatically starts:
+- **Grafana Alloy** - metrics collection and forwarding
+- **NVIDIA DCGM Exporter** - GPU metrics (load, memory, temp, power)
 
-for playbook in install-docker.yaml install-nvidia.yaml install-nvidia-container-toolkit.yaml nvidia-smi-exporter.yaml grafana.yaml; do
-  ansible-playbook -i ./ansible_tailscale_inventory.py $playbook
-done
+### 7. Run GPU Stress Test with gpu-fryer
+
+```sh
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-gpu-fryer.yml
 ```
 
-Note that this time we set `SBNB_HOSTS` to the hostname of the VM we started in the previous step.
-
-The commands above will install Docker, Nvidia drivers, Nvidia container toolkit, nvidia-smi-exporter, and Grafana into the VM.
-
-### 9. Run gpu-fryer
+By default, gpu-fryer runs for 60 seconds. To customize the duration:
 ```sh
-ansible-playbook -i ./ansible_tailscale_inventory.py run-gpu-fryer.yaml
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-gpu-fryer.yml \
+  -e sbnb_gpu_fryer_duration=300
 ```
 
-### 10. Import Grafana Dashboard and Start Monitoring Your GPU!
-Import [this Grafana dashboard](https://grafana.com/grafana/dashboards/14574-nvidia-gpu-metrics/) - It displays GPU load and metrics gathered from nvidia-smi, such as memory consumption, temperatures, fan speed, and power consumption in watts.
+### 8. Import Grafana Dashboard and Start Monitoring Your GPU!
 
+Import [this Grafana dashboard](https://grafana.com/grafana/dashboards/12239-nvidia-dcgm-exporter-dashboard/) - It displays GPU load and metrics gathered from DCGM, such as memory consumption, temperatures, fan speed, and power consumption in watts.
+
+### Stopping Services
+
+To stop gpu-fryer:
+```sh
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-gpu-fryer.yml \
+  -e sbnb_gpu_fryer_state=absent
+```
+
+To stop monitoring:
+```sh
+ansible-playbook -i $VM_HOST, \
+  collections/ansible_collections/sbnb/compute/playbooks/run-monitoring.yml \
+  -e sbnb_monitoring_state=absent
+```

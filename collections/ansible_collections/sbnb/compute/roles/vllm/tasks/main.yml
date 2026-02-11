@@ -1,0 +1,90 @@
+---
+# vLLM role - runs vLLM OpenAI-compatible inference server
+# Source: run-vllm.yaml
+
+- name: Validate HuggingFace token is provided
+  ansible.builtin.assert:
+    that:
+      - sbnb_vllm_hf_token is defined
+      - sbnb_vllm_hf_token | length > 0
+    fail_msg: "sbnb_vllm_hf_token must be provided for model downloads"
+    quiet: true
+  when: sbnb_vllm_require_hf_token | bool
+
+- name: Ensure cache directory exists
+  ansible.builtin.file:
+    path: "{{ sbnb_vllm_cache_path }}"
+    state: directory
+    mode: '0755'
+
+- name: Set vLLM volumes
+  ansible.builtin.set_fact:
+    _vllm_volumes:
+      - "{{ sbnb_vllm_cache_path }}:/root/.cache/huggingface"
+      - "{{ sbnb_vllm_data_path }}:/mnt/sbnb-data/src"
+
+- name: Set vLLM environment
+  ansible.builtin.set_fact:
+    _vllm_env:
+      HUGGING_FACE_HUB_TOKEN: "{{ sbnb_vllm_hf_token | default('') }}"
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      # Fix for driver 580+/590+ (CUDA 13.x): prefer host libcuda over container cuda-compat
+      # See: https://github.com/vllm-project/vllm/issues/32373
+      LD_LIBRARY_PATH: /lib/x86_64-linux-gnu:/usr/local/cuda/lib64
+
+- name: Build vLLM command
+  ansible.builtin.set_fact:
+    _vllm_command: >-
+      --model {{ sbnb_vllm_model }}
+      --host 0.0.0.0 --port 8000
+      {% if sbnb_vllm_enforce_eager | bool %}--enforce-eager{% endif %}
+      {{ sbnb_vllm_extra_args }}
+
+- name: Debug vLLM command
+  ansible.builtin.debug:
+    msg: |
+      Model: {{ sbnb_vllm_model }}
+      Enforce eager: {{ sbnb_vllm_enforce_eager }}
+      Extra args: [{{ sbnb_vllm_extra_args }}]
+      Full command: [{{ _vllm_command }}]
+
+- name: Start vLLM container
+  community.docker.docker_container:
+    name: "{{ sbnb_vllm_container_name }}"
+    image: "{{ sbnb_vllm_image }}"
+    state: "{{ sbnb_vllm_state }}"
+    runtime: nvidia
+    ipc_mode: host
+    pull: "{{ sbnb_vllm_pull }}"
+    recreate: "{{ sbnb_vllm_recreate }}"
+    env: "{{ _vllm_env }}"
+    ports: "{{ sbnb_vllm_ports }}"
+    volumes: "{{ _vllm_volumes }}"
+    device_requests:
+      - driver: nvidia
+        count: -1
+        capabilities:
+          - - gpu
+            - nvidia
+    command: "{{ _vllm_command }}"
+  register: container_result
+  retries: 40
+  delay: 15
+  until: container_result is succeeded
+  when: sbnb_vllm_state == 'started'
+
+- name: Stop vLLM container
+  community.docker.docker_container:
+    name: "{{ sbnb_vllm_container_name }}"
+    state: absent
+  when: sbnb_vllm_state == 'absent'
+
+- name: Display vLLM status
+  ansible.builtin.debug:
+    msg: |
+      vLLM Container:
+        Name: {{ sbnb_vllm_container_name }}
+        State: {{ sbnb_vllm_state }}
+        Image: {{ sbnb_vllm_image }}
+        Command: {{ _vllm_command }}
+  when: sbnb_vllm_state == 'started'

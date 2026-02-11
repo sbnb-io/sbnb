@@ -1,0 +1,33 @@
+---
+# Run TP-Link Omada Controller
+#
+# Prerequisites (one time):
+#   ansible-galaxy install -r requirements.yml
+#
+# Usage:
+#   Start Omada Controller:
+#     ansible-playbook -i host, playbooks/run-omada.yml
+#
+#   With custom timezone:
+#     ansible-playbook -i host, playbooks/run-omada.yml -e sbnb_omada_timezone=America/New_York
+#
+#   Stop Omada Controller:
+#     ansible-playbook -i host, playbooks/run-omada.yml -e sbnb_omada_state=absent
+
+- name: Deploy Omada Controller
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Wait for host to become reachable
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+        delay: 5
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+  roles:
+    - role: sbnb.compute.docker_vm
+    - role: sbnb.compute.omada
