@@ -27,7 +27,21 @@ set_hostname() {
     # 2. Check if dmidecode returned a placeholder value
     if echo "${SERIAL}" | grep -qiE "(${PLACEHOLDER_STRINGS})"; then
         # Use MAC address of first physical network interface
-        SERIAL=$(find /sys/class/net -maxdepth 1 -name "eth*" -o -name "en*" -o -name "wl*" | head -n 1 | xargs -I {} cat {}/address 2>/dev/null | tr -d ':')
+        # Priority: wired interfaces (eth*, en*) first, then wireless (wl*)
+        IFACE=""
+        # Try wired interfaces first
+        for pattern in "eth*" "en*"; do
+            IFACE=$(find /sys/class/net -maxdepth 1 -name "${pattern}" 2>/dev/null | head -n 1)
+            [ -n "${IFACE}" ] && break
+        done
+        # Fall back to wireless if no wired interface found
+        if [ -z "${IFACE}" ]; then
+            IFACE=$(find /sys/class/net -maxdepth 1 -name "wl*" 2>/dev/null | head -n 1)
+        fi
+        # Get MAC address from found interface
+        if [ -n "${IFACE}" ]; then
+            SERIAL=$(cat "${IFACE}/address" 2>/dev/null | tr -d ':')
+        fi
         if [ -z "${SERIAL}" ]; then
             # Fallback to random if no physical interface found
             SERIAL=$(xxd -l6 -p /dev/random)
