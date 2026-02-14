@@ -1,0 +1,53 @@
+---
+# Approve all pending OpenClaw device pairing requests
+#
+# Usage:
+#   export VM_HOST=sbnb-vm-67f97659333f
+#   ansible-playbook -i $VM_HOST, playbooks/openclaw-approve-devices.yml
+
+- name: Approve all pending OpenClaw devices
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars:
+    sbnb_openclaw_container_name: openclaw
+
+  tasks:
+    - name: Get device list as JSON
+      ansible.builtin.command:
+        cmd: "docker exec {{ sbnb_openclaw_container_name }} node dist/index.js devices list --json"
+      register: devices_json
+      changed_when: false
+      failed_when: false
+
+    - name: Parse pending device IDs
+      ansible.builtin.set_fact:
+        pending_ids: "{{ (devices_json.stdout | from_json).pending | default([]) | map(attribute='requestId') | list }}"
+      when: devices_json.rc == 0 and devices_json.stdout | length > 0
+
+    - name: Set empty list if no JSON
+      ansible.builtin.set_fact:
+        pending_ids: []
+      when: devices_json.rc != 0 or devices_json.stdout | length == 0
+
+    - name: Display pending count
+      ansible.builtin.debug:
+        msg: "Found {{ pending_ids | length }} pending device(s)"
+
+    - name: Approve each pending device
+      ansible.builtin.command:
+        cmd: "docker exec {{ sbnb_openclaw_container_name }} node dist/index.js devices approve {{ item }}"
+      loop: "{{ pending_ids }}"
+      when: pending_ids | length > 0
+      register: approve_results
+
+    - name: Display results
+      ansible.builtin.debug:
+        msg: "Approved {{ pending_ids | length }} device(s)"
+      when: pending_ids | length > 0
+
+    - name: No pending devices
+      ansible.builtin.debug:
+        msg: "No pending devices to approve"
+      when: pending_ids | length == 0

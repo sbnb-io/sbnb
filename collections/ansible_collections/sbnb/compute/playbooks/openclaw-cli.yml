@@ -1,0 +1,40 @@
+---
+# Run OpenClaw CLI commands
+#
+# Usage:
+#   export VM_HOST=sbnb-vm-67f97659333f
+#
+#   # List devices
+#   ansible-playbook -i $VM_HOST, playbooks/openclaw-cli.yml -e "cmd='devices list'"
+#
+#   # Approve a device
+#   ansible-playbook -i $VM_HOST, playbooks/openclaw-cli.yml -e "cmd='devices approve <request-id>'"
+#
+#   # Check status
+#   ansible-playbook -i $VM_HOST, playbooks/openclaw-cli.yml -e "cmd='status'"
+#
+#   # Any other command
+#   ansible-playbook -i $VM_HOST, playbooks/openclaw-cli.yml -e "cmd='--help'"
+
+- name: Run OpenClaw CLI command
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars:
+    sbnb_openclaw_container_name: openclaw
+    cmd: "--help"
+
+  tasks:
+    - name: Run OpenClaw CLI
+      ansible.builtin.command:
+        cmd: "docker exec {{ sbnb_openclaw_container_name }} node dist/index.js {{ cmd }}"
+      register: cli_result
+      changed_when: false
+      failed_when: false
+
+    - name: Display output
+      vars:
+        output_lines: "{{ cli_result.stdout_lines + cli_result.stderr_lines }}"
+      ansible.builtin.debug:
+        msg: "{{ output_lines }}"

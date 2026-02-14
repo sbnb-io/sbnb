@@ -1,0 +1,36 @@
+---
+# OpenClaw role defaults
+
+# Container configuration
+sbnb_openclaw_container_name: openclaw
+sbnb_openclaw_image: ghcr.io/openclaw/openclaw:latest
+sbnb_openclaw_state: started
+sbnb_openclaw_pull: true
+sbnb_openclaw_recreate: false
+
+# Port for gateway web UI
+sbnb_openclaw_port: 18789
+
+# Storage path for OpenClaw data
+sbnb_openclaw_data_path: /mnt/sbnb-data/openclaw/.openclaw
+
+# Gateway bind mode: lan (recommended for Docker) or loopback
+sbnb_openclaw_bind: lan
+
+# Optional backup file to restore (disabled by default)
+# Use sbnb_openclaw_backup_local_file for local file (will be copied to remote)
+# Use sbnb_openclaw_backup_file for file already on remote host
+sbnb_openclaw_backup_local_file: ""
+sbnb_openclaw_backup_file: ""
+
+# Allow starting without config (for fresh installs)
+sbnb_openclaw_allow_unconfigured: true
+
+# Gateway token (auto-generated if not provided)
+# sbnb_openclaw_token: ""
+
+# Tailscale Serve for HTTPS access (enabled by default)
+# Provides secure context for web UI device identity
+# Also enables gateway.auth.allowTailscale for auto device approval
+sbnb_openclaw_tailscale_serve: true
+sbnb_openclaw_https_port: 8443

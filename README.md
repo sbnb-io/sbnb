@@ -1,5 +1,7 @@
 🚀 Stay ahead - [subscribe](https://sbnb.io/) to our newsletter!
 
+🆕 **NEW!** Deploy [OpenClaw](https://github.com/openclaw/openclaw) personal AI assistant on bare metal in minutes – no OS installation required! [Get Started →](README-OPENCLAW.md)
+
 # AI Linux (Sbnb Linux)
 
 Sbnb Linux is a revolutionary minimalist Linux distribution designed to boot bare-metal servers and enable remote connections through fast tunnels. It is ideal for environments ranging from home labs to distributed data centers. Sbnb Linux is simplified, automated, and resilient to power outages, supporting confidential computing to ensure secure operations in untrusted locations.
@@ -41,6 +43,7 @@ However, VMware is not a hard requirement. Any VM hypervisor, such as QEMU, can 
 
 Explore step-by-step guides to deploy popular AI tools on bare metal using Sbnb Linux in Automated Way:
 
+- 🤖 **Deploy OpenClaw Personal AI Assistant** – [README-OPENCLAW.md](README-OPENCLAW.md) – Run your own AI assistant gateway on bare metal in minutes, no OS installation required!
 - 🚀 **vLLM Setup Guide** – [README-VLLM.md](README-VLLM.md)  
 - 💬 **SGLang Setup Guide** – [README-SGLANG.md](README-SGLANG.md)  
 - 🧠 **Run Qwen2.5-VL in vLLM and SGLang** – [README-QWEN2.5-VL.md](README-QWEN2.5-VL.md)  

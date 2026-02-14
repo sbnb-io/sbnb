@@ -1,0 +1,252 @@
+---
+# OpenClaw role - runs OpenClaw gateway as Docker container
+
+# =============================================================================
+# Docker Installation and Configuration
+# =============================================================================
+
+- name: Check if Docker is installed
+  ansible.builtin.command:
+    cmd: which docker
+  register: docker_installed
+  changed_when: false
+  failed_when: false
+
+- name: Install Docker if not present
+  ansible.builtin.include_role:
+    name: geerlingguy.docker
+  vars:
+    docker_packages:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+    docker_install_compose_plugin: true
+  when: docker_installed.rc != 0
+
+- name: Configure Docker daemon
+  ansible.builtin.include_role:
+    name: sbnb.compute.docker
+
+- name: Flush handlers to restart Docker before starting container
+  ansible.builtin.meta: flush_handlers
+
+# =============================================================================
+# OpenClaw Setup
+# =============================================================================
+
+- name: Ensure data directory exists
+  ansible.builtin.file:
+    path: "{{ sbnb_openclaw_data_path }}"
+    state: directory
+    mode: '0755'
+  when: sbnb_openclaw_state == 'started'
+
+- name: Fix data directory ownership for container user
+  ansible.builtin.command:
+    cmd: "chown -R 1000:1000 {{ sbnb_openclaw_data_path }}"
+  changed_when: true
+  when: sbnb_openclaw_state == 'started'
+
+- name: Generate gateway token if not provided
+  ansible.builtin.set_fact:
+    sbnb_openclaw_token: "{{ sbnb_openclaw_token | default(lookup('community.general.random_string', length=64, special=false, upper=false)) }}"
+  when: sbnb_openclaw_state == 'started'
+
+- name: Check if OpenClaw config exists
+  ansible.builtin.stat:
+    path: "{{ sbnb_openclaw_data_path }}/openclaw.json"
+  register: openclaw_config_stat
+  when: sbnb_openclaw_state == 'started'
+
+- name: Read existing OpenClaw config
+  ansible.builtin.slurp:
+    src: "{{ sbnb_openclaw_data_path }}/openclaw.json"
+  register: existing_openclaw_config
+  when:
+    - sbnb_openclaw_state == 'started'
+    - openclaw_config_stat.stat.exists
+
+- name: Parse existing OpenClaw config
+  ansible.builtin.set_fact:
+    openclaw_config: "{{ existing_openclaw_config.content | b64decode | from_json }}"
+  when:
+    - sbnb_openclaw_state == 'started'
+    - openclaw_config_stat.stat.exists
+
+- name: Initialize empty config if not exists
+  ansible.builtin.set_fact:
+    openclaw_config: {}
+  when:
+    - sbnb_openclaw_state == 'started'
+    - not openclaw_config_stat.stat.exists
+
+- name: Merge gateway auth config
+  ansible.builtin.set_fact:
+    openclaw_config: "{{ openclaw_config | combine({'gateway': {'auth': {'mode': 'token', 'allowTailscale': sbnb_openclaw_tailscale_serve | bool}}}, recursive=True) }}"
+  when: sbnb_openclaw_state == 'started'
+
+- name: Write OpenClaw config file
+  ansible.builtin.copy:
+    dest: "{{ sbnb_openclaw_data_path }}/openclaw.json"
+    owner: '1000'
+    group: '1000'
+    mode: '0644'
+    content: "{{ openclaw_config | to_nice_json }}"
+  when: sbnb_openclaw_state == 'started'
+
+- name: Restore OpenClaw backup from local file
+  when:
+    - sbnb_openclaw_state == 'started'
+    - sbnb_openclaw_backup_local_file | length > 0
+  block:
+    - name: Copy backup file from local to remote
+      ansible.builtin.copy:
+        src: "{{ sbnb_openclaw_backup_local_file }}"
+        dest: "/tmp/openclaw-backup.tgz"
+        mode: '0644'
+
+    - name: Extract backup to data directory
+      ansible.builtin.unarchive:
+        src: "/tmp/openclaw-backup.tgz"
+        dest: "{{ sbnb_openclaw_data_path }}"
+        remote_src: true
+        extra_opts:
+          - --strip-components=1
+
+    - name: Remove temporary backup file
+      ansible.builtin.file:
+        path: "/tmp/openclaw-backup.tgz"
+        state: absent
+
+    - name: Display backup restore status
+      ansible.builtin.debug:
+        msg: "Restored OpenClaw backup from {{ sbnb_openclaw_backup_local_file }}"
+
+- name: Restore OpenClaw backup from remote file
+  when:
+    - sbnb_openclaw_state == 'started'
+    - sbnb_openclaw_backup_local_file | length == 0
+    - sbnb_openclaw_backup_file | length > 0
+  block:
+    - name: Check if backup file exists
+      ansible.builtin.stat:
+        path: "{{ sbnb_openclaw_backup_file }}"
+      register: backup_stat
+
+    - name: Fail if backup file not found
+      ansible.builtin.fail:
+        msg: "Backup file not found: {{ sbnb_openclaw_backup_file }}"
+      when: not backup_stat.stat.exists
+
+    - name: Extract backup to data directory
+      ansible.builtin.unarchive:
+        src: "{{ sbnb_openclaw_backup_file }}"
+        dest: "{{ sbnb_openclaw_data_path }}"
+        remote_src: true
+        extra_opts:
+          - --strip-components=1
+
+    - name: Display backup restore status
+      ansible.builtin.debug:
+        msg: "Restored OpenClaw backup from {{ sbnb_openclaw_backup_file }}"
+
+- name: Build container environment
+  ansible.builtin.set_fact:
+    openclaw_container_env:
+      OPENCLAW_GATEWAY_TOKEN: "{{ sbnb_openclaw_token }}"
+  when: sbnb_openclaw_state == 'started'
+
+- name: Start OpenClaw container
+  community.docker.docker_container:
+    name: "{{ sbnb_openclaw_container_name }}"
+    image: "{{ sbnb_openclaw_image }}"
+    state: "{{ sbnb_openclaw_state }}"
+    pull: "{{ sbnb_openclaw_pull }}"
+    recreate: "{{ sbnb_openclaw_recreate }}"
+    restart_policy: unless-stopped
+    volumes:
+      - "{{ sbnb_openclaw_data_path }}:/home/node/.openclaw"
+    ports:
+      - "{{ sbnb_openclaw_port }}:{{ sbnb_openclaw_port }}"
+    env: "{{ openclaw_container_env }}"
+    command: "node dist/index.js gateway --bind {{ sbnb_openclaw_bind }} --port {{ sbnb_openclaw_port }}{{ ' --allow-unconfigured' if sbnb_openclaw_allow_unconfigured | bool else '' }}"
+  register: container_result
+  retries: 10
+  delay: 5
+  until: container_result is succeeded
+  when: sbnb_openclaw_state == 'started'
+
+- name: Wait for OpenClaw gateway to be ready
+  ansible.builtin.uri:
+    url: "http://localhost:{{ sbnb_openclaw_port }}/health"
+    method: GET
+  register: openclaw_health
+  retries: 30
+  delay: 2
+  until: openclaw_health.status == 200
+  ignore_errors: true
+  when: sbnb_openclaw_state == 'started'
+
+- name: Setup Tailscale Serve for HTTPS access
+  ansible.builtin.command:
+    cmd: "tailscale serve --bg --https {{ sbnb_openclaw_https_port }} http://localhost:{{ sbnb_openclaw_port }}"
+  register: tailscale_serve_result
+  changed_when: true
+  when:
+    - sbnb_openclaw_state == 'started'
+    - sbnb_openclaw_tailscale_serve | bool
+
+- name: Display Tailscale Serve status
+  ansible.builtin.debug:
+    msg: "Tailscale Serve configured: HTTPS on port {{ sbnb_openclaw_https_port }} -> localhost:{{ sbnb_openclaw_port }}"
+  when:
+    - sbnb_openclaw_state == 'started'
+    - sbnb_openclaw_tailscale_serve | bool
+
+- name: Stop Tailscale Serve
+  ansible.builtin.command:
+    cmd: "tailscale serve --https {{ sbnb_openclaw_https_port }} off"
+  register: tailscale_serve_stop
+  changed_when: true
+  failed_when: false
+  when:
+    - sbnb_openclaw_state == 'absent'
+    - sbnb_openclaw_tailscale_serve | bool
+
+- name: Stop OpenClaw container
+  community.docker.docker_container:
+    name: "{{ sbnb_openclaw_container_name }}"
+    state: absent
+  when: sbnb_openclaw_state == 'absent'
+
+- name: Get Tailscale hostname
+  ansible.builtin.command:
+    cmd: tailscale status --self --json
+  register: tailscale_status
+  changed_when: false
+  when: sbnb_openclaw_state == 'started'
+
+- name: Set Tailscale hostname fact
+  ansible.builtin.set_fact:
+    tailscale_hostname: "{{ (tailscale_status.stdout | from_json).Self.DNSName | regex_replace('\\.$', '') }}"
+  when: sbnb_openclaw_state == 'started'
+
+- name: Display OpenClaw status
+  vars:
+    status_msg: |-
+
+      ════════════════════════════════════════════════════════════════
+      OpenClaw Container:
+        Name: {{ sbnb_openclaw_container_name }}
+        State: {{ sbnb_openclaw_state }}
+        Image: {{ sbnb_openclaw_image }}
+        Port: {{ sbnb_openclaw_port }}
+        Bind: {{ sbnb_openclaw_bind }}
+        Data: {{ sbnb_openclaw_data_path }}
+
+      Web UI URL: https://{{ tailscale_hostname }}:{{ sbnb_openclaw_https_port }}/#token={{ sbnb_openclaw_token }}
+      ════════════════════════════════════════════════════════════════
+  ansible.builtin.debug:
+    msg: "{{ status_msg.split('\n') }}"
+  when: sbnb_openclaw_state == 'started'

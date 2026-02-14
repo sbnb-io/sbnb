@@ -1,0 +1,10 @@
+---
+- name: Run OpenClaw gateway
+  hosts: all
+  become: true
+
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+
+  roles:
+    - role: sbnb.compute.openclaw

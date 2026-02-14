@@ -1,0 +1,5 @@
+---
+# OpenClaw role metadata
+# Docker is installed and configured in tasks/main.yml
+
+dependencies: []
