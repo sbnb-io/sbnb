@@ -923,17 +923,18 @@ runcmd:
             ])
 
         # Boot disk - use cache=none to bypass host page cache (matches working config)
+        # Use explicit bus/lun to ensure deterministic device ordering (sda=boot, sdb=data)
         cmd_parts.extend([
             '-drive', f'file={self.boot_image},if=none,id=disk0,format=qcow2,snapshot=off,cache=none',
-            '-device', 'scsi-hd,drive=disk0,bootindex=0',
+            '-device', 'scsi-hd,drive=disk0,bus=scsi0.0,lun=0,bootindex=0',
             '-cdrom', self.seed_iso,
         ])
 
-        # Optional data disk
+        # Optional data disk - lun=1 ensures it's always sdb
         if data_disk_path:
             cmd_parts.extend([
                 '-drive', f'file={data_disk_path},if=none,id=datadisk0,format=qcow2,snapshot=off,cache=none',
-                '-device', 'scsi-hd,drive=datadisk0,serial=sbnb-data-disk',
+                '-device', 'scsi-hd,drive=datadisk0,bus=scsi0.0,lun=1,serial=sbnb-data-disk',
             ])
 
         # Networking - use bridge for proper network connectivity
