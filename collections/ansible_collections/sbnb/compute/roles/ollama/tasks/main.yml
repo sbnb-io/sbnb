@@ -7,7 +7,15 @@
     state: directory
     mode: '0755'
 
-- name: Start Ollama container
+- name: Create Docker network for Ollama
+  community.docker.docker_network:
+    name: "{{ sbnb_ollama_network }}"
+    state: present
+  when:
+    - sbnb_ollama_state == 'started'
+    - sbnb_ollama_network | length > 0
+
+- name: Start Ollama container (host network)
   community.docker.docker_container:
     name: "{{ sbnb_ollama_container_name }}"
     image: "{{ sbnb_ollama_image }}"
@@ -16,6 +24,7 @@
     network_mode: host
     pull: "{{ sbnb_ollama_pull }}"
     recreate: "{{ sbnb_ollama_recreate }}"
+    restart_policy: unless-stopped
     volumes:
       - "{{ sbnb_ollama_data_path }}:/root/.ollama"
     device_requests:
@@ -28,7 +37,38 @@
   retries: 40
   delay: 15
   until: container_result is succeeded
-  when: sbnb_ollama_state == 'started'
+  when:
+    - sbnb_ollama_state == 'started'
+    - sbnb_ollama_network | length == 0
+
+- name: Start Ollama container (custom network)
+  community.docker.docker_container:
+    name: "{{ sbnb_ollama_container_name }}"
+    image: "{{ sbnb_ollama_image }}"
+    state: "{{ sbnb_ollama_state }}"
+    runtime: nvidia
+    networks:
+      - name: "{{ sbnb_ollama_network }}"
+    ports:
+      - "{{ sbnb_ollama_port }}:11434"
+    pull: "{{ sbnb_ollama_pull }}"
+    recreate: "{{ sbnb_ollama_recreate }}"
+    restart_policy: unless-stopped
+    volumes:
+      - "{{ sbnb_ollama_data_path }}:/root/.ollama"
+    device_requests:
+      - driver: nvidia
+        count: -1
+        capabilities:
+          - - gpu
+            - nvidia
+  register: container_result
+  retries: 40
+  delay: 15
+  until: container_result is succeeded
+  when:
+    - sbnb_ollama_state == 'started'
+    - sbnb_ollama_network | length > 0
 
 - name: Wait for Ollama to be ready
   ansible.builtin.uri:
@@ -63,5 +103,6 @@
         Name: {{ sbnb_ollama_container_name }}
         State: {{ sbnb_ollama_state }}
         Image: {{ sbnb_ollama_image }}
+        Network: {{ sbnb_ollama_network | default('host', true) }}
         Models: {{ sbnb_ollama_models | join(', ') | default('none') }}
   when: sbnb_ollama_state == 'started'

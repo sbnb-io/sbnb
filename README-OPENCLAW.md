@@ -70,6 +70,7 @@ ansible-playbook -i $VM_HOST, collections/ansible_collections/sbnb/compute/playb
 | `run-openclaw.yml` | Deploy/restart OpenClaw container |
 | `openclaw-cli.yml` | Run any OpenClaw CLI command |
 | `openclaw-approve-devices.yml` | Approve all pending device pairing requests |
+| `openclaw-backup.yml` | Backup OpenClaw data from a remote machine |
 
 ## Common Operations
 
@@ -129,6 +130,9 @@ ansible-playbook -i $VM_HOST, collections/ansible_collections/sbnb/compute/playb
 | `sbnb_openclaw_https_port` | `8443` | HTTPS port via Tailscale Serve |
 | `sbnb_openclaw_state` | `started` | Container state: `started` or `absent` |
 | `sbnb_openclaw_recreate` | `false` | Force recreate container |
+| `sbnb_openclaw_ollama_network` | `""` | Docker network shared with Ollama |
+| `sbnb_openclaw_ollama_container` | `ollama` | Ollama container name |
+| `sbnb_openclaw_ollama_port` | `11434` | Ollama port |
 
 ## Supported Model Providers
 
@@ -162,6 +166,17 @@ Migrate from an existing OpenClaw installation to AI Linux.
 
 ### Step 1: Create Backup on Source Machine
 
+**Option A: Using Ansible (recommended)**
+
+```bash
+export OLD_HOST=your-old-openclaw-host
+ansible-playbook -i $OLD_HOST, collections/ansible_collections/sbnb/compute/playbooks/openclaw-backup.yml
+```
+
+This automatically finds the OpenClaw data directory and saves the backup to `./openclaw-backup.tgz`.
+
+**Option B: Manual SSH**
+
 SSH to your existing OpenClaw host and create a backup archive:
 
 ```bash
@@ -186,6 +201,71 @@ The backup includes your configuration, approved devices, conversation history, 
 ansible-playbook -i $VM_HOST, collections/ansible_collections/sbnb/compute/playbooks/openclaw-cli.yml \
   -e "cmd='doctor'"
 ```
+
+## Local Models with Ollama
+
+Run OpenClaw with local LLMs on bare metal GPU using [Ollama](https://ollama.com/). This keeps all inference on your hardware with no external API calls.
+
+### Step 1: Deploy Ollama
+
+Deploy Ollama on the same host with a shared Docker network and pull the model:
+
+```bash
+ansible-playbook -i $VM_HOST, collections/ansible_collections/sbnb/compute/playbooks/run-ollama.yml \
+  -e "sbnb_ollama_network=sbnb" \
+  -e '{"sbnb_ollama_models": ["qwen3:14b-q4_K_M"]}'
+```
+
+### Step 2: Deploy OpenClaw with Ollama Network
+
+```bash
+ansible-playbook -i $VM_HOST, collections/ansible_collections/sbnb/compute/playbooks/run-openclaw.yml \
+  -e "sbnb_openclaw_ollama_network=sbnb"
+```
+
+### Step 3: Configure Ollama Provider
+
+Configure the provider explicitly using the `value` parameter for JSON:
+
+```bash
+ansible-playbook -i $VM_HOST, collections/ansible_collections/sbnb/compute/playbooks/openclaw-cli.yml \
+  -e "cmd='config set models.providers.ollama'" \
+  -e 'value={"baseUrl":"http://ollama:11434/v1","apiKey":"ollama-local","api":"openai-responses","models":[{"id":"qwen3:14b-q4_K_M","name":"Qwen3 14B","reasoning":false,"input":["text"],"contextWindow":32000,"maxTokens":8192}]}'
+```
+
+### Step 4: Set Default Model
+
+```bash
+ansible-playbook -i $VM_HOST, collections/ansible_collections/sbnb/compute/playbooks/openclaw-cli.yml \
+  -e "cmd='config set agents.defaults.model.primary ollama/qwen3:14b-q4_K_M'"
+```
+
+### Step 5: Restart to Apply
+
+```bash
+ansible-playbook -i $VM_HOST, collections/ansible_collections/sbnb/compute/playbooks/run-openclaw.yml \
+  -e "sbnb_openclaw_ollama_network=sbnb"
+```
+
+### Tuning for Local Models
+
+Local models have smaller context windows than cloud APIs. Reduce OpenClaw's system overhead to avoid context overflow:
+
+```bash
+# Disable memory search (saves context for small models)
+ansible-playbook -i $VM_HOST, collections/ansible_collections/sbnb/compute/playbooks/openclaw-cli.yml \
+  -e "cmd='config set agents.defaults.memorySearch.enabled false'"
+
+# Reduce bootstrap injection size
+ansible-playbook -i $VM_HOST, collections/ansible_collections/sbnb/compute/playbooks/openclaw-cli.yml \
+  -e "cmd='config set agents.defaults.bootstrapMaxChars 12000'"
+
+# Enable context pruning
+ansible-playbook -i $VM_HOST, collections/ansible_collections/sbnb/compute/playbooks/openclaw-cli.yml \
+  -e "cmd='config set agents.defaults.contextPruning.mode cache-ttl'"
+```
+
+Use `/status` or `/context detail` in the Web UI to monitor context usage.
 
 ## Documentation
 

@@ -13,6 +13,15 @@
 #   # Check status
 #   ansible-playbook -i $VM_HOST, playbooks/openclaw-cli.yml -e "cmd='status'"
 #
+#   # Config with string value
+#   ansible-playbook -i $VM_HOST, playbooks/openclaw-cli.yml \
+#     -e "cmd='config set agents.defaults.model.primary ollama/qwen3:14b-q4_K_M'"
+#
+#   # Config with JSON value (use value parameter)
+#   ansible-playbook -i $VM_HOST, playbooks/openclaw-cli.yml \
+#     -e "cmd='config set models.providers.ollama'" \
+#     -e 'value={"baseUrl":"http://ollama:11434/v1","apiKey":"ollama-local","api":"openai-responses"}'
+#
 #   # Any other command
 #   ansible-playbook -i $VM_HOST, playbooks/openclaw-cli.yml -e "cmd='--help'"
 
@@ -24,11 +33,14 @@
   vars:
     sbnb_openclaw_container_name: openclaw
     cmd: "--help"
+    value: ""
 
   tasks:
     - name: Run OpenClaw CLI
-      ansible.builtin.command:
-        cmd: "docker exec {{ sbnb_openclaw_container_name }} node dist/index.js {{ cmd }}"
+      ansible.builtin.shell:
+        cmd: >-
+          docker exec {{ sbnb_openclaw_container_name }} node dist/index.js
+          {{ cmd }}{{ ' ' + (value | to_json | quote) if value is mapping else (' ' + (value | string | quote) if value | string | length > 0 else '') }}
       register: cli_result
       changed_when: false
       failed_when: false

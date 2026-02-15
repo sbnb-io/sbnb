@@ -151,13 +151,34 @@
       ansible.builtin.debug:
         msg: "Restored OpenClaw backup from {{ sbnb_openclaw_backup_file }}"
 
-- name: Build container environment
+- name: Build base container environment
   ansible.builtin.set_fact:
     openclaw_container_env:
       OPENCLAW_GATEWAY_TOKEN: "{{ sbnb_openclaw_token }}"
   when: sbnb_openclaw_state == 'started'
 
-- name: Start OpenClaw container
+- name: Add Ollama environment variables
+  ansible.builtin.set_fact:
+    openclaw_container_env: "{{ openclaw_container_env | combine({'OLLAMA_BASE_URL': 'http://' + sbnb_openclaw_ollama_container + ':' + (sbnb_openclaw_ollama_port | string), 'OLLAMA_API_KEY': 'ollama-local', 'NODE_OPTIONS': '--dns-result-order=ipv4first'}) }}"
+  when:
+    - sbnb_openclaw_state == 'started'
+    - sbnb_openclaw_ollama_network | length > 0
+
+- name: Add debug environment variables
+  ansible.builtin.set_fact:
+    openclaw_container_env: "{{ openclaw_container_env | combine({'OPENCLAW_LOG_LEVEL': sbnb_openclaw_log_level}) }}"
+  when:
+    - sbnb_openclaw_state == 'started'
+    - sbnb_openclaw_log_level != 'info'
+
+- name: Add diagnostics environment variable
+  ansible.builtin.set_fact:
+    openclaw_container_env: "{{ openclaw_container_env | combine({'OPENCLAW_DIAGNOSTICS': sbnb_openclaw_diagnostics}) }}"
+  when:
+    - sbnb_openclaw_state == 'started'
+    - sbnb_openclaw_diagnostics | length > 0
+
+- name: Start OpenClaw container (default network)
   community.docker.docker_container:
     name: "{{ sbnb_openclaw_container_name }}"
     image: "{{ sbnb_openclaw_image }}"
@@ -175,7 +196,33 @@
   retries: 10
   delay: 5
   until: container_result is succeeded
-  when: sbnb_openclaw_state == 'started'
+  when:
+    - sbnb_openclaw_state == 'started'
+    - sbnb_openclaw_ollama_network | length == 0
+
+- name: Start OpenClaw container (with Ollama network)
+  community.docker.docker_container:
+    name: "{{ sbnb_openclaw_container_name }}"
+    image: "{{ sbnb_openclaw_image }}"
+    state: "{{ sbnb_openclaw_state }}"
+    pull: "{{ sbnb_openclaw_pull }}"
+    recreate: "{{ sbnb_openclaw_recreate }}"
+    restart_policy: unless-stopped
+    networks:
+      - name: "{{ sbnb_openclaw_ollama_network }}"
+    volumes:
+      - "{{ sbnb_openclaw_data_path }}:/home/node/.openclaw"
+    ports:
+      - "{{ sbnb_openclaw_port }}:{{ sbnb_openclaw_port }}"
+    env: "{{ openclaw_container_env }}"
+    command: "node dist/index.js gateway --bind {{ sbnb_openclaw_bind }} --port {{ sbnb_openclaw_port }}{{ ' --allow-unconfigured' if sbnb_openclaw_allow_unconfigured | bool else '' }}"
+  register: container_result
+  retries: 10
+  delay: 5
+  until: container_result is succeeded
+  when:
+    - sbnb_openclaw_state == 'started'
+    - sbnb_openclaw_ollama_network | length > 0
 
 - name: Wait for OpenClaw gateway to be ready
   ansible.builtin.uri:
@@ -234,6 +281,7 @@
 
 - name: Display OpenClaw status
   vars:
+    ollama_info: "{{ 'http://' + sbnb_openclaw_ollama_container + ':' + (sbnb_openclaw_ollama_port | string) if sbnb_openclaw_ollama_network | length > 0 else 'not configured' }}"
     status_msg: |-
 
       ════════════════════════════════════════════════════════════════
@@ -244,6 +292,7 @@
         Port: {{ sbnb_openclaw_port }}
         Bind: {{ sbnb_openclaw_bind }}
         Data: {{ sbnb_openclaw_data_path }}
+        Ollama: {{ ollama_info }}
 
       Web UI URL: https://{{ tailscale_hostname }}:{{ sbnb_openclaw_https_port }}/#token={{ sbnb_openclaw_token }}
       ════════════════════════════════════════════════════════════════

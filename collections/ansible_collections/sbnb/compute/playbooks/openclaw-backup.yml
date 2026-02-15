@@ -1,0 +1,97 @@
+---
+# Backup OpenClaw data from a remote machine
+#
+# Usage:
+#   ansible-playbook -i old-host, playbooks/openclaw-backup.yml
+#
+#   With custom output path:
+#   ansible-playbook -i old-host, playbooks/openclaw-backup.yml \
+#     -e "backup_dest=~/my-openclaw-backup.tgz"
+#
+#   Specify source path (default tries common locations):
+#   ansible-playbook -i old-host, playbooks/openclaw-backup.yml \
+#     -e "openclaw_home=/home/openclaw/.openclaw"
+
+- name: Rotate existing backup
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  tasks:
+    - name: Set backup destination
+      ansible.builtin.set_fact:
+        backup_dest: "{{ lookup('env', 'PWD') }}/openclaw-backup.tgz"
+
+    - name: Check if backup file exists
+      ansible.builtin.stat:
+        path: "{{ backup_dest }}"
+      register: existing_backup
+
+    - name: Rotate existing backup
+      ansible.builtin.command:
+        cmd: "mv {{ backup_dest }} {{ backup_dest }}.prev-{{ ansible_date_time.date }}-{{ ansible_date_time.hour }}{{ ansible_date_time.minute }}{{ ansible_date_time.second }}"
+      when: existing_backup.stat.exists
+
+    - name: Display rotation status
+      ansible.builtin.debug:
+        msg: "Rotated existing backup to {{ backup_dest }}.prev-{{ ansible_date_time.date }}-{{ ansible_date_time.hour }}{{ ansible_date_time.minute }}{{ ansible_date_time.second }}"
+      when: existing_backup.stat.exists
+
+- name: Backup OpenClaw data
+  hosts: all:!localhost
+  become: true
+  gather_facts: false
+
+  vars:
+    backup_dest: "{{ hostvars['localhost']['backup_dest'] }}"
+    # Common OpenClaw data locations to check
+    openclaw_possible_paths:
+      - /mnt/sbnb-data/openclaw/.openclaw
+      - /root/.openclaw
+      - /home/node/.openclaw
+      - /home/openclaw/.openclaw
+
+  tasks:
+    - name: Find OpenClaw data directory
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ [openclaw_home] if openclaw_home is defined else openclaw_possible_paths }}"
+      register: openclaw_paths
+
+    - name: Set OpenClaw home path
+      ansible.builtin.set_fact:
+        openclaw_data_path: "{{ item.item }}"
+      loop: "{{ openclaw_paths.results }}"
+      when: item.stat is defined and item.stat.exists
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Fail if OpenClaw data not found
+      ansible.builtin.fail:
+        msg: "OpenClaw data directory not found. Tried: {{ openclaw_possible_paths | join(', ') }}. Use -e openclaw_home=/path/to/.openclaw"
+      when: openclaw_data_path is not defined
+
+    - name: Display found path
+      ansible.builtin.debug:
+        msg: "Found OpenClaw data at: {{ openclaw_data_path }}"
+
+    - name: Create backup archive on remote
+      ansible.builtin.archive:
+        path: "{{ openclaw_data_path }}"
+        dest: "/tmp/openclaw-backup.tgz"
+        format: gz
+
+    - name: Fetch backup to local machine
+      ansible.builtin.fetch:
+        src: "/tmp/openclaw-backup.tgz"
+        dest: "{{ backup_dest }}"
+        flat: true
+
+    - name: Remove temporary backup on remote
+      ansible.builtin.file:
+        path: "/tmp/openclaw-backup.tgz"
+        state: absent
+
+    - name: Display backup location
+      ansible.builtin.debug:
+        msg: "Backup saved to: {{ backup_dest }}"

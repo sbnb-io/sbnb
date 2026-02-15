@@ -34,3 +34,22 @@ sbnb_openclaw_allow_unconfigured: true
 # Also enables gateway.auth.allowTailscale for auto device approval
 sbnb_openclaw_tailscale_serve: true
 sbnb_openclaw_https_port: 8443
+
+# Ollama integration (optional)
+# Set sbnb_openclaw_ollama_network to connect OpenClaw to Ollama's Docker network
+# OpenClaw will auto-configure OLLAMA_BASE_URL to reach Ollama by container name
+# Example: sbnb_openclaw_ollama_network: sbnb
+sbnb_openclaw_ollama_network: ""
+
+# Ollama container name (used to construct OLLAMA_BASE_URL when on same network)
+sbnb_openclaw_ollama_container: ollama
+
+# Ollama port (default 11434)
+sbnb_openclaw_ollama_port: 11434
+
+# Debug/logging options
+# Log level: info (default), debug, trace
+sbnb_openclaw_log_level: info
+# Diagnostics flags for targeted debug logging (e.g., "ollama.*", "models.*")
+# Set to "ollama.*" to debug Ollama integration issues
+sbnb_openclaw_diagnostics: ""

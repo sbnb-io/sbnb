@@ -8,8 +8,13 @@ sbnb_ollama_state: started
 sbnb_ollama_pull: true
 sbnb_ollama_recreate: false
 
-# Port (host network mode - Ollama listens on 11434)
+# Port (Ollama listens on 11434)
 sbnb_ollama_port: 11434
+
+# Network mode: "host" (default) or custom Docker network name
+# When using a custom network, OpenClaw can reach Ollama by container name
+# Example: sbnb_ollama_network: sbnb
+sbnb_ollama_network: ""
 
 # Storage path for models
 sbnb_ollama_data_path: /mnt/sbnb-data/ollama
