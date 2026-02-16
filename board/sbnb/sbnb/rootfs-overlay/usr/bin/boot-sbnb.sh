@@ -16,41 +16,30 @@ TUNNEL_START_SCRIPT="tunnel-start.sh"
 # 6. Start tunnel
 # 7. Display ASCII banner and hostname/interface IP summary
 
-# Function to set unique hostname using platform serial number
+# Function to set unique hostname using MAC address of first physical NIC
 set_hostname() {
-    # Define placeholder strings that indicate no real serial number set by the motherboard manufacturer
-    PLACEHOLDER_STRINGS="To be filled by O.E.M.|Not Specified|Default string"
-
-    # 1. Try dmidecode first
-    SERIAL=$(dmidecode -s system-serial-number || echo "Not Specified")
-
-    # 2. Check if dmidecode returned a placeholder value
-    if echo "${SERIAL}" | grep -qiE "(${PLACEHOLDER_STRINGS})"; then
-        # Use MAC address of first physical network interface
-        # Priority: wired interfaces (eth*, en*) first, then wireless (wl*)
-        IFACE=""
-        # Try wired interfaces first
-        for pattern in "eth*" "en*"; do
-            IFACE=$(find /sys/class/net -maxdepth 1 -name "${pattern}" 2>/dev/null | head -n 1)
-            [ -n "${IFACE}" ] && break
-        done
-        # Fall back to wireless if no wired interface found
-        if [ -z "${IFACE}" ]; then
-            IFACE=$(find /sys/class/net -maxdepth 1 -name "wl*" 2>/dev/null | head -n 1)
-        fi
-        # Get MAC address from found interface
-        if [ -n "${IFACE}" ]; then
-            SERIAL=$(cat "${IFACE}/address" 2>/dev/null | tr -d ':')
-        fi
-        if [ -z "${SERIAL}" ]; then
-            # Fallback to random if no physical interface found
-            SERIAL=$(xxd -l6 -p /dev/random)
-        fi
+    # Find first physical network interface
+    # Priority: wired (eth*, en*) first, then wireless (wl*)
+    IFACE=""
+    for pattern in "eth*" "en*"; do
+        IFACE=$(find /sys/class/net -maxdepth 1 -name "${pattern}" 2>/dev/null | head -n 1)
+        [ -n "${IFACE}" ] && break
+    done
+    if [ -z "${IFACE}" ]; then
+        IFACE=$(find /sys/class/net -maxdepth 1 -name "wl*" 2>/dev/null | head -n 1)
     fi
 
-    # sanitize serial number
-    SERIAL=$(echo "${SERIAL}" | tr ' ' '-' | tr '[:upper:]' '[:lower:]') # Replace spaces with dashes and convert to lowercase
-    hostname "sbnb-${SERIAL}"
+    # Get MAC address from found interface
+    HWID=""
+    if [ -n "${IFACE}" ]; then
+        HWID=$(cat "${IFACE}/address" 2>/dev/null | tr -d ':')
+    fi
+    if [ -z "${HWID}" ]; then
+        # Fallback to random if no physical interface found
+        HWID=$(xxd -l6 -p /dev/random)
+    fi
+
+    hostname "sbnb-${HWID}"
 }
 
 # Function to mount sbnb USB flash identified by PARTLABEL="sbnb" or LABEL="sbnb" (case insensitive)
