@@ -48,11 +48,6 @@
   changed_when: true
   when: sbnb_openclaw_state == 'started'
 
-- name: Generate gateway token if not provided
-  ansible.builtin.set_fact:
-    sbnb_openclaw_token: "{{ sbnb_openclaw_token | default(lookup('community.general.random_string', length=64, special=false, upper=false)) }}"
-  when: sbnb_openclaw_state == 'started'
-
 - name: Check if OpenClaw config exists
   ansible.builtin.stat:
     path: "{{ sbnb_openclaw_data_path }}/openclaw.json"
@@ -80,6 +75,21 @@
   when:
     - sbnb_openclaw_state == 'started'
     - not openclaw_config_stat.stat.exists
+
+- name: Use existing gateway token from config
+  ansible.builtin.set_fact:
+    sbnb_openclaw_token: "{{ openclaw_config.gateway.auth.token }}"
+  when:
+    - sbnb_openclaw_state == 'started'
+    - sbnb_openclaw_token is not defined
+    - openclaw_config.gateway.auth.token is defined
+
+- name: Generate gateway token if not available
+  ansible.builtin.set_fact:
+    sbnb_openclaw_token: "{{ lookup('community.general.random_string', length=64, special=false, upper=false) }}"
+  when:
+    - sbnb_openclaw_state == 'started'
+    - sbnb_openclaw_token is not defined
 
 - name: Merge gateway auth config
   ansible.builtin.set_fact:
