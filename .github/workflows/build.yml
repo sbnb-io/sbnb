@@ -11,6 +11,7 @@ on:
       - 'containers/**'
       - 'images/**'
       - 'misc/**'
+      - 'collections/**'
   pull_request:
     branches: [ "main" ]
     paths-ignore:
@@ -19,6 +20,7 @@ on:
       - 'containers/**'
       - 'images/**'
       - 'misc/**'
+      - 'collections/**'
 
 jobs:
   build:
