@@ -93,7 +93,19 @@
       ansible.builtin.debug:
         msg: "Docker daemon configured with data-root: {{ sbnb_docker_data_root }}"
 
+- name: Check if Docker data-root directory exists
+  ansible.builtin.stat:
+    path: "{{ sbnb_docker_data_root }}"
+  register: docker_data_root_stat
+
+- name: Restart Docker if data-root is missing (storage mounted after Docker started)
+  ansible.builtin.debug:
+    msg: "Docker data-root {{ sbnb_docker_data_root }} does not exist - Docker needs restart after storage mount"
+  when: not docker_data_root_stat.stat.exists
+  changed_when: true
+  notify: Restart Docker
+
 - name: Display skip message if already configured
   ansible.builtin.debug:
     msg: "Docker is already configured to use {{ sbnb_docker_data_root }}"
-  when: docker_already_configured
+  when: docker_already_configured and docker_data_root_stat.stat.exists
