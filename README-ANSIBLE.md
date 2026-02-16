@@ -8,7 +8,7 @@ In this tutorial, we will configure a bare metal server booted into Sbnb Linux u
 ## Steps
 
 ### 1. Boot Bare Metal Server into Sbnb Linux
-Confirm that the Sbnb Linux instance shows up in the Tailscale machine list. The machine has a unique hostname based on the machine serial number (see more on Sbnb Linux hostnames at [README-SERIAL-NUMBER.md](README-SERIAL-NUMBER.md)).
+Confirm that the Sbnb Linux instance shows up in the Tailscale machine list. The machine has a unique hostname based on the MAC address of the first physical network interface (see more on Sbnb Linux hostnames at [README-SERIAL-NUMBER.md](README-SERIAL-NUMBER.md)).
 
 ### 2. Connect Your Laptop to Tailscale
 We will use a MacBook in this tutorial, but any machine, such as a Linux instance, should work the same.

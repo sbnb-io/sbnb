@@ -254,13 +254,8 @@ See the diagram below for the internal structure of sbnb Linux.
 ![Sbnb Architecture](images/sbnb-architecture.png)
 
 ## Assigning Hostnames Automatically in Sbnb Linux
-During the boot process, Sbnb Linux reads the machine's serial number and assigns the hostname as:
+During the boot process, Sbnb Linux reads the MAC address of the first physical network interface and assigns the hostname as `sbnb-${MAC}` (e.g. `sbnb-345a6078df18`). If no physical interface is found, random bytes are used as fallback.
 
-```
-sbnb-${SERIAL}
-```
-
-If no serial number can be read, then a randomly generated string is used instead.
 Once the machine boots and connects to [Tailscale](https://tailscale.com/) (tailnet), it will be identified using the assigned hostname.
 
 ![Sbnb Linux: Machine registered in Tailscale (tailnet)](images/serial-number-tailscale.png)

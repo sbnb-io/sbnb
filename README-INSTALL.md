@@ -41,22 +41,16 @@ Here is a screenshot of the script demo running on a Mac:
 - Attach the prepared USB dongle to the server you want to boot into Sbnb Linux.
 - Power on the server.
   
-![Sbnb Linux: Serial number on the top of the chassis case](images/serial-number-chassis.png)
-
-
 ## Notes on Booting the Server
 - [Optional] Ensure the USB flash drive is selected as the **first boot device** in your BIOS/UEFI settings. This may be necessary if another operating system is installed or if network boot is enabled.
 - The boot process may take **5 to 10 minutes**, depending on your server's BIOS configuration.
 
 ## Verify the Server on Tailscale
-After booting, verify that the server appears in your **Tailscale machine list**.
+After booting, verify that the server appears in your **Tailscale machine list**. The hostname is derived from the MAC address of the first physical network interface (e.g. `sbnb-345a6078df18`).
 
 ![Sbnb Linux: Machine registered in Tailscale (tailnet)](images/serial-number-tailscale.png)
 
 For more details on automatic hostname assignments, refer to [README-SERIAL-NUMBER.md](README-SERIAL-NUMBER.md).
-
-### Note:
-When the motherboard serial number reported by dmidecode is a placeholder such as `To be filled by O.E.M.`, `Not Specified`, or `Default string`, the system will use the MAC address of the first physical network interface to generate the hostname (e.g. `sbnb-345a6078df18`). If no physical interface is found, it will fall back to a random hostname.
 
 ## Done!
 You can now SSH into the server using Tailscale SSO methods, such as **Google Auth**.
