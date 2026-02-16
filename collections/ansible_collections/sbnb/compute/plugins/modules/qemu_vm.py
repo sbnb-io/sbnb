@@ -122,13 +122,6 @@ options:
     type: str
     default: sbnb/svsm
 
-  pull_image:
-    description:
-      - Whether to pull the container image before starting
-    type: str
-    choices: ['always', 'missing', 'never']
-    default: always
-
   persist_boot_image:
     description:
       - Whether to preserve the boot disk
@@ -361,23 +354,62 @@ def get_system_memory_mb():
     return 4096  # Default fallback
 
 
+def parse_mem_mb(mem_str):
+    """Parse a memory string (e.g., '16G', '4096M', '16') into megabytes.
+
+    Bare numbers are treated as gigabytes (consistent with normalize_size).
+    Returns integer MB value, or None if unparseable.
+    """
+    mem_str = str(mem_str).strip()
+    if not mem_str:
+        return None
+
+    suffix = mem_str[-1].upper()
+    if suffix in ('K', 'M', 'G', 'T'):
+        try:
+            num = float(mem_str[:-1])
+        except ValueError:
+            return None
+        multipliers = {'K': 1 / 1024, 'M': 1, 'G': 1024, 'T': 1024 * 1024}
+        return int(num * multipliers[suffix])
+
+    # Bare number — treat as GB (same convention as normalize_size)
+    try:
+        return int(float(mem_str) * 1024)
+    except ValueError:
+        return None
+
+
 def resolve_max_resources(vcpu, mem):
-    """Resolve 'max' values for vcpu and mem to actual system values.
+    """Resolve 'max' values and cap to available system resources.
 
     Returns (vcpu, mem) tuple with resolved values.
     Reserves 2 CPUs and 2GB RAM for the hypervisor.
+    Caps explicit values to available resources when they exceed capacity.
     """
-    resolved_vcpu = vcpu
-    resolved_mem = mem
+    total_cpus = get_system_cpu_count()
+    max_vcpu = max(total_cpus - 2, 1)
 
+    total_mem_mb = get_system_memory_mb()
+    max_mem_mb = max(total_mem_mb - 2048, 1024)
+
+    # Resolve or cap vCPU
     if str(vcpu).lower() == 'max':
-        total_cpus = get_system_cpu_count()
-        resolved_vcpu = max(total_cpus - 2, 1)
+        resolved_vcpu = max_vcpu
+    else:
+        resolved_vcpu = int(vcpu)
+        if resolved_vcpu > max_vcpu:
+            resolved_vcpu = max_vcpu
 
+    # Resolve or cap memory
     if str(mem).lower() == 'max':
-        total_mem_mb = get_system_memory_mb()
-        resolved_mem_mb = max(total_mem_mb - 2048, 1024)
-        resolved_mem = f"{resolved_mem_mb}M"
+        resolved_mem = f"{max_mem_mb}M"
+    else:
+        requested_mb = parse_mem_mb(mem)
+        if requested_mb is not None and requested_mb > max_mem_mb:
+            resolved_mem = f"{max_mem_mb}M"
+        else:
+            resolved_mem = mem
 
     return resolved_vcpu, resolved_mem
 
@@ -576,16 +608,6 @@ class QemuVm:
             container_image = self.params['container_image']
             full_cmd = qemu_cmd
 
-        # Pull image if requested
-        pull = self.params['pull_image']
-        if pull == 'always':
-            self.docker.images.pull(container_image)
-        elif pull == 'missing':
-            try:
-                self.docker.images.get(container_image)
-            except DockerImageNotFound:
-                self.docker.images.pull(container_image)
-
         # Prepare devices list
         devices = ['/dev/kvm:/dev/kvm']
 
@@ -634,20 +656,6 @@ class QemuVm:
         else:
             container_image = self.params['container_image']
         prep_cmd = cmd
-
-        # Ensure image is available
-        pull = self.params['pull_image']
-
-        if pull == 'always':
-            try:
-                self.docker.images.pull(container_image)
-            except Exception:
-                pass  # Will fail later if image not available
-        elif pull == 'missing':
-            try:
-                self.docker.images.get(container_image)
-            except DockerImageNotFound:
-                self.docker.images.pull(container_image)
 
         # Run command in container
         full_cmd = [
@@ -1009,8 +1017,6 @@ def main():
             storage_path=dict(type='path', default='/mnt/sbnb-data'),
             bridge=dict(type='str', default='br0'),
             container_image=dict(type='str', default='sbnb/svsm'),
-            pull_image=dict(type='str', default='always',
-                           choices=['always', 'missing', 'never']),
             persist_boot_image=dict(type='bool', default=True),
             root_password=dict(type='str', no_log=True),
             tailscale_tags=dict(type='str', default='tag:sbnb'),

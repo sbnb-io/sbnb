@@ -69,6 +69,13 @@
 # =============================================================================
 # VM Management
 # =============================================================================
+- name: Pull container image
+  community.docker.docker_image:
+    name: "{{ sbnb_docker_image }}"
+    source: pull
+    force_source: "{{ sbnb_docker_pull == 'always' }}"
+  when: sbnb_docker_pull != 'never'
+
 - name: Manage VM
   sbnb.compute.qemu_vm:
     name: "{{ sbnb_vm_name }}"
@@ -86,7 +93,6 @@
     storage_path: "{{ sbnb_storage_mount }}"
     bridge: "{{ sbnb_bridge_name }}"
     container_image: "{{ sbnb_docker_image }}"
-    pull_image: "{{ sbnb_docker_pull }}"
     persist_boot_image: "{{ sbnb_vm_persist_boot_image }}"
     root_password: "{{ sbnb_vm_root_password | default(omit) }}"
     tailscale_tags: "{{ sbnb_vm_tailscale_tags }}"
