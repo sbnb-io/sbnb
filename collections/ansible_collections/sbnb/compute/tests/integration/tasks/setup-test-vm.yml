@@ -23,10 +23,11 @@
       -e sbnb_vm_vcpu={{ test_vm_gpu_vcpu }}
       -e sbnb_vm_mem={{ test_vm_gpu_mem }}
       -e sbnb_vm_image_size={{ test_vm_gpu_image_size }}
-      -e sbnb_vm_data_disk_name=test-data
+      -e sbnb_vm_data_disk_name=td-{{ _vm_name }}
       -e sbnb_vm_data_disk_size=200G
       -e sbnb_vm_persist_boot_image=false
       -e sbnb_vm_root_password={{ test_vm_password }}
+      -e '{{ {"sbnb_vm_runcmd": sbnb_vm_runcmd | default([])} | to_json }}'
   delegate_to: localhost
   changed_when: true
   register: _setup_vm_result

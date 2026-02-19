@@ -16,6 +16,7 @@
       -e sbnb_vm_image_size={{ test_vm_cpu_image_size }}
       -e sbnb_vm_persist_boot_image=false
       -e sbnb_vm_root_password={{ test_vm_password }}
+      -e '{{ {"sbnb_vm_runcmd": sbnb_vm_runcmd | default([])} | to_json }}'
   delegate_to: localhost
   changed_when: true
   register: start_vm_result

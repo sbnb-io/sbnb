@@ -726,6 +726,11 @@ chpasswd:
 ssh_pwauth: true
 """
 
+        # Build extra runcmd entries from user-provided commands
+        extra_runcmd = ''
+        for cmd in self.params.get('runcmd') or []:
+            extra_runcmd += f'  - {cmd}\n'
+
         # Write user-data with Tailscale setup
         # - runcmd runs only on first boot (installs tailscale, authenticates with key)
         # - systemd service ensures Tailscale stays connected on every boot
@@ -773,7 +778,7 @@ runcmd:
   - systemctl daemon-reload
   - systemctl enable tailscale-up.service
   - tailscale up --ssh --advertise-tags={self.params['tailscale_tags']} --auth-key={self.params['tskey']}
-"""
+{extra_runcmd}"""
         with open(user_data_path, 'w') as f:
             f.write(user_data)
 
@@ -1023,6 +1028,7 @@ def main():
             use_standard_qemu=dict(type='bool', default=False),
             disable_kvm=dict(type='bool', default=False),
             mem_prealloc=dict(type='bool', default=False),
+            runcmd=dict(type='list', elements='str', default=[]),
         ),
         supports_check_mode=True,
     )

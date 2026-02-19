@@ -17,6 +17,7 @@ SKIP_GPU=false
 HF_TOKEN=""
 VM_PASSWORD="sbnb-test"
 VERBOSITY=""
+RUNCMD_ARGS=()
 
 usage() {
   cat <<EOF
@@ -33,6 +34,7 @@ Options:
   --skip-gpu            Skip GPU tests (for CPU-only hosts)
   --hf-token=<token>    HuggingFace token for gated models
   --vm-password=<pw>    VM root password (default: sbnb-test)
+  --runcmd=<cmd>        Command to run in VM on first boot (repeatable)
   -v, -vv, -vvv        Ansible verbosity level
   -h, --help            Show this help
 EOF
@@ -47,6 +49,7 @@ for arg in "$@"; do
     --skip-gpu)     SKIP_GPU=true ;;
     --hf-token=*)   HF_TOKEN="${arg#*=}" ;;
     --vm-password=*) VM_PASSWORD="${arg#*=}" ;;
+    --runcmd=*)     RUNCMD_ARGS+=("${arg#*=}") ;;
     -v|-vv|-vvv)    VERBOSITY="$arg" ;;
     -h|--help)      usage ;;
     *) echo "Unknown argument: $arg"; usage ;;
@@ -114,6 +117,12 @@ echo ""
 
 cd "$PROJECT_ROOT"
 
+# Build runcmd JSON array
+RUNCMD_JSON="[]"
+if [ ${#RUNCMD_ARGS[@]} -gt 0 ]; then
+  RUNCMD_JSON=$(printf '%s\n' "${RUNCMD_ARGS[@]}" | python3 -c "import sys,json; print(json.dumps([l.strip() for l in sys.stdin]))")
+fi
+
 EXTRA_VARS=$(cat <<EOF
 {
   "sbnb_vm_tskey": "$TSKEY",
@@ -121,7 +130,8 @@ EXTRA_VARS=$(cat <<EOF
   "test_vm_password": "$VM_PASSWORD",
   "test_hf_token": "$HF_TOKEN",
   "test_project_root": "$PROJECT_ROOT",
-  "test_suffix": "$TEST_SUFFIX"
+  "test_suffix": "$TEST_SUFFIX",
+  "sbnb_vm_runcmd": $RUNCMD_JSON
 }
 EOF
 )

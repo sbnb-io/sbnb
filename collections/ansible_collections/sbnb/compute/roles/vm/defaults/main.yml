@@ -87,3 +87,8 @@ sbnb_vm_disable_kvm: false
 
 # Preallocate all VM memory at startup (for debugging memory issues)
 sbnb_vm_mem_prealloc: false
+
+# Custom commands to run on first boot (appended to cloud-init runcmd)
+# Runs after Tailscale is configured but still during cloud-init first boot.
+# Example: ["sysctl -w net.ipv4.tcp_window_scaling=0", "apt-get install -y htop"]
+sbnb_vm_runcmd: []

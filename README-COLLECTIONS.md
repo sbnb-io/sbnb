@@ -96,6 +96,17 @@ ansible-playbook -i gpu-server, collections/ansible_collections/sbnb/compute/pla
 
 Access console via: `docker attach <vm-name>`
 
+### Create a VM with Custom Boot Commands
+
+Run custom commands on first boot via cloud-init (e.g., kernel tuning, package installs):
+
+```bash
+ansible-playbook -i gpu-server, collections/ansible_collections/sbnb/compute/playbooks/start-vm.yml \
+  -e sbnb_vm_tskey=tskey-auth-xxxxx \
+  -e sbnb_vm_name=tuned-vm \
+  -e '{"sbnb_vm_runcmd": ["sysctl -w net.ipv4.tcp_window_scaling=0", "apt-get update && apt-get install -y htop"]}'
+```
+
 ### Create a VM with Custom Tailscale Tags
 
 Tags must be pre-authorized in your Tailscale ACL policy:
@@ -214,6 +225,7 @@ For more control, use the `sbnb.compute.qemu_vm` module in your own playbooks:
 | `sbnb_vm_data_disk_size` | - | Data disk size (required if name set) |
 | `sbnb_vm_persist_boot_image` | `true` | Keep boot disk across restarts |
 | `sbnb_vm_root_password` | - | Optional root password for console |
+| `sbnb_vm_runcmd` | `[]` | Custom commands to run on first boot (cloud-init runcmd) |
 
 ### Host Configuration Variables
 

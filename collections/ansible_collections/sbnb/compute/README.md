@@ -133,6 +133,7 @@ Main role that orchestrates all components.
 | `sbnb_vm_confidential_computing` | `false` | Enable AMD SEV-SNP |
 | `sbnb_vm_data_disk_name` | - | Optional data disk name |
 | `sbnb_vm_data_disk_size` | - | Data disk size |
+| `sbnb_vm_runcmd` | `[]` | Custom commands to run on first boot (cloud-init runcmd) |
 | `sbnb_configure_storage` | `true` | Configure LVM storage |
 | `sbnb_configure_networking` | `true` | Configure bridge networking |
 | `sbnb_configure_docker` | `true` | Configure Docker daemon |
@@ -251,6 +252,7 @@ Manages QEMU VMs running in Docker containers.
 | `bridge` | no | `br0` | Network bridge |
 | `container_image` | no | `sbnb/svsm` | QEMU container image |
 | `persist_boot_image` | no | `true` | Keep boot disk across restarts and on remove |
+| `runcmd` | no | `[]` | Custom commands appended to cloud-init runcmd |
 
 #### Return Values
 

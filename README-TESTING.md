@@ -27,6 +27,7 @@ cd collections/ansible_collections/sbnb/compute
 --skip-gpu            Skip GPU tests (Phase 2-4) for CPU-only hosts
 --hf-token=<token>    HuggingFace token for gated models
 --vm-password=<pw>    VM root password (default: sbnb-test)
+--runcmd=<cmd>        Command to run in VM on first boot (repeatable)
 -v, -vv, -vvv        Ansible verbosity level
 ```
 

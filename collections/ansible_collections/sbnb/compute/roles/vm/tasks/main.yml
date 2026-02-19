@@ -99,6 +99,7 @@
     use_standard_qemu: "{{ sbnb_vm_use_standard_qemu }}"
     disable_kvm: "{{ sbnb_vm_disable_kvm }}"
     mem_prealloc: "{{ sbnb_vm_mem_prealloc }}"
+    runcmd: "{{ sbnb_vm_runcmd }}"
   register: vm_result
 
 # =============================================================================

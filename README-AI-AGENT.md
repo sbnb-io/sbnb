@@ -105,6 +105,8 @@ ansible-playbook -i sbnb-F6S0R8000719, \
 
 Replace `sbnb-F6S0R8000719` with your server's Tailscale hostname and `tskey-auth-xxxxx` with your Tailscale auth key.
 
+See [README-COLLECTIONS.md](README-COLLECTIONS.md) for all VM options.
+
 You should see the VM appear in Tailscale as `sbnb-vm-<VMID>` (e.g., `sbnb-vm-67f97659333f`).
 
 > All Nvidia GPUs will be attached using vfio-pci.
