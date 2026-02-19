@@ -1,0 +1,79 @@
+---
+# Phase 2: GPU VM lifecycle test
+# Creates GPU VM, verifies GPU passthrough, destroys VM
+
+- name: "TEST: Create GPU VM via start-vm.yml"
+  ansible.builtin.command:
+    chdir: "{{ test_project_root }}"
+    cmd: >
+      ansible-playbook -i {{ inventory_hostname }},
+      {{ test_playbooks_dir }}/start-vm.yml
+      -e sbnb_vm_name={{ test_vm_gpu_name }}
+      -e sbnb_vm_tskey={{ sbnb_vm_tskey }}
+      -e sbnb_vm_attach_gpus=auto
+      -e sbnb_vm_vcpu={{ test_vm_gpu_vcpu }}
+      -e sbnb_vm_mem={{ test_vm_gpu_mem }}
+      -e sbnb_vm_image_size={{ test_vm_gpu_image_size }}
+      -e sbnb_vm_data_disk_name=test-data
+      -e sbnb_vm_data_disk_size=200G
+      -e sbnb_vm_persist_boot_image=false
+      -e sbnb_vm_root_password={{ test_vm_password }}
+  delegate_to: localhost
+  changed_when: true
+  register: start_gpu_result
+
+- name: "VERIFY: start-vm.yml succeeded"
+  ansible.builtin.assert:
+    that: start_gpu_result.rc == 0
+    fail_msg: "start-vm.yml (GPU) failed: {{ start_gpu_result.stderr_lines[:10] | default('') }}"
+
+- name: "TEST: Wait for GPU VM SSH via Tailscale ({{ test_vm_gpu_name }})"
+  ansible.builtin.command:
+    cmd: "ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@{{ test_vm_gpu_name }} hostname"
+  delegate_to: localhost
+  register: gpu_ssh_result
+  retries: 60
+  delay: 10
+  until: gpu_ssh_result.rc == 0
+  changed_when: false
+
+- name: "VERIFY: SSH hostname matches"
+  ansible.builtin.assert:
+    that:
+      - test_vm_gpu_name in gpu_ssh_result.stdout
+    fail_msg: "Hostname mismatch: expected '{{ test_vm_gpu_name }}', got '{{ gpu_ssh_result.stdout }}'"
+
+- name: "TEST: Check lspci for GPU inside VM"
+  ansible.builtin.command:
+    cmd: "ssh -o StrictHostKeyChecking=no root@{{ test_vm_gpu_name }} lspci"
+  delegate_to: localhost
+  register: lspci_result
+  changed_when: false
+
+- name: "VERIFY: GPU visible inside VM"
+  ansible.builtin.assert:
+    that:
+      - "'NVIDIA' in lspci_result.stdout or 'AMD' in lspci_result.stdout or 'VGA' in lspci_result.stdout"
+    fail_msg: "No GPU visible inside VM. lspci: {{ lspci_result.stdout_lines[:5] }}"
+
+- name: "TEST: Destroy GPU VM via stop-vm.yml"
+  ansible.builtin.command:
+    chdir: "{{ test_project_root }}"
+    cmd: >
+      ansible-playbook -i {{ inventory_hostname }},
+      {{ test_playbooks_dir }}/stop-vm.yml
+      -e sbnb_vm_name={{ test_vm_gpu_name }}
+      -e sbnb_vm_remove=true
+      -e sbnb_vm_persist_boot_image=false
+  delegate_to: localhost
+  changed_when: true
+  register: stop_gpu_result
+
+- name: "VERIFY: stop-vm.yml succeeded"
+  ansible.builtin.assert:
+    that: stop_gpu_result.rc == 0
+    fail_msg: "stop-vm.yml (GPU) failed: {{ stop_gpu_result.stderr_lines[:10] | default('') }}"
+
+- name: Record Phase 2 success
+  ansible.builtin.set_fact:
+    test_results: "{{ test_results + [{'phase': 'Phase 2: GPU VM', 'status': 'PASSED'}] }}"

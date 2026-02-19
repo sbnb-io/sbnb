@@ -1,0 +1,60 @@
+---
+# Phase 4: Non-GPU services - each service gets its own fresh VM
+# Docker is installed by the service playbooks themselves.
+
+# =====================================================================
+# OpenClaw
+# =====================================================================
+- name: "SERVICE: OpenClaw"
+  block:
+    - name: Set VM name for OpenClaw
+      ansible.builtin.set_fact:
+        test_vm_gpu_name: "sbnb-test-openclaw-{{ test_suffix }}"
+
+    - name: "SETUP: Create VM for OpenClaw"
+      ansible.builtin.include_tasks: setup-test-vm.yml
+      vars:
+        _vm_name: "{{ test_vm_gpu_name }}"
+
+    - name: "TEST: Deploy OpenClaw"
+      ansible.builtin.command:
+        chdir: "{{ test_project_root }}"
+        cmd: >
+          ansible-playbook -i {{ test_vm_gpu_name }},
+          {{ test_playbooks_dir }}/run-openclaw.yml
+      delegate_to: localhost
+      changed_when: true
+      register: openclaw_deploy
+
+    - name: "VERIFY: OpenClaw deployment succeeded"
+      ansible.builtin.assert:
+        that: openclaw_deploy.rc == 0
+        fail_msg: "OpenClaw deployment failed"
+
+    - name: "HEALTH CHECK: OpenClaw API"
+      ansible.builtin.command:
+        cmd: "ssh -o StrictHostKeyChecking=no root@{{ test_vm_gpu_name }} curl -sf http://localhost:18789/health"
+      delegate_to: localhost
+      register: openclaw_health
+      retries: 20
+      delay: 5
+      until: openclaw_health.rc == 0
+      changed_when: false
+
+    - name: "VERIFY: OpenClaw is healthy"
+      ansible.builtin.assert:
+        that: openclaw_health.rc == 0
+        fail_msg: "OpenClaw health check failed"
+
+    - name: Record OpenClaw success
+      ansible.builtin.set_fact:
+        test_results: "{{ test_results + [{'phase': '  OpenClaw', 'status': 'PASSED'}] }}"
+  rescue:
+    - name: Record OpenClaw failure
+      ansible.builtin.set_fact:
+        test_results: "{{ test_results + [{'phase': '  OpenClaw', 'status': 'FAILED', 'error': ansible_failed_result.msg | default('unknown')}] }}"
+  always:
+    - name: "CLEANUP: Destroy OpenClaw VM"
+      ansible.builtin.include_tasks: cleanup-vm.yml
+      vars:
+        cleanup_vm_name: "sbnb-test-openclaw-{{ test_suffix }}"

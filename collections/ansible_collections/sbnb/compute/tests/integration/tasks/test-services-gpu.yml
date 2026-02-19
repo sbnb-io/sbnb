@@ -1,0 +1,404 @@
+---
+# Phase 3: GPU services - each service gets its own fresh VM
+# Each service: create VM → mount data disk → deploy service → health check → destroy VM
+# Docker and NVIDIA are installed by the service playbooks themselves.
+#
+# Ollama and LightRAG share one VM since LightRAG depends on Ollama.
+
+# =====================================================================
+# gpu_fryer (quick stress test)
+# =====================================================================
+- name: "SERVICE: gpu_fryer"
+  block:
+    - name: Set VM name for gpu_fryer
+      ansible.builtin.set_fact:
+        test_vm_gpu_name: "sbnb-test-fryer-{{ test_suffix }}"
+
+    - name: "SETUP: Create VM for gpu_fryer"
+      ansible.builtin.include_tasks: setup-test-vm.yml
+      vars:
+        _vm_name: "{{ test_vm_gpu_name }}"
+
+    - name: "TEST: Deploy gpu_fryer (30s stress test)"
+      ansible.builtin.command:
+        chdir: "{{ test_project_root }}"
+        cmd: >
+          ansible-playbook -i {{ test_vm_gpu_name }},
+          {{ test_playbooks_dir }}/run-gpu-fryer.yml
+          -e sbnb_gpu_fryer_duration=30
+      delegate_to: localhost
+      changed_when: true
+      register: gpu_fryer_deploy
+
+    - name: "VERIFY: gpu_fryer succeeded"
+      ansible.builtin.assert:
+        that: gpu_fryer_deploy.rc == 0
+        fail_msg: "gpu_fryer deployment failed"
+
+    - name: Record gpu_fryer success
+      ansible.builtin.set_fact:
+        test_results: "{{ test_results + [{'phase': '  gpu_fryer', 'status': 'PASSED'}] }}"
+  rescue:
+    - name: Record gpu_fryer failure
+      ansible.builtin.set_fact:
+        test_results: "{{ test_results + [{'phase': '  gpu_fryer', 'status': 'FAILED', 'error': ansible_failed_result.msg | default('unknown')}] }}"
+  always:
+    - name: "CLEANUP: Destroy gpu_fryer VM"
+      ansible.builtin.include_tasks: cleanup-vm.yml
+      vars:
+        cleanup_vm_name: "sbnb-test-fryer-{{ test_suffix }}"
+
+# =====================================================================
+# vLLM
+# =====================================================================
+- name: "SERVICE: vLLM"
+  block:
+    - name: Set VM name for vLLM
+      ansible.builtin.set_fact:
+        test_vm_gpu_name: "sbnb-test-vllm-{{ test_suffix }}"
+
+    - name: "SETUP: Create VM for vLLM"
+      ansible.builtin.include_tasks: setup-test-vm.yml
+      vars:
+        _vm_name: "{{ test_vm_gpu_name }}"
+
+    - name: "TEST: Deploy vLLM"
+      ansible.builtin.command:
+        chdir: "{{ test_project_root }}"
+        cmd: >
+          ansible-playbook -i {{ test_vm_gpu_name }},
+          {{ test_playbooks_dir }}/run-vllm.yml
+      delegate_to: localhost
+      changed_when: true
+      register: vllm_deploy
+
+    - name: "VERIFY: vLLM deployment succeeded"
+      ansible.builtin.assert:
+        that: vllm_deploy.rc == 0
+        fail_msg: "vLLM deployment failed"
+
+    - name: "HEALTH CHECK: vLLM API"
+      ansible.builtin.command:
+        cmd: "ssh -o StrictHostKeyChecking=no root@{{ test_vm_gpu_name }} curl -sf http://localhost:8000/v1/models"
+      delegate_to: localhost
+      register: vllm_api
+      retries: 30
+      delay: 10
+      until: vllm_api.rc == 0
+      changed_when: false
+
+    - name: "VERIFY: vLLM has model"
+      ansible.builtin.assert:
+        that:
+          - "'data' in vllm_api.stdout"
+        fail_msg: "vLLM API did not return model list"
+
+    - name: "LOG: vLLM models"
+      ansible.builtin.debug:
+        msg: "{{ vllm_api.stdout }}"
+
+    - name: "HEALTH CHECK: vLLM inference"
+      ansible.builtin.shell: >
+        ssh -o StrictHostKeyChecking=no root@{{ test_vm_gpu_name }}
+        "curl -sf http://localhost:8000/v1/chat/completions
+        -H 'Content-Type: application/json'
+        -d '{\"model\":\"Qwen/Qwen3-0.6B\",\"messages\":[{\"role\":\"user\",\"content\":\"Say hello\"}],\"max_tokens\":32}'"
+      delegate_to: localhost
+      register: vllm_inference
+      retries: 3
+      delay: 10
+      until: vllm_inference.rc == 0
+      changed_when: false
+
+    - name: "VERIFY: vLLM inference returned response"
+      ansible.builtin.assert:
+        that:
+          - "'choices' in vllm_inference.stdout"
+        fail_msg: "vLLM inference failed"
+
+    - name: "LOG: vLLM inference response"
+      ansible.builtin.debug:
+        msg: "{{ vllm_inference.stdout }}"
+
+    - name: Record vLLM success
+      ansible.builtin.set_fact:
+        test_results: "{{ test_results + [{'phase': '  vLLM', 'status': 'PASSED'}] }}"
+  rescue:
+    - name: Record vLLM failure
+      ansible.builtin.set_fact:
+        test_results: "{{ test_results + [{'phase': '  vLLM', 'status': 'FAILED', 'error': ansible_failed_result.msg | default('unknown')}] }}"
+  always:
+    - name: "CLEANUP: Destroy vLLM VM"
+      ansible.builtin.include_tasks: cleanup-vm.yml
+      vars:
+        cleanup_vm_name: "sbnb-test-vllm-{{ test_suffix }}"
+
+# =====================================================================
+# SGLang
+# =====================================================================
+- name: "SERVICE: SGLang"
+  block:
+    - name: Set VM name for SGLang
+      ansible.builtin.set_fact:
+        test_vm_gpu_name: "sbnb-test-sglang-{{ test_suffix }}"
+
+    - name: "SETUP: Create VM for SGLang"
+      ansible.builtin.include_tasks: setup-test-vm.yml
+      vars:
+        _vm_name: "{{ test_vm_gpu_name }}"
+
+    - name: "TEST: Deploy SGLang"
+      ansible.builtin.command:
+        chdir: "{{ test_project_root }}"
+        cmd: >
+          ansible-playbook -i {{ test_vm_gpu_name }},
+          {{ test_playbooks_dir }}/run-sglang.yml
+      delegate_to: localhost
+      changed_when: true
+      register: sglang_deploy
+
+    - name: "VERIFY: SGLang deployment succeeded"
+      ansible.builtin.assert:
+        that: sglang_deploy.rc == 0
+        fail_msg: "SGLang deployment failed"
+
+    - name: "HEALTH CHECK: SGLang API"
+      ansible.builtin.command:
+        cmd: "ssh -o StrictHostKeyChecking=no root@{{ test_vm_gpu_name }} curl -sf http://localhost:8000/v1/models"
+      delegate_to: localhost
+      register: sglang_api
+      retries: 30
+      delay: 10
+      until: sglang_api.rc == 0
+      changed_when: false
+
+    - name: "VERIFY: SGLang has model"
+      ansible.builtin.assert:
+        that:
+          - "'data' in sglang_api.stdout"
+        fail_msg: "SGLang API did not return model list"
+
+    - name: "LOG: SGLang models"
+      ansible.builtin.debug:
+        msg: "{{ sglang_api.stdout }}"
+
+    - name: "HEALTH CHECK: SGLang inference"
+      ansible.builtin.shell: >
+        ssh -o StrictHostKeyChecking=no root@{{ test_vm_gpu_name }}
+        "curl -sf http://localhost:8000/v1/chat/completions
+        -H 'Content-Type: application/json'
+        -d '{\"model\":\"Qwen/Qwen3-0.6B\",\"messages\":[{\"role\":\"user\",\"content\":\"Say hello\"}],\"max_tokens\":32}'"
+      delegate_to: localhost
+      register: sglang_inference
+      retries: 3
+      delay: 10
+      until: sglang_inference.rc == 0
+      changed_when: false
+
+    - name: "VERIFY: SGLang inference returned response"
+      ansible.builtin.assert:
+        that:
+          - "'choices' in sglang_inference.stdout"
+        fail_msg: "SGLang inference failed"
+
+    - name: "LOG: SGLang inference response"
+      ansible.builtin.debug:
+        msg: "{{ sglang_inference.stdout }}"
+
+    - name: Record SGLang success
+      ansible.builtin.set_fact:
+        test_results: "{{ test_results + [{'phase': '  SGLang', 'status': 'PASSED'}] }}"
+  rescue:
+    - name: Record SGLang failure
+      ansible.builtin.set_fact:
+        test_results: "{{ test_results + [{'phase': '  SGLang', 'status': 'FAILED', 'error': ansible_failed_result.msg | default('unknown')}] }}"
+  always:
+    - name: "CLEANUP: Destroy SGLang VM"
+      ansible.builtin.include_tasks: cleanup-vm.yml
+      vars:
+        cleanup_vm_name: "sbnb-test-sglang-{{ test_suffix }}"
+
+# =====================================================================
+# Frigate
+# =====================================================================
+- name: "SERVICE: Frigate"
+  block:
+    - name: Set VM name for Frigate
+      ansible.builtin.set_fact:
+        test_vm_gpu_name: "sbnb-test-frigate-{{ test_suffix }}"
+
+    - name: "SETUP: Create VM for Frigate"
+      ansible.builtin.include_tasks: setup-test-vm.yml
+      vars:
+        _vm_name: "{{ test_vm_gpu_name }}"
+
+    - name: "TEST: Deploy Frigate"
+      ansible.builtin.command:
+        chdir: "{{ test_project_root }}"
+        cmd: >
+          ansible-playbook -i {{ test_vm_gpu_name }},
+          {{ test_playbooks_dir }}/run-frigate.yml
+      delegate_to: localhost
+      changed_when: true
+      register: frigate_deploy
+
+    - name: "VERIFY: Frigate deployment succeeded"
+      ansible.builtin.assert:
+        that: frigate_deploy.rc == 0
+        fail_msg: "Frigate deployment failed"
+
+    - name: "HEALTH CHECK: Frigate API"
+      ansible.builtin.command:
+        cmd: >
+          ssh -o StrictHostKeyChecking=no root@{{ test_vm_gpu_name }}
+          curl -sk -o /dev/null -w '%{http_code}' https://localhost:8971/api/version
+      delegate_to: localhost
+      register: frigate_health
+      retries: 20
+      delay: 10
+      until: "frigate_health.stdout in ['200', '401']"
+      changed_when: false
+
+    - name: "VERIFY: Frigate is accessible"
+      ansible.builtin.assert:
+        that:
+          - "frigate_health.stdout in ['200', '401']"
+        fail_msg: "Frigate not responding (got HTTP {{ frigate_health.stdout }})"
+
+    - name: "LOG: Frigate HTTP status"
+      ansible.builtin.debug:
+        msg: "Frigate responded with HTTP {{ frigate_health.stdout }}"
+
+    - name: Record Frigate success
+      ansible.builtin.set_fact:
+        test_results: "{{ test_results + [{'phase': '  Frigate', 'status': 'PASSED'}] }}"
+  rescue:
+    - name: Record Frigate failure
+      ansible.builtin.set_fact:
+        test_results: "{{ test_results + [{'phase': '  Frigate', 'status': 'FAILED', 'error': ansible_failed_result.msg | default('unknown')}] }}"
+  always:
+    - name: "CLEANUP: Destroy Frigate VM"
+      ansible.builtin.include_tasks: cleanup-vm.yml
+      vars:
+        cleanup_vm_name: "sbnb-test-frigate-{{ test_suffix }}"
+
+# =====================================================================
+# Ollama + LightRAG (share one VM since LightRAG depends on Ollama)
+# =====================================================================
+- name: "SERVICE: Ollama + LightRAG"
+  block:
+    - name: Set VM name for Ollama + LightRAG
+      ansible.builtin.set_fact:
+        test_vm_gpu_name: "sbnb-test-ollama-{{ test_suffix }}"
+
+    - name: "SETUP: Create VM for Ollama + LightRAG"
+      ansible.builtin.include_tasks: setup-test-vm.yml
+      vars:
+        _vm_name: "{{ test_vm_gpu_name }}"
+
+    # --- Ollama ---
+    - name: "TEST: Deploy Ollama with small model"
+      ansible.builtin.command:
+        chdir: "{{ test_project_root }}"
+        cmd: >
+          ansible-playbook -i {{ test_vm_gpu_name }},
+          {{ test_playbooks_dir }}/run-ollama.yml
+          -e '{"sbnb_ollama_models": ["qwen3:0.6b"]}'
+      delegate_to: localhost
+      changed_when: true
+      register: ollama_deploy
+
+    - name: "VERIFY: Ollama deployment succeeded"
+      ansible.builtin.assert:
+        that: ollama_deploy.rc == 0
+        fail_msg: "Ollama deployment failed"
+
+    - name: "HEALTH CHECK: Ollama API"
+      ansible.builtin.command:
+        cmd: "ssh -o StrictHostKeyChecking=no root@{{ test_vm_gpu_name }} curl -sf http://localhost:11434/api/tags"
+      delegate_to: localhost
+      register: ollama_api
+      retries: 10
+      delay: 5
+      until: ollama_api.rc == 0
+      changed_when: false
+
+    - name: "VERIFY: Ollama has test model"
+      ansible.builtin.assert:
+        that:
+          - "'qwen3' in ollama_api.stdout"
+        fail_msg: "Ollama model qwen3:0.6b not found"
+
+    - name: "LOG: Ollama models"
+      ansible.builtin.debug:
+        msg: "{{ ollama_api.stdout }}"
+
+    - name: "HEALTH CHECK: Ollama inference"
+      ansible.builtin.shell: >
+        ssh -o StrictHostKeyChecking=no root@{{ test_vm_gpu_name }}
+        "curl -sf http://localhost:11434/api/chat
+        -d '{\"model\":\"qwen3:0.6b\",\"messages\":[{\"role\":\"user\",\"content\":\"Say hello\"}],\"stream\":false}'"
+      delegate_to: localhost
+      register: ollama_inference
+      retries: 3
+      delay: 10
+      until: ollama_inference.rc == 0
+      changed_when: false
+
+    - name: "VERIFY: Ollama inference returned response"
+      ansible.builtin.assert:
+        that:
+          - "'message' in ollama_inference.stdout"
+        fail_msg: "Ollama inference failed"
+
+    - name: "LOG: Ollama inference response"
+      ansible.builtin.debug:
+        msg: "{{ ollama_inference.stdout }}"
+
+    - name: Record Ollama success
+      ansible.builtin.set_fact:
+        test_results: "{{ test_results + [{'phase': '  Ollama', 'status': 'PASSED'}] }}"
+
+    # --- LightRAG (Ollama is still running) ---
+    - name: "TEST: Deploy LightRAG"
+      ansible.builtin.command:
+        chdir: "{{ test_project_root }}"
+        cmd: >
+          ansible-playbook -i {{ test_vm_gpu_name }},
+          {{ test_playbooks_dir }}/run-lightrag.yml
+      delegate_to: localhost
+      changed_when: true
+      register: lightrag_deploy
+
+    - name: "VERIFY: LightRAG deployment succeeded"
+      ansible.builtin.assert:
+        that: lightrag_deploy.rc == 0
+        fail_msg: "LightRAG deployment failed"
+
+    - name: "HEALTH CHECK: LightRAG API"
+      ansible.builtin.command:
+        cmd: "ssh -o StrictHostKeyChecking=no root@{{ test_vm_gpu_name }} curl -sf http://localhost:9000/health"
+      delegate_to: localhost
+      register: lightrag_health
+      retries: 20
+      delay: 10
+      until: lightrag_health.rc == 0
+      changed_when: false
+
+    - name: "VERIFY: LightRAG is healthy"
+      ansible.builtin.assert:
+        that: lightrag_health.rc == 0
+        fail_msg: "LightRAG health check failed"
+
+    - name: Record LightRAG success
+      ansible.builtin.set_fact:
+        test_results: "{{ test_results + [{'phase': '  LightRAG', 'status': 'PASSED'}] }}"
+  rescue:
+    - name: Record Ollama/LightRAG failure
+      ansible.builtin.set_fact:
+        test_results: "{{ test_results + [{'phase': '  Ollama/LightRAG', 'status': 'FAILED', 'error': ansible_failed_result.msg | default('unknown')}] }}"
+  always:
+    - name: "CLEANUP: Destroy Ollama/LightRAG VM"
+      ansible.builtin.include_tasks: cleanup-vm.yml
+      vars:
+        cleanup_vm_name: "sbnb-test-ollama-{{ test_suffix }}"

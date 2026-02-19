@@ -1,0 +1,63 @@
+---
+# Reusable: Create a GPU VM, wait for SSH, mount data disk
+#
+# Parameters (passed via vars):
+#   _vm_name: VM name to create (required)
+#
+# Uses variables from test-integration.yml:
+#   inventory_hostname, sbnb_vm_tskey, test_vm_gpu_vcpu, test_vm_gpu_mem,
+#   test_vm_gpu_image_size, test_vm_password, test_project_root,
+#   test_playbooks_dir, test_data_disk_passphrase
+#
+# Docker and NVIDIA are NOT installed here — service playbooks handle those.
+
+- name: "SETUP: Create GPU VM {{ _vm_name }}"
+  ansible.builtin.command:
+    chdir: "{{ test_project_root }}"
+    cmd: >
+      ansible-playbook -i {{ inventory_hostname }},
+      {{ test_playbooks_dir }}/start-vm.yml
+      -e sbnb_vm_name={{ _vm_name }}
+      -e sbnb_vm_tskey={{ sbnb_vm_tskey }}
+      -e sbnb_vm_attach_gpus=auto
+      -e sbnb_vm_vcpu={{ test_vm_gpu_vcpu }}
+      -e sbnb_vm_mem={{ test_vm_gpu_mem }}
+      -e sbnb_vm_image_size={{ test_vm_gpu_image_size }}
+      -e sbnb_vm_data_disk_name=test-data
+      -e sbnb_vm_data_disk_size=200G
+      -e sbnb_vm_persist_boot_image=false
+      -e sbnb_vm_root_password={{ test_vm_password }}
+  delegate_to: localhost
+  changed_when: true
+  register: _setup_vm_result
+
+- name: "SETUP: Verify VM creation succeeded"
+  ansible.builtin.assert:
+    that: _setup_vm_result.rc == 0
+    fail_msg: "VM creation failed: {{ _setup_vm_result.stderr_lines[:10] | default('') }}"
+
+- name: "SETUP: Wait for SSH on {{ _vm_name }}"
+  ansible.builtin.command:
+    cmd: "ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@{{ _vm_name }} hostname"
+  delegate_to: localhost
+  register: _setup_ssh_result
+  retries: 60
+  delay: 10
+  until: _setup_ssh_result.rc == 0
+  changed_when: false
+
+- name: "SETUP: Mount data disk on {{ _vm_name }}"
+  ansible.builtin.command:
+    chdir: "{{ test_project_root }}"
+    cmd: >
+      ansible-playbook -i {{ _vm_name }},
+      {{ test_playbooks_dir }}/mount-data-disk.yml
+      -e sbnb_data_disk_passphrase={{ test_data_disk_passphrase }}
+  delegate_to: localhost
+  changed_when: true
+  register: _setup_mount_result
+
+- name: "SETUP: Verify data disk mounted"
+  ansible.builtin.assert:
+    that: _setup_mount_result.rc == 0
+    fail_msg: "Data disk mount failed: {{ _setup_mount_result.stderr_lines[:5] | default('') }}"

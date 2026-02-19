@@ -1,0 +1,64 @@
+---
+# Phase 1: CPU-only VM lifecycle test
+# Uses real start-vm.yml and stop-vm.yml playbooks
+
+- name: "TEST: Create CPU-only VM via start-vm.yml"
+  ansible.builtin.command:
+    chdir: "{{ test_project_root }}"
+    cmd: >
+      ansible-playbook -i {{ inventory_hostname }},
+      {{ test_playbooks_dir }}/start-vm.yml
+      -e sbnb_vm_name={{ test_vm_cpu_name }}
+      -e sbnb_vm_tskey={{ sbnb_vm_tskey }}
+      -e sbnb_vm_attach_gpus=false
+      -e sbnb_vm_vcpu={{ test_vm_cpu_vcpu }}
+      -e sbnb_vm_mem={{ test_vm_cpu_mem }}
+      -e sbnb_vm_image_size={{ test_vm_cpu_image_size }}
+      -e sbnb_vm_persist_boot_image=false
+      -e sbnb_vm_root_password={{ test_vm_password }}
+  delegate_to: localhost
+  changed_when: true
+  register: start_vm_result
+
+- name: "VERIFY: start-vm.yml succeeded"
+  ansible.builtin.assert:
+    that: start_vm_result.rc == 0
+    fail_msg: "start-vm.yml failed: {{ start_vm_result.stderr_lines[:10] | default('') }}"
+
+- name: "TEST: Wait for CPU VM SSH via Tailscale ({{ test_vm_cpu_name }})"
+  ansible.builtin.command:
+    cmd: "ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@{{ test_vm_cpu_name }} hostname"
+  delegate_to: localhost
+  register: ssh_result
+  retries: 60
+  delay: 10
+  until: ssh_result.rc == 0
+  changed_when: false
+
+- name: "VERIFY: SSH hostname matches"
+  ansible.builtin.assert:
+    that:
+      - test_vm_cpu_name in ssh_result.stdout
+    fail_msg: "Hostname mismatch: expected '{{ test_vm_cpu_name }}', got '{{ ssh_result.stdout }}'"
+
+- name: "TEST: Destroy CPU VM via stop-vm.yml"
+  ansible.builtin.command:
+    chdir: "{{ test_project_root }}"
+    cmd: >
+      ansible-playbook -i {{ inventory_hostname }},
+      {{ test_playbooks_dir }}/stop-vm.yml
+      -e sbnb_vm_name={{ test_vm_cpu_name }}
+      -e sbnb_vm_remove=true
+      -e sbnb_vm_persist_boot_image=false
+  delegate_to: localhost
+  changed_when: true
+  register: stop_vm_result
+
+- name: "VERIFY: stop-vm.yml succeeded"
+  ansible.builtin.assert:
+    that: stop_vm_result.rc == 0
+    fail_msg: "stop-vm.yml failed: {{ stop_vm_result.stderr_lines[:10] | default('') }}"
+
+- name: Record Phase 1 success
+  ansible.builtin.set_fact:
+    test_results: "{{ test_results + [{'phase': 'Phase 1: CPU VM', 'status': 'PASSED'}] }}"

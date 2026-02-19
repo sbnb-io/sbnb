@@ -1,0 +1,167 @@
+---
+# SBNB Integration Test Suite
+#
+# Orchestrator playbook that runs all test phases sequentially on a bare metal host.
+#
+# Usage (via wrapper script):
+#   ./run-tests.sh --host=myhost --tskey=tskey-auth-xxx
+#
+# Direct usage:
+#   ansible-playbook -i metalhost, tests/integration/test-integration.yml \
+#     -e sbnb_vm_tskey=tskey-auth-xxx
+
+- name: SBNB Integration Test Suite
+  hosts: all
+  gather_facts: false
+
+  vars:
+    test_skip_gpu: false
+    test_vm_password: "sbnb-test"
+    test_data_disk_passphrase: "sbnb-test-luks-passphrase"
+    test_hf_token: ""
+    test_results: []
+    # CPU VM resources (small, just for lifecycle test)
+    test_vm_cpu_vcpu: 4
+    test_vm_cpu_mem: "8G"
+    test_vm_cpu_image_size: "20G"
+    # GPU VM resources (large, for service deployment)
+    test_vm_gpu_vcpu: "max"
+    test_vm_gpu_mem: "max"
+    test_vm_gpu_image_size: "100G"
+    # Paths
+    test_storage_mount: /mnt/sbnb-data
+    test_bridge_name: br0
+    test_playbooks_dir: "{{ test_project_root }}/collections/ansible_collections/sbnb/compute/playbooks"
+
+  tasks:
+    - name: Generate unique test suffix (if not passed by wrapper)
+      ansible.builtin.set_fact:
+        test_suffix: "{{ test_suffix | default(lookup('password', '/dev/null chars=lowercase length=4')) }}"
+
+    - name: Set VM names and record start time
+      ansible.builtin.set_fact:
+        test_vm_cpu_name: "sbnb-test-cpu-{{ test_suffix }}"
+        test_vm_gpu_name: "sbnb-test-gpu-{{ test_suffix }}"
+        test_start_time: "{{ '%Y-%m-%d %H:%M:%S' | strftime }}"
+        test_results: []
+
+    - name: Display test configuration
+      ansible.builtin.debug:
+        msg:
+          - "══════════════════════════════════════════"
+          - "SBNB Integration Test Suite"
+          - "══════════════════════════════════════════"
+          - "  Host:         {{ inventory_hostname }}"
+          - "  Suffix:       {{ test_suffix }}"
+          - "  CPU VM:       {{ test_vm_cpu_name }}"
+          - "  GPU VM:       {{ test_vm_gpu_name }} (Phase 2 only)"
+          - "  Skip GPU:     {{ test_skip_gpu }}"
+          - "══════════════════════════════════════════"
+
+    # =================================================================
+    # PHASE 0: Bare Metal Pre-checks
+    # =================================================================
+    - name: "PHASE 0: Bare metal pre-checks"
+      block:
+        - name: Include bare metal checks
+          ansible.builtin.include_tasks: tasks/test-bare-metal.yml
+      rescue:
+        - name: Record Phase 0 failure
+          ansible.builtin.set_fact:
+            test_results: "{{ test_results + [{'phase': 'Phase 0: Bare Metal', 'status': 'FAILED', 'error': ansible_failed_result.msg | default('unknown')}] }}"
+        - name: Abort on bare metal failure
+          ansible.builtin.fail:
+            msg: "Phase 0 failed - bare metal host not ready"
+
+    # =================================================================
+    # PHASE 1: CPU-only VM lifecycle
+    # =================================================================
+    - name: "PHASE 1: CPU-only VM lifecycle"
+      block:
+        - name: Include CPU VM tests
+          ansible.builtin.include_tasks: tasks/test-vm-no-gpu.yml
+      rescue:
+        - name: Record Phase 1 failure
+          ansible.builtin.set_fact:
+            test_results: "{{ test_results + [{'phase': 'Phase 1: CPU VM', 'status': 'FAILED', 'error': ansible_failed_result.msg | default('unknown')}] }}"
+        - name: Cleanup CPU VM on failure
+          ansible.builtin.include_tasks: tasks/cleanup-vm.yml
+          vars:
+            cleanup_vm_name: "{{ test_vm_cpu_name }}"
+        - name: Abort on Phase 1 failure
+          ansible.builtin.fail:
+            msg: "Phase 1 failed - VM creation broken"
+
+    # =================================================================
+    # PHASE 2: GPU VM creation
+    # =================================================================
+    - name: "PHASE 2: GPU VM creation"
+      when: not test_skip_gpu | bool
+      block:
+        - name: Include GPU VM tests
+          ansible.builtin.include_tasks: tasks/test-vm-gpu.yml
+      rescue:
+        - name: Record Phase 2 failure
+          ansible.builtin.set_fact:
+            test_results: "{{ test_results + [{'phase': 'Phase 2: GPU VM', 'status': 'FAILED', 'error': ansible_failed_result.msg | default('unknown')}] }}"
+        - name: Cleanup GPU VM on failure
+          ansible.builtin.include_tasks: tasks/cleanup-vm.yml
+          vars:
+            cleanup_vm_name: "{{ test_vm_gpu_name }}"
+        - name: Abort on Phase 2 failure
+          ansible.builtin.fail:
+            msg: "Phase 2 failed - GPU VM creation broken"
+
+    # =================================================================
+    # PHASE 3: GPU services on GPU VM
+    # =================================================================
+    - name: "PHASE 3: GPU services"
+      when: not test_skip_gpu | bool
+      block:
+        - name: Include GPU service tests
+          ansible.builtin.include_tasks: tasks/test-services-gpu.yml
+      rescue:
+        - name: Record Phase 3 infrastructure failure
+          ansible.builtin.set_fact:
+            test_results: "{{ test_results + [{'phase': '  Infrastructure (Docker+NVIDIA)', 'status': 'FAILED', 'error': ansible_failed_result.msg | default('unknown')}] }}"
+
+    # =================================================================
+    # PHASE 4: Non-GPU services
+    # =================================================================
+    - name: "PHASE 4: Non-GPU services"
+      when: not test_skip_gpu | bool
+      block:
+        - name: Include non-GPU service tests
+          ansible.builtin.include_tasks: tasks/test-services-no-gpu.yml
+      rescue:
+        - name: Record Phase 4 failure
+          ansible.builtin.set_fact:
+            test_results: "{{ test_results + [{'phase': '  OpenClaw', 'status': 'FAILED', 'error': ansible_failed_result.msg | default('unknown')}] }}"
+
+    # =================================================================
+    # TEST SUMMARY
+    # =================================================================
+    - name: Display test summary
+      ansible.builtin.debug:
+        msg: "{{ summary_lines }}"
+      vars:
+        passed_count: "{{ test_results | selectattr('status', 'eq', 'PASSED') | list | length }}"
+        failed_count: "{{ test_results | selectattr('status', 'eq', 'FAILED') | list | length }}"
+        summary_lines: >-
+          {{
+            ['══════════════════════════════════════════',
+             'SBNB INTEGRATION TEST SUMMARY',
+             '══════════════════════════════════════════',
+             'Started: ' + test_start_time,
+             'Finished: ' + ('%Y-%m-%d %H:%M:%S' | strftime),
+             '']
+            + (test_results | map(attribute='phase') | zip(test_results | map(attribute='status')) | map('join', ': ') | list)
+            + ['',
+               'RESULT: ' + ('ALL PASSED (' + passed_count | string + ' phases)' if failed_count | int == 0 else 'FAILED (' + failed_count | string + ' failures)'),
+               '══════════════════════════════════════════']
+          }}
+
+    - name: Fail if any test failed
+      ansible.builtin.fail:
+        msg: "Integration tests failed"
+      when: test_results | selectattr('status', 'eq', 'FAILED') | list | length > 0

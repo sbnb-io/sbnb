@@ -1,0 +1,44 @@
+---
+# Phase 0: Bare metal pre-checks
+# Verifies the host is ready before creating any VMs
+
+- name: "CHECK: Storage mount {{ test_storage_mount }}"
+  ansible.builtin.command:
+    cmd: "mountpoint -q {{ test_storage_mount }}"
+  changed_when: false
+  register: mount_check
+
+- name: "VERIFY: Storage is mounted"
+  ansible.builtin.assert:
+    that:
+      - mount_check.rc == 0
+    fail_msg: "{{ test_storage_mount }} is not mounted. Run storage setup first."
+
+- name: "CHECK: Docker daemon"
+  ansible.builtin.command:
+    cmd: docker info
+  changed_when: false
+  register: docker_check
+
+- name: "VERIFY: Docker is running"
+  ansible.builtin.assert:
+    that:
+      - docker_check.rc == 0
+      - "'Server Version' in docker_check.stdout"
+    fail_msg: "Docker is not running on bare metal host"
+
+- name: "CHECK: Bridge interface {{ test_bridge_name }}"
+  ansible.builtin.command:
+    cmd: "ip link show {{ test_bridge_name }}"
+  changed_when: false
+  register: bridge_check
+
+- name: "VERIFY: Bridge exists"
+  ansible.builtin.assert:
+    that:
+      - bridge_check.rc == 0
+    fail_msg: "Bridge {{ test_bridge_name }} does not exist. Run networking setup first."
+
+- name: Record Phase 0 success
+  ansible.builtin.set_fact:
+    test_results: "{{ test_results + [{'phase': 'Phase 0: Bare Metal', 'status': 'PASSED'}] }}"

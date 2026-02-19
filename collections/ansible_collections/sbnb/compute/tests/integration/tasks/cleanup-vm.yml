@@ -1,0 +1,20 @@
+---
+# Cleanup helper: remove a single VM using the real stop-vm.yml playbook
+
+- name: "CLEANUP: Remove VM {{ cleanup_vm_name }} via stop-vm.yml"
+  ansible.builtin.command:
+    chdir: "{{ test_project_root }}"
+    cmd: >
+      ansible-playbook -i {{ inventory_hostname }},
+      {{ test_playbooks_dir }}/stop-vm.yml
+      -e sbnb_vm_name={{ cleanup_vm_name }}
+      -e sbnb_vm_remove=true
+      -e sbnb_vm_persist_boot_image=false
+  delegate_to: localhost
+  register: cleanup_result
+  failed_when: false
+  changed_when: cleanup_result.rc == 0
+
+- name: "CLEANUP: Status for {{ cleanup_vm_name }}"
+  ansible.builtin.debug:
+    msg: "VM {{ cleanup_vm_name }}: {{ 'removed' if cleanup_result.rc == 0 else 'removal failed or already absent' }}"
