@@ -53,3 +53,17 @@ sbnb_openclaw_log_level: info
 # Diagnostics flags for targeted debug logging (e.g., "ollama.*", "models.*")
 # Set to "ollama.*" to debug Ollama integration issues
 sbnb_openclaw_diagnostics: ""
+
+# SBNB App Spec: Volume declarations
+# The platform uses these to manage host storage, Docker mounts, and backups.
+sbnb_openclaw_volumes:
+  - name: config
+    container_path: /home/node/.openclaw
+    backup: true
+    description: "Configuration, gateway secrets, and provider settings"
+
+# SBNB App Spec: HTTPS port mappings
+# The platform uses these to configure Tailscale Serve automatically.
+sbnb_openclaw_https_ports:
+  - listen: 8443
+    target: 18789

@@ -1,7 +1,14 @@
 ---
 # NVIDIA role handlers
 
+- name: Reset Docker systemd failure counter
+  ansible.builtin.command:
+    cmd: systemctl reset-failed docker
+  changed_when: false
+  failed_when: false
+  listen: Restart Docker for NVIDIA
+
 - name: Restart Docker for NVIDIA
-  ansible.builtin.service:
+  ansible.builtin.systemd:
     name: docker
     state: restarted

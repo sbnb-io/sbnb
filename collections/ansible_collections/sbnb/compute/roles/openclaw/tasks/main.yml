@@ -1,39 +1,6 @@
 ---
 # OpenClaw role - runs OpenClaw gateway as Docker container
-
-# =============================================================================
-# Docker Installation and Configuration
-# =============================================================================
-
-- name: Check if Docker is installed
-  ansible.builtin.command:
-    cmd: which docker
-  register: docker_installed
-  changed_when: false
-  failed_when: false
-
-- name: Install Docker if not present
-  ansible.builtin.include_role:
-    name: geerlingguy.docker
-  vars:
-    docker_packages:
-      - docker-ce
-      - docker-ce-cli
-      - containerd.io
-      - docker-buildx-plugin
-    docker_install_compose_plugin: true
-  when: docker_installed.rc != 0
-
-- name: Configure Docker daemon
-  ansible.builtin.include_role:
-    name: sbnb.compute.docker
-
-- name: Flush handlers to restart Docker before starting container
-  ansible.builtin.meta: flush_handlers
-
-# =============================================================================
-# OpenClaw Setup
-# =============================================================================
+# Docker must be installed before this role runs (use sbnb.compute.docker_vm or install-docker provisioner)
 
 - name: Ensure data directory exists
   ansible.builtin.file:
@@ -308,4 +275,11 @@
       ════════════════════════════════════════════════════════════════
   ansible.builtin.debug:
     msg: "{{ status_msg.split('\n') }}"
+  when: sbnb_openclaw_state == 'started'
+
+- name: Set app outputs for platform
+  ansible.builtin.set_fact:
+    sbnb_outputs:
+      web_url: "https://{{ tailscale_hostname }}:{{ sbnb_openclaw_https_port }}/#token={{ sbnb_openclaw_token }}"
+      gateway_token: "{{ sbnb_openclaw_token }}"
   when: sbnb_openclaw_state == 'started'

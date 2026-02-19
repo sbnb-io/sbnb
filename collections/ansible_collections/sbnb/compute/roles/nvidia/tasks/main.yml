@@ -114,16 +114,18 @@
       when: existing_daemon_config | length == 0
       notify: Restart Docker for NVIDIA
 
-# Ensure Docker is restarted if nvidia runtime is not available
-# (covers case where daemon.json was already configured but Docker wasn't restarted)
-- name: Restart Docker if nvidia runtime not available
+- name: Reset Docker systemd failure counter before restart
+  ansible.builtin.command:
+    cmd: systemctl reset-failed docker
+  changed_when: false
+  failed_when: false
+  when: sbnb_nvidia_install_container_toolkit | bool and nvidia_runtime_check.rc != 0
+
+- name: Restart Docker to activate NVIDIA runtime
   ansible.builtin.systemd:
     name: docker
     state: restarted
   when: sbnb_nvidia_install_container_toolkit | bool and nvidia_runtime_check.rc != 0
-
-- name: Flush handlers to restart Docker before next role
-  ansible.builtin.meta: flush_handlers
 
 - name: Display NVIDIA installation summary
   ansible.builtin.debug:

@@ -46,3 +46,21 @@ sbnb_frigate_auth_enabled: true
 
 # Note: If auth is enabled, password is auto-generated on first run and displayed in playbook output.
 # To reset password: add 'auth: { reset_admin_password: true }' to config.yaml
+
+# SBNB App Spec: Volume declarations
+# The platform uses these to manage host storage, Docker mounts, and backups.
+sbnb_frigate_volumes:
+  - name: config
+    container_path: /config
+    backup: true
+    description: "Frigate configuration and camera settings"
+  - name: media
+    container_path: /media/frigate
+    backup: false
+    description: "Video recordings and snapshots (large, not backed up)"
+
+# SBNB App Spec: HTTPS port mappings
+# The platform uses these to configure Tailscale Serve automatically.
+sbnb_frigate_https_ports:
+  - listen: 8443
+    target: 8971

@@ -1,5 +1,10 @@
 ---
-# Install Docker using geerlingguy.docker role
+# Install Docker with data-root on /mnt/sbnb-data (if mounted)
+#
+# Uses the docker_vm role which:
+#   - Installs Docker via geerlingguy.docker
+#   - Configures Docker data-root to /mnt/sbnb-data/docker
+#   - Configures containerd root to /mnt/sbnb-data/containerd
 #
 # Prerequisites (one time):
 #   ansible-galaxy install -r requirements.yml
@@ -23,11 +28,4 @@
       ansible.builtin.setup:
 
   roles:
-    - role: geerlingguy.docker
-      vars:
-        docker_packages:
-          - docker-ce
-          - docker-ce-cli
-          - containerd.io
-          - docker-buildx-plugin
-        docker_install_compose_plugin: true
+    - role: sbnb.compute.docker_vm

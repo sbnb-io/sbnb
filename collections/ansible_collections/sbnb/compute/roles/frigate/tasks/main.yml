@@ -132,9 +132,10 @@
   when: sbnb_frigate_state == 'started'
 
 - name: Wait for Frigate to initialize
-  ansible.builtin.pause:
-    seconds: 10
-  when: sbnb_frigate_state == 'started' and container_result is changed
+  ansible.builtin.wait_for:
+    port: 8971
+    timeout: 120
+  when: sbnb_frigate_state == 'started'
 
 - name: Extract admin password from logs
   ansible.builtin.shell:
@@ -151,12 +152,21 @@
   when: sbnb_frigate_state == 'absent'
 
 - name: Display Frigate status
+  vars:
+    _auth_info: "{{ 'enabled - password: ' + (frigate_password.stdout | default('check logs')) if sbnb_frigate_auth_enabled | bool else 'disabled (Tailscale protected)' }}"
   ansible.builtin.debug:
-    msg: |
-      Frigate NVR:
-        Name: {{ sbnb_frigate_container_name }}
-        State: {{ sbnb_frigate_state }}
-        Image: {{ sbnb_frigate_image }}
-        Web UI: http://{{ inventory_hostname }}:8971/
-        Auth: {{ 'enabled - password: ' + (frigate_password.stdout | default('check logs')) if sbnb_frigate_auth_enabled | bool else 'disabled (Tailscale protected)' }}
+    msg:
+      - "Frigate NVR"
+      - "  Name:   {{ sbnb_frigate_container_name }}"
+      - "  State:  {{ sbnb_frigate_state }}"
+      - "  Image:  {{ sbnb_frigate_image }}"
+      - "  Web UI: http://{{ inventory_hostname }}:8971/"
+      - "  Auth:   {{ _auth_info }}"
+  when: sbnb_frigate_state == 'started'
+
+- name: Set app outputs for platform
+  ansible.builtin.set_fact:
+    sbnb_outputs:
+      web_url: "http://{{ inventory_hostname }}:8971/"
+      admin_password: "{{ frigate_password.stdout | default('check container logs') }}"
   when: sbnb_frigate_state == 'started'

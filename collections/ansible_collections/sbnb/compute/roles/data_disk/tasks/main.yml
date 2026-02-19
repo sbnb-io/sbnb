@@ -1,46 +1,98 @@
 ---
 # Data disk role - mounts encrypted LUKS data disk
-# Source: sbnb-mount-data-disk.yaml
+# Skips gracefully if:
+#   - mount path is already mounted
+#   - device does not exist (no data disk attached)
 
-- name: Validate passphrase is provided
-  ansible.builtin.assert:
-    that:
-      - sbnb_data_disk_passphrase is defined
-      - sbnb_data_disk_passphrase | length > 0
-    fail_msg: "sbnb_data_disk_passphrase must be provided"
-    quiet: true
+- name: Check if data disk is already mounted
+  ansible.builtin.command:
+    cmd: "mountpoint -q {{ sbnb_data_disk_mount_path }}"
+  register: mount_check
+  changed_when: false
+  failed_when: false
 
-- name: Open LUKS container
-  community.crypto.luks_device:
-    device: "{{ sbnb_data_disk_device }}"
-    state: opened
-    name: "{{ sbnb_data_disk_mapper_name }}"
-    passphrase: "{{ sbnb_data_disk_passphrase }}"
-
-- name: Create ext4 filesystem if not exists
-  community.general.filesystem:
-    fstype: ext4
-    dev: "/dev/mapper/{{ sbnb_data_disk_mapper_name }}"
-    opts: "-m 0"
-  when: sbnb_data_disk_format | bool
-
-- name: Ensure mount point exists
-  ansible.builtin.file:
-    path: "{{ sbnb_data_disk_mount_path }}"
-    state: directory
-    mode: '0755'
+- name: Check if data disk device exists
+  ansible.builtin.stat:
+    path: "{{ sbnb_data_disk_device }}"
+  register: device_check
+  when: mount_check.rc != 0
 
 - name: Mount data disk
-  ansible.posix.mount:
-    src: "/dev/mapper/{{ sbnb_data_disk_mapper_name }}"
-    path: "{{ sbnb_data_disk_mount_path }}"
-    fstype: ext4
-    state: mounted
+  when:
+    - mount_check.rc != 0
+    - device_check.stat.exists | default(false)
+  block:
+    - name: Validate passphrase is provided
+      ansible.builtin.assert:
+        that:
+          - sbnb_data_disk_passphrase is defined
+          - sbnb_data_disk_passphrase | length > 0
+        fail_msg: "sbnb_data_disk_passphrase must be provided"
+        quiet: true
 
-- name: Display data disk status
+    - name: Ensure cryptsetup is installed
+      ansible.builtin.apt:
+        name: cryptsetup
+        state: present
+        update_cache: true
+
+    - name: Check if device is already LUKS
+      ansible.builtin.command:
+        cmd: "cryptsetup isLuks {{ sbnb_data_disk_device }}"
+      register: luks_check
+      changed_when: false
+      failed_when: false
+
+    - name: Create LUKS container on fresh disk
+      community.crypto.luks_device:
+        device: "{{ sbnb_data_disk_device }}"
+        state: present
+        passphrase: "{{ sbnb_data_disk_passphrase }}"
+      when: luks_check.rc != 0
+
+    - name: Open LUKS container
+      community.crypto.luks_device:
+        device: "{{ sbnb_data_disk_device }}"
+        state: opened
+        name: "{{ sbnb_data_disk_mapper_name }}"
+        passphrase: "{{ sbnb_data_disk_passphrase }}"
+
+    - name: Create ext4 filesystem if not exists
+      community.general.filesystem:
+        fstype: ext4
+        dev: "/dev/mapper/{{ sbnb_data_disk_mapper_name }}"
+        opts: "-m 0"
+      when: sbnb_data_disk_format | bool
+
+    - name: Ensure mount point exists
+      ansible.builtin.file:
+        path: "{{ sbnb_data_disk_mount_path }}"
+        state: directory
+        mode: '0755'
+
+    - name: Mount data disk
+      ansible.posix.mount:
+        src: "/dev/mapper/{{ sbnb_data_disk_mapper_name }}"
+        path: "{{ sbnb_data_disk_mount_path }}"
+        fstype: ext4
+        state: mounted
+
+    - name: Display data disk status
+      ansible.builtin.debug:
+        msg: |
+          Data Disk Mounted:
+            Device: {{ sbnb_data_disk_device }}
+            Mapper: /dev/mapper/{{ sbnb_data_disk_mapper_name }}
+            Mount: {{ sbnb_data_disk_mount_path }}
+
+- name: Skip - already mounted
   ansible.builtin.debug:
-    msg: |
-      Data Disk Mounted:
-        Device: {{ sbnb_data_disk_device }}
-        Mapper: /dev/mapper/{{ sbnb_data_disk_mapper_name }}
-        Mount: {{ sbnb_data_disk_mount_path }}
+    msg: "{{ sbnb_data_disk_mount_path }} is already mounted, skipping"
+  when: mount_check.rc == 0
+
+- name: Skip - no data disk
+  ansible.builtin.debug:
+    msg: "No data disk at {{ sbnb_data_disk_device }}, skipping (using root image storage)"
+  when:
+    - mount_check.rc != 0
+    - not (device_check.stat.exists | default(false))

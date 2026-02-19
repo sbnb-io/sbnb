@@ -22,5 +22,10 @@
         timeout: 600
         delay: 5
 
+    - name: Gather facts
+      ansible.builtin.setup:
+
   roles:
+    - role: sbnb.compute.docker_vm
+    - role: sbnb.compute.nvidia
     - role: sbnb.compute.gpu_fryer

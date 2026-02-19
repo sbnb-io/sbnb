@@ -4,6 +4,13 @@
     name: containerd
     state: restarted
 
+- name: Reset Docker systemd failure counter
+  ansible.builtin.command:
+    cmd: systemctl reset-failed docker
+  changed_when: false
+  failed_when: false
+  listen: Restart Docker
+
 - name: Restart Docker
   ansible.builtin.systemd:
     name: docker
