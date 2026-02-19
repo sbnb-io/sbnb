@@ -1,4 +1,4 @@
-# SBNB App Specification v0.1
+# SBNB App Specification v0.2
 
 An SBNB App is a packaged application that runs on SBNB bare metal infrastructure. This document defines the specification for developing, packaging, and deploying apps within the SBNB ecosystem.
 
@@ -66,20 +66,63 @@ The platform may re-run the app playbook at its discretion, for example when a h
 
 ## App Structure
 
-An SBNB App is an Ansible role:
+An SBNB App is an Ansible role hosted in a Git repository. The platform clones the repository and runs the app's entrypoint playbook against the target VM.
+
+### Repository Layout
+
+The app repo must contain an Ansible role and a playbook entrypoint:
 
 ```
-roles/
-  myapp/
-    defaults/main.yml      # Input defaults and documentation
-    tasks/main.yml          # App logic
-    meta/main.yml           # Metadata (description, logo, dependencies)
-    templates/              # Config templates (optional)
-    files/                  # Static files (optional)
+myapp-repo/
+  roles/
+    myapp/
+      defaults/main.yml      # Input defaults and documentation
+      tasks/main.yml          # App logic
+      meta/main.yml           # Metadata (description, logo, dependencies)
+      templates/              # Config templates (optional)
+      files/                  # Static files (optional)
 
-playbooks/
-  run-myapp.yml            # Entrypoint playbook
+  playbooks/
+    run-myapp.yml            # Entrypoint playbook
 ```
+
+Apps may also be packaged as Ansible collections:
+
+```
+myapp-repo/
+  collections/
+    ansible_collections/
+      myorg/
+        myapp/
+          roles/myapp/...
+          playbooks/run-myapp.yml
+```
+
+### App Registration
+
+When registering an app (in the catalog or as a custom app URL), three fields identify the app's code:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `git_url` | yes | Git repository URL (e.g., `https://github.com/myorg/myapp.git`). |
+| `git_ref` | no | Branch or tag to check out. Default: `main`. |
+| `playbook_path` | yes | Path to the entrypoint playbook, relative to the repo root. |
+
+**Example — standalone role repo:**
+```
+git_url: https://github.com/myorg/myapp.git
+git_ref: v1.2.0
+playbook_path: playbooks/run-myapp.yml
+```
+
+**Example — Ansible collection repo:**
+```
+git_url: https://github.com/sbnb-io/sbnb.git
+git_ref: main
+playbook_path: collections/ansible_collections/sbnb/compute/playbooks/run-openclaw.yml
+```
+
+The platform clones the repository once and caches it locally. On subsequent deploys, the platform pulls the latest changes for the specified `git_ref`. The cached repo is mounted into the provisioning container so Ansible can discover the roles and collections it contains.
 
 ### Entrypoint Playbook
 
@@ -90,12 +133,24 @@ The playbook is the execution entrypoint. It includes prerequisite roles before 
 - name: Deploy My App
   hosts: all
   become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Wait for host to become reachable
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+        delay: 5
+
+    - name: Gather facts
+      ansible.builtin.setup:
 
   roles:
     - role: sbnb.compute.docker_vm    # Docker setup (required)
     - role: sbnb.compute.nvidia       # GPU drivers (if app needs GPU)
     - role: sbnb.compute.myapp
 ```
+
+The `gather_facts: false` + `wait_for_connection` + `setup` pattern is required. When the platform provisions a new VM, the playbook starts before the VM is fully booted. The `wait_for_connection` pre-task waits up to 10 minutes for the VM to become reachable before proceeding.
 
 ### Role Metadata
 
@@ -275,6 +330,8 @@ Each volume has:
 ## Outputs
 
 Outputs are information returned to the platform after app execution. The platform displays selected outputs to the user in the console.sbnb.io web UI.
+
+> **Important:** Outputs with `show_to_user: true` are displayed prominently in the console.sbnb.io web UI — on the app instance detail page and in the deployment success screen. Use this for URLs, credentials, and getting-started instructions that the user needs immediately after deployment. Keep `show_to_user: false` for internal/debug values like container IDs.
 
 ### Output Format
 
@@ -529,6 +586,16 @@ sbnb_myapp_volumes:
 - name: Deploy My App
   hosts: all
   become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Wait for host to become reachable
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+        delay: 5
+
+    - name: Gather facts
+      ansible.builtin.setup:
 
   roles:
     - role: sbnb.compute.docker_vm
@@ -539,9 +606,10 @@ sbnb_myapp_volumes:
 
 There are two ways to make an app available to users:
 
-- **SBNB App Catalog.** [console.sbnb.io](https://console.sbnb.io) offers a curated catalog of vetted apps that have passed security review by the SBNB team. To include your app in the catalog, submit a request to the SBNB team.
-- **Custom app URL.** Users can deploy any app they trust by providing a publicly accessible URL (e.g., a GitHub repository) in the console.sbnb.io web UI. Custom apps are not reviewed by the SBNB team - the user assumes responsibility for the app's behavior and security.
+- **SBNB App Catalog.** [console.sbnb.io](https://console.sbnb.io) offers a curated catalog of vetted apps that have passed security review by the SBNB team. To include your app in the catalog, submit a request to the SBNB team with your `git_url`, `git_ref`, and `playbook_path`.
+- **Custom app.** Users can deploy any app they trust by providing `git_url`, `git_ref`, and `playbook_path` in the console.sbnb.io web UI. The repository must be publicly accessible (or accessible with credentials configured by the user). Custom apps are not reviewed by the SBNB team — the user assumes responsibility for the app's behavior and security.
 
 ## Changelog
 
+- **v0.2** (2026-02-19): Added repository packaging (`git_url`, `git_ref`, `playbook_path`), required `wait_for_connection` pre-task pattern, collection repo layout.
 - **v0.1** (2026-02-18): Initial specification.

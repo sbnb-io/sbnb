@@ -279,7 +279,20 @@
 
 - name: Set app outputs for platform
   ansible.builtin.set_fact:
-    sbnb_outputs:
-      web_url: "https://{{ tailscale_hostname }}:{{ sbnb_openclaw_https_port }}/#token={{ sbnb_openclaw_token }}"
-      gateway_token: "{{ sbnb_openclaw_token }}"
+    sbnb_outputs: "{{ sbnb_outputs | default([]) + outputs }}"
+  vars:
+    outputs:
+      - name: web_ui_url
+        value: "https://{{ tailscale_hostname }}:{{ sbnb_openclaw_https_port }}/#token={{ sbnb_openclaw_token }}"
+        label: "Web UI"
+        show_to_user: true
+      - name: gateway_token
+        value: "{{ sbnb_openclaw_token }}"
+        label: "Gateway Token"
+        show_to_user: false
   when: sbnb_openclaw_state == 'started'
+
+- name: Report outputs to platform
+  ansible.builtin.debug:
+    msg: "SBNB_OUTPUTS={{ sbnb_outputs | to_json }}"
+  when: sbnb_outputs is defined and sbnb_outputs | length > 0

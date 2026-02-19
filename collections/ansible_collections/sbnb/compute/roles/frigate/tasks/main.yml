@@ -166,7 +166,20 @@
 
 - name: Set app outputs for platform
   ansible.builtin.set_fact:
-    sbnb_outputs:
-      web_url: "http://{{ inventory_hostname }}:8971/"
-      admin_password: "{{ frigate_password.stdout | default('check container logs') }}"
+    sbnb_outputs: "{{ sbnb_outputs | default([]) + outputs }}"
+  vars:
+    outputs:
+      - name: web_ui_url
+        value: "http://{{ inventory_hostname }}:8971/"
+        label: "Web UI"
+        show_to_user: true
+      - name: admin_password
+        value: "{{ frigate_password.stdout | default('check container logs') }}"
+        label: "Admin Password"
+        show_to_user: true
   when: sbnb_frigate_state == 'started'
+
+- name: Report outputs to platform
+  ansible.builtin.debug:
+    msg: "SBNB_OUTPUTS={{ sbnb_outputs | to_json }}"
+  when: sbnb_outputs is defined and sbnb_outputs | length > 0
