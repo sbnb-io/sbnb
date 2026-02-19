@@ -175,6 +175,29 @@ Additionally, check out this detailed tutorial on how disks and networking are c
 
 Days when system administrators manually installed Linux OS and configured services are gone.
 
+# Integration Testing
+
+Sbnb includes an end-to-end integration test suite that validates the entire stack — from bare metal boot through VM lifecycle to service deployment. Tests run against a real bare metal host running Sbnb Linux.
+
+```bash
+./collections/ansible_collections/sbnb/compute/tests/integration/run-tests.sh \
+  --host=bare-metal-host \
+  --tskey=tskey-auth-xxx
+```
+
+The suite runs 5 phases sequentially:
+
+| Phase | What's Tested |
+|-------|---------------|
+| Phase 0: Bare Metal | Sbnb Linux booted correctly — LVM storage, bridge networking, QEMU image |
+| Phase 1: CPU VM | VM create/destroy lifecycle, SSH via Tailscale |
+| Phase 2: GPU VM | GPU passthrough verified inside VM via `lspci` |
+| Phase 3: GPU Services | gpu_fryer, vLLM, SGLang, Frigate, Ollama, LightRAG — each in its own isolated VM |
+| Phase 4: Non-GPU Services | OpenClaw — in its own isolated VM |
+
+Every service test creates a fresh VM from scratch, deploys the service, runs health checks (including LLM inference tests), and destroys the VM. A failure in one service does not affect others.
+
+See [README-TESTING.md](README-TESTING.md) for full details on architecture, options, and troubleshooting.
 
 # Exploring Different Strategies for Launching Customer Workloads on Sbnb Linux  
 
