@@ -22,11 +22,11 @@ set_hostname() {
     # Priority: wired (eth*, en*) first, then wireless (wl*)
     IFACE=""
     for pattern in "eth*" "en*"; do
-        IFACE=$(find /sys/class/net -maxdepth 1 -name "${pattern}" 2>/dev/null | head -n 1)
+        IFACE=$(find /sys/class/net -maxdepth 1 -name "${pattern}" 2>/dev/null | sort | head -n 1)
         [ -n "${IFACE}" ] && break
     done
     if [ -z "${IFACE}" ]; then
-        IFACE=$(find /sys/class/net -maxdepth 1 -name "wl*" 2>/dev/null | head -n 1)
+        IFACE=$(find /sys/class/net -maxdepth 1 -name "wl*" 2>/dev/null | sort | head -n 1)
     fi
 
     # Get MAC address from found interface
