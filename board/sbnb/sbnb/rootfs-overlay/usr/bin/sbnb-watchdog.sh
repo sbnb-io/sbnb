@@ -26,9 +26,10 @@ check_tailscale() {
         | grep -c "node not found") || true
 
     if [ "$errors" -ge 3 ]; then
-        logger -t sbnb-watchdog "tailscale: $errors 'node not found' errors in last 2min, restarting"
-        systemctl restart tailscaled
-        sleep 5
+        logger -t sbnb-watchdog "tailscale: $errors 'node not found' errors in last 2min, re-authenticating"
+        # Only restart sbnb-tunnel (which re-runs tailscale up with auth key).
+        # Do NOT restart tailscaled — that kills its cgroup, dropping all
+        # Tailscale SSH sessions and tmux servers.
         systemctl restart sbnb-tunnel
         # 3 minute cooldown
         echo $(( $(date +%s) + 180 )) > "$cooldown_file"
