@@ -62,9 +62,38 @@ Explore step-by-step guides to deploy popular AI tools on bare metal using Sbnb 
 - **Flexible Environment** – sbnb Linux includes scripts to start Docker containers, allowing users to switch from the minimal environment to distributions like Debian, Ubuntu, CentOS, Alpine, and more.
 - **Developer Mode** – Activate developer mode by running the `sbnb-dev-env.sh` script, which launches anDebian/Ubuntu container with various developer tools pre-installed.
 - **Reliable A/B Updates** – If a new version fails, a hardware watchdog automatically reboots the server into the previous working version. This is crucial for remote locations with limited or no physical access.
+- **Health Watchdog** – A systemd timer periodically checks system health and auto-recovers from known failure modes like Tailscale control plane disconnects. See [README-WATCHDOG.md](README-WATCHDOG.md).
 - **Regular Update Cadence** – Sbnb Linux follows a predictable update schedule. Updates are treated as routine operations rather than disruptive events, ensuring the system stays protected against newly discovered vulnerabilities.
 - **Firmware Updates** – Sbnb Linux applies the latest CPU and Security Processor microcode updates at every boot. BIOS updates can also be applied during the update process, keeping the entire system up to date.
 - **Built with Buildroot** – sbnb Linux is created using Buildroot with the br2-external mechanism, keeping sbnb customizations separate for easier maintenance and rolling updates.
+
+# Documentation
+
+| Document | Description |
+|----------|-------------|
+| [README-INSTALL.md](README-INSTALL.md) | Install Sbnb Linux on USB flash drive |
+| [README-COLLECTIONS.md](README-COLLECTIONS.md) | SBNB Compute Ansible Collection — VM management |
+| [README-TESTING.md](README-TESTING.md) | Integration test suite |
+| [README-WATCHDOG.md](README-WATCHDOG.md) | Health watchdog for bare metal hosts |
+| [README-NVIDIA.md](README-NVIDIA.md) | Nvidia GPU passthrough with vfio-pci |
+| [README-VLLM.md](README-VLLM.md) | Run vLLM with Nvidia GPU |
+| [README-SGLANG.md](README-SGLANG.md) | Run SGLang with Nvidia GPU |
+| [README-RAG.md](README-RAG.md) | Run RAGFlow on bare metal |
+| [README-LightRAG.md](README-LightRAG.md) | Run LightRAG on bare metal |
+| [README-AI-AGENT.md](README-AI-AGENT.md) | Run Browser Use AI Agent |
+| [README-OPENCLAW.md](README-OPENCLAW.md) | Deploy OpenClaw personal AI assistant |
+| [README-QWEN2.5-VL.md](README-QWEN2.5-VL.md) | Run Qwen2.5-VL in vLLM and SGLang |
+| [README-NVIDIA-GPU-FRYER-GRAFANA.md](README-NVIDIA-GPU-FRYER-GRAFANA.md) | GPU monitoring and stress testing with Grafana |
+| [README-GRAFANA.md](README-GRAFANA.md) | Grafana monitoring |
+| [README-CC.md](README-CC.md) | Confidential Computing (AMD SEV-SNP) |
+| [README-VM.md](README-VM.md) | Starting Ubuntu VMs on Sbnb Linux |
+| [README-VMWARE.md](README-VMWARE.md) | Running Sbnb Linux as VMware guest |
+| [README-ANSIBLE.md](README-ANSIBLE.md) | Automating Sbnb Linux with Ansible |
+| [README-CUSTOMIZATION.md](README-CUSTOMIZATION.md) | Boot customization via sbnb-cmds.sh |
+| [README-SERIAL-NUMBER.md](README-SERIAL-NUMBER.md) | Automatic hostname assignment |
+| [README-GPU-PASSTHROUGH-BENCHMARK.md](README-GPU-PASSTHROUGH-BENCHMARK.md) | GPU passthrough overhead benchmarks |
+| [README-CONFIGURE_SYSTEM.md](README-CONFIGURE_SYSTEM.md) | System configuration |
+| [README-SBNB-APP-SPEC.md](README-SBNB-APP-SPEC.md) | SBNB App Specification |
 
 # How to Boot Your Server into Sbnb Linux
 

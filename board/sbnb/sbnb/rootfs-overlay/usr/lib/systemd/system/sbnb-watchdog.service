@@ -1,0 +1,7 @@
+[Unit]
+Description=sbnb watchdog
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/sbnb-watchdog.sh
+TimeoutStartSec=50s
