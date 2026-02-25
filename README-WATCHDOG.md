@@ -17,7 +17,7 @@ The watchdog uses a **systemd timer + oneshot service**:
 
 **Problem:** Tailscale automatically removes ephemeral nodes that have been offline for an extended period. When the node comes back online, `tailscaled` gets stuck in a `"node not found"` loop where the control plane returns 404 errors indefinitely. The same happens if a node is manually removed from the Tailscale admin console. The daemon reports `BackendState: Running` so standard status checks don't detect it. This is a known upstream bug ([tailscale#12032](https://github.com/tailscale/tailscale/issues/12032)).
 
-**Detection:** The watchdog scans `tailscaled` journal logs for `"node not found"` errors in the last 2 minutes. If 3 or more are found, it restarts `tailscaled` and `sbnb-tunnel`.
+**Detection:** The watchdog scans `tailscaled` journal logs for `"node not found"` errors in the last 2 minutes. If 3 or more are found, it restarts `sbnb-tunnel` (which re-runs `tailscale up` with the auth key to re-register the node). It does **not** restart `tailscaled` itself, as that would kill its cgroup and drop all Tailscale SSH sessions.
 
 **Cooldown:** After a restart, a 3-minute cooldown prevents restart storms. Cooldown state is stored in `/run/sbnb-watchdog/` (tmpfs, cleared on reboot).
 
@@ -29,7 +29,7 @@ journalctl -u sbnb-watchdog
 
 When a restart is triggered, you'll see:
 ```
-sbnb-watchdog: tailscale: 5 'node not found' errors in last 2min, restarting
+sbnb-watchdog: tailscale: 5 'node not found' errors in last 2min, re-authenticating
 ```
 
 ## Manual Trigger
