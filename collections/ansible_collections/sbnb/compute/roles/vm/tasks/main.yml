@@ -74,6 +74,10 @@
     name: "{{ sbnb_docker_image }}"
     source: pull
     force_source: "{{ sbnb_docker_pull == 'always' }}"
+  register: pull_result
+  retries: 6
+  delay: 10
+  until: pull_result is succeeded
   when: sbnb_docker_pull != 'never'
 
 - name: Manage VM
