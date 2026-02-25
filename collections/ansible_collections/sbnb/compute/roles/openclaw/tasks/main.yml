@@ -128,6 +128,21 @@
       ansible.builtin.debug:
         msg: "Restored OpenClaw backup from {{ sbnb_openclaw_backup_file }}"
 
+- name: Re-read gateway token from restored backup config
+  when:
+    - sbnb_openclaw_state == 'started'
+    - (sbnb_openclaw_backup_local_file | length > 0) or (sbnb_openclaw_backup_file | length > 0)
+  block:
+    - name: Read restored OpenClaw config
+      ansible.builtin.slurp:
+        src: "{{ sbnb_openclaw_data_path }}/openclaw.json"
+      register: restored_openclaw_config
+
+    - name: Update gateway token from restored config
+      ansible.builtin.set_fact:
+        sbnb_openclaw_token: "{{ (restored_openclaw_config.content | b64decode | from_json).gateway.auth.token }}"
+      when: (restored_openclaw_config.content | b64decode | from_json).gateway.auth.token is defined
+
 - name: Build base container environment
   ansible.builtin.set_fact:
     openclaw_container_env:
