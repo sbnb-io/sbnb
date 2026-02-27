@@ -64,7 +64,7 @@ jobs:
         key: buildroot-ccache-v2
 
     - name: Buildroot output cache
-      # Restoring and saving cache using a single action
+      id: output-cache
       uses: actions/cache@v4
       with:
         path: |
@@ -72,12 +72,24 @@ jobs:
           buildroot/output/host
           buildroot/output/staging
           buildroot/output/target
-        key: buildroot-output-v2
+        key: buildroot-output-v2-${{ hashFiles('configs/sbnb_defconfig', 'board/sbnb/sbnb/kernel-config', 'board/sbnb/sbnb/kernel-config-wifi') }}
+        restore-keys: |
+          buildroot-output-v2
 
     - name: Configure
       run: |
         cd buildroot
         make BR2_EXTERNAL=.. sbnb_defconfig
+
+    - name: Clean config-sensitive packages
+      if: steps.output-cache.outputs.cache-hit != 'true'
+      run: |
+        cd buildroot
+        # Config changed or no cache: force rebuild of packages whose content
+        # depends on defconfig options. Buildroot stamp files don't track
+        # config option changes, so these must be explicitly cleaned.
+        make linux-firmware-dirclean || true
+        make linux-dirclean || true
 
     - name: Run make
       run: |
