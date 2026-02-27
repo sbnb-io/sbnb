@@ -62,7 +62,7 @@ Kind=bridge
 MACAddress=none
 EOF
 
-  cat > /etc/systemd/network/25-br.network << EOF
+  cat > /etc/systemd/network/25-br0.network << EOF
 [Match]
 Name=br0
 
@@ -86,7 +86,7 @@ OriginalName=br0
 MACAddressPolicy=none
 EOF
 
-  systemctl restart systemd-networkd
+  networkctl reload
 }
 
 configure_host_networking
