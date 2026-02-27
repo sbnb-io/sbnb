@@ -2,7 +2,6 @@
 # Networking role handlers
 
 - name: Restart systemd-networkd
-  ansible.builtin.systemd:
-    name: systemd-networkd
-    state: restarted
-    daemon_reload: true
+  ansible.builtin.command:
+    cmd: networkctl reload
+  changed_when: true
