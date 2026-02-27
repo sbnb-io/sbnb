@@ -45,7 +45,8 @@ configure_host_networking() {
     return
   fi
 
-  rm -f /etc/systemd/network/*
+  # Remove only bridge-conflicting configs (ethernet/wildcard), preserve WiFi
+  rm -f /etc/systemd/network/*-br0.* /etc/systemd/network/99-wildcard.network /etc/systemd/network/30-*.network
 
   cat > /etc/systemd/network/25-br0.netdev << EOF
 [NetDev]

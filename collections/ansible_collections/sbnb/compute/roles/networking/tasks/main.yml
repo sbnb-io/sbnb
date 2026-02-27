@@ -54,16 +54,16 @@
         state: directory
         mode: '0755'
 
-    - name: Find existing networkd configurations
+    - name: Find bridge-conflicting networkd configurations
       ansible.builtin.find:
         paths: "{{ sbnb_networkd_path }}"
         patterns:
-          - "*.network"
-          - "*.netdev"
-          - "*.link"
+          - "*-br0.*"
+          - "99-wildcard.network"
+          - "30-*.network"
       register: networkd_files
 
-    - name: Remove existing networkd configurations
+    - name: Remove bridge-conflicting networkd configurations
       ansible.builtin.file:
         path: "{{ item.path }}"
         state: absent
