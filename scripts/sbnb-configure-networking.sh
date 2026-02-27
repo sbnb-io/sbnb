@@ -68,6 +68,9 @@ Name=br0
 
 [Network]
 DHCP=yes
+
+[DHCP]
+RouteMetric=100
 EOF
 
   cat > /etc/systemd/network/30-en-br0.network << EOF

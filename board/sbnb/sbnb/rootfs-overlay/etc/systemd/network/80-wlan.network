@@ -4,3 +4,6 @@ Type=wlan
 [Network]
 DHCP=yes
 IgnoreCarrierLoss=3s
+
+[DHCP]
+RouteMetric=600
