@@ -94,6 +94,7 @@ Explore step-by-step guides to deploy popular AI tools on bare metal using Sbnb 
 | [README-GPU-PASSTHROUGH-BENCHMARK.md](README-GPU-PASSTHROUGH-BENCHMARK.md) | GPU passthrough overhead benchmarks |
 | [README-CONFIGURE_SYSTEM.md](README-CONFIGURE_SYSTEM.md) | System configuration |
 | [README-SBNB-APP-SPEC.md](README-SBNB-APP-SPEC.md) | SBNB App Specification |
+| [README-BUILD.md](README-BUILD.md) | Build Sbnb Linux image from source |
 
 # How to Boot Your Server into Sbnb Linux
 
@@ -240,24 +241,8 @@ Sbnb Linux provides several options for starting customer jobs, depending on the
 | **Confidential Computing Virtual Machine (CC VM)** | Start a CC VM to run production workloads securely. Encrypts memory and CPU states, enabling remote attestation to ensure code integrity. | Recommended for production environments. | [Detailed Documentation](/README-CC.md) |
 
 # Build sbnb Image Yourself
-To build the Sbnb Linux image, it is recommended to use Ubuntu 24.04 as the development environment.
 
-- Clone this repository.
-```
-git clone https://github.com/sbnb-io/sbnb.git
-cd sbnb
-git submodule init
-git submodule update
-```
-- Start the build process.
-```
-cd buildroot
-make BR2_EXTERNAL=.. sbnb_defconfig
-make -j $(nproc)
-```
-- After a successful build, the following files will be generated:
-    - **`output/images/sbnb.efi`** – A UEFI bootable Sbnb image in Unified Kernel Image (UKI) format. This file integrates the Linux kernel, kernel arguments (cmdline), and initramfs into a single image.
-    - **`output/images/sbnb.raw`** – A disk image ready to be written directly to a USB flash drive for server booting. It features a GPT partition table and a bootable VFAT partition containing the UEFI bootable image (`sbnb.efi`).
+See [README-BUILD.md](README-BUILD.md) for build prerequisites, commands, and output files.
 
 Happy developing! Contributions are encouraged and appreciated!
 
