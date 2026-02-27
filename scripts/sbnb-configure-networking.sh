@@ -6,7 +6,8 @@
 # This also allows the VM to be directly accessible from the host and other devices on the LAN.
 # The script is idempotent and can be run multiple times without causing issues.
 #
-# Warning: This script will overwrite the existing network configuration on the host (rm -f /etc/systemd/network/*)
+# Note: Bridge setup is skipped if the main interface is WiFi (802.11 cannot be bridged).
+# Warning: This script will remove bridge-conflicting network configs on the host.
 #
 # Below is an example of the network configuration after running this script and starting two VMs:
 #
@@ -42,6 +43,12 @@ configure_host_networking() {
   MAIN_INTERFACE=$(ip route | grep default | awk '{print $5}')
   if [ -z "${MAIN_INTERFACE}" ]; then
     echo "Warning: No main interface found."
+    return
+  fi
+
+  # WiFi interfaces cannot be bridged (802.11 3-address frame limitation)
+  if [ -d "/sys/class/net/${MAIN_INTERFACE}/wireless" ]; then
+    echo "WiFi interface ${MAIN_INTERFACE} detected, skipping bridge setup."
     return
   fi
 

@@ -116,6 +116,14 @@ options:
     type: str
     default: br0
 
+  network_mode:
+    description:
+      - "Network mode for VM: bridge (default) or nat."
+      - "Use nat when the host has no bridge (e.g. WiFi-only connectivity)."
+    type: str
+    default: bridge
+    choices: [bridge, nat]
+
   container_image:
     description:
       - Docker image containing QEMU with SVSM support
@@ -902,13 +910,17 @@ runcmd:
             accel_opts = ['-enable-kvm']
             cpu_opts = ['-cpu', 'host']
 
+        network_mode = self.params.get('network_mode', 'bridge')
+
         if use_standard:
             # Standard QEMU from Ubuntu packages
-            cmd_parts = [
-                'mkdir -p /etc/qemu &&',
-                'echo "allow all" > /etc/qemu/bridge.conf &&',
-                '/usr/bin/qemu-system-x86_64',
-            ]
+            cmd_parts = []
+            if network_mode == 'bridge':
+                cmd_parts.extend([
+                    'mkdir -p /etc/qemu &&',
+                    'echo "allow all" > /etc/qemu/bridge.conf &&',
+                ])
+            cmd_parts.append('/usr/bin/qemu-system-x86_64')
             cmd_parts.extend(accel_opts)
             cmd_parts.extend(cpu_opts)
             cmd_parts.extend([
@@ -920,11 +932,13 @@ runcmd:
             ])
         else:
             # SVSM QEMU build with IOMMU support
-            cmd_parts = [
-                'mkdir -p /usr/qemu-svsm/etc/qemu &&',
-                'echo "allow all" > /usr/qemu-svsm/etc/qemu/bridge.conf &&',
-                '/usr/qemu-svsm/bin/qemu-system-x86_64',
-            ]
+            cmd_parts = []
+            if network_mode == 'bridge':
+                cmd_parts.extend([
+                    'mkdir -p /usr/qemu-svsm/etc/qemu &&',
+                    'echo "allow all" > /usr/qemu-svsm/etc/qemu/bridge.conf &&',
+                ])
+            cmd_parts.append('/usr/qemu-svsm/bin/qemu-system-x86_64')
             cmd_parts.extend(accel_opts)
             cmd_parts.extend(cpu_opts)
             cmd_parts.extend([
@@ -950,11 +964,17 @@ runcmd:
                 '-device', 'scsi-hd,drive=datadisk0,bus=scsi0.0,lun=1,serial=sbnb-data-disk',
             ])
 
-        # Networking - use bridge for proper network connectivity
-        cmd_parts.extend([
-            '-device', f'virtio-net-pci,netdev=net0,mac={mac_address}',
-            '-netdev', f'bridge,id=net0,br={bridge}',
-        ])
+        # Networking
+        if network_mode == 'nat':
+            cmd_parts.extend([
+                '-device', f'virtio-net-pci,netdev=net0,mac={mac_address}',
+                '-netdev', 'user,id=net0',
+            ])
+        else:
+            cmd_parts.extend([
+                '-device', f'virtio-net-pci,netdev=net0,mac={mac_address}',
+                '-netdev', f'bridge,id=net0,br={bridge}',
+            ])
 
         # Machine type and memory
         if self.params['confidential_computing']:
@@ -1021,6 +1041,7 @@ def main():
             data_disk_size=dict(type='str'),
             storage_path=dict(type='path', default='/mnt/sbnb-data'),
             bridge=dict(type='str', default='br0'),
+            network_mode=dict(type='str', default='bridge', choices=['bridge', 'nat']),
             container_image=dict(type='str', default='sbnb/svsm'),
             persist_boot_image=dict(type='bool', default=True),
             root_password=dict(type='str', no_log=True),

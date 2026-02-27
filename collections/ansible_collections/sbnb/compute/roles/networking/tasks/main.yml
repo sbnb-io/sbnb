@@ -40,6 +40,20 @@
         msg: "No main interface found from default route. Cannot configure bridge networking."
       when: sbnb_main_interface | length == 0
 
+    - name: Check if main interface is WiFi
+      ansible.builtin.stat:
+        path: "/sys/class/net/{{ sbnb_main_interface }}/wireless"
+      register: wireless_check
+
+    - name: Set WiFi fact
+      ansible.builtin.set_fact:
+        sbnb_main_is_wifi: "{{ wireless_check.stat.exists }}"
+
+    - name: Skip bridge for WiFi interface
+      ansible.builtin.debug:
+        msg: "WiFi interface {{ sbnb_main_interface }} detected, skipping bridge (802.11 cannot be bridged)"
+      when: sbnb_main_is_wifi
+
     - name: Display networking configuration
       ansible.builtin.debug:
         msg: |
@@ -47,12 +61,14 @@
             Bridge name: {{ sbnb_bridge_name }}
             Main interface: {{ sbnb_main_interface }}
             DHCP: {{ sbnb_bridge_dhcp }}
+      when: not sbnb_main_is_wifi
 
     - name: Ensure networkd directory exists
       ansible.builtin.file:
         path: "{{ sbnb_networkd_path }}"
         state: directory
         mode: '0755'
+      when: not sbnb_main_is_wifi
 
     - name: Find bridge-conflicting networkd configurations
       ansible.builtin.find:
@@ -62,13 +78,14 @@
           - "99-wildcard.network"
           - "30-*.network"
       register: networkd_files
+      when: not sbnb_main_is_wifi
 
     - name: Remove bridge-conflicting networkd configurations
       ansible.builtin.file:
         path: "{{ item.path }}"
         state: absent
       loop: "{{ networkd_files.files }}"
-      when: networkd_files.files | length > 0
+      when: not sbnb_main_is_wifi and networkd_files.files | length > 0
 
     - name: Deploy bridge netdev configuration
       ansible.builtin.template:
@@ -76,6 +93,7 @@
         dest: "{{ sbnb_networkd_path }}/25-{{ sbnb_bridge_name }}.netdev"
         mode: '0644'
       notify: Restart systemd-networkd
+      when: not sbnb_main_is_wifi
 
     - name: Deploy bridge network configuration
       ansible.builtin.template:
@@ -83,6 +101,7 @@
         dest: "{{ sbnb_networkd_path }}/25-{{ sbnb_bridge_name }}.network"
         mode: '0644'
       notify: Restart systemd-networkd
+      when: not sbnb_main_is_wifi
 
     - name: Deploy bridge link configuration
       ansible.builtin.template:
@@ -90,6 +109,7 @@
         dest: "{{ sbnb_networkd_path }}/25-{{ sbnb_bridge_name }}.link"
         mode: '0644'
       notify: Restart systemd-networkd
+      when: not sbnb_main_is_wifi
 
     - name: Deploy main interface bridge attachment
       ansible.builtin.template:
@@ -97,6 +117,7 @@
         dest: "{{ sbnb_networkd_path }}/30-{{ sbnb_main_interface }}-{{ sbnb_bridge_name }}.network"
         mode: '0644'
       notify: Restart systemd-networkd
+      when: not sbnb_main_is_wifi
 
     # Flush handlers to apply network configuration immediately
     - name: Apply network configuration
