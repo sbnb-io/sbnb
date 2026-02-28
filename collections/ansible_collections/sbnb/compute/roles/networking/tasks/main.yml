@@ -1,16 +1,31 @@
 ---
 # Networking role - configures bridge networking for SBNB VMs
 # Replaces: scripts/sbnb-configure-networking.sh
+#
+# When multiple default routes exist (e.g. wired + WiFi), prefers the
+# first wired interface since WiFi cannot be bridged (802.11).
 
-- name: Get main interface from default route
+- name: Get first wired default-route interface for bridge
+  ansible.builtin.shell:
+    cmd: |
+      for iface in $(ip route | grep default | awk '{print $5}'); do
+        [ -d "/sys/class/net/$iface/wireless" ] && continue
+        echo "$iface"
+        exit 0
+      done
+  register: wired_default
+  changed_when: false
+
+- name: Get any default-route interface as fallback
   ansible.builtin.shell:
     cmd: ip route | grep default | awk '{print $5}' | head -1
-  register: default_route
+  register: any_default
   changed_when: false
+  when: wired_default.stdout | length == 0
 
 - name: Set main interface fact
   ansible.builtin.set_fact:
-    sbnb_main_interface: "{{ default_route.stdout }}"
+    sbnb_main_interface: "{{ wired_default.stdout if wired_default.stdout | length > 0 else any_default.stdout | default('') }}"
 
 - name: Fail if no main interface found
   ansible.builtin.fail:
@@ -26,9 +41,9 @@
   ansible.builtin.set_fact:
     sbnb_main_is_wifi: "{{ wireless_check.stat.exists }}"
 
-- name: Skip bridge for WiFi interface
+- name: Skip bridge - WiFi only, no wired interface available
   ansible.builtin.debug:
-    msg: "WiFi interface {{ sbnb_main_interface }} detected, skipping bridge (802.11 cannot be bridged)"
+    msg: "WiFi-only host (no wired interface found), skipping bridge (802.11 cannot be bridged)"
   when: sbnb_main_is_wifi
 
 # =============================================================================
