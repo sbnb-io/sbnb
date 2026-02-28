@@ -2,7 +2,15 @@
 # Show WiFi connection status
 # Usage: wifi-status [INTERFACE]
 
-IFACE="${1:-wlan0}"
+# Find first wireless interface if none specified
+find_wireless_iface() {
+    for dev in /sys/class/net/*/wireless; do
+        [ -d "$dev" ] && basename "$(dirname "$dev")" && return
+    done
+    echo ""
+}
+
+IFACE="${1:-$(find_wireless_iface)}"
 
 echo "=== WiFi Status ==="
 echo ""
@@ -12,9 +20,9 @@ echo "Wireless interfaces:"
 iw dev 2>/dev/null | grep -E "Interface|ssid|channel|txpower" | sed 's/^/  /'
 echo ""
 
-# Check if interface exists
-if ! ip link show "$IFACE" >/dev/null 2>&1; then
-    echo "Interface $IFACE not found"
+# Check if interface was found/exists
+if [ -z "$IFACE" ] || ! ip link show "$IFACE" >/dev/null 2>&1; then
+    echo "No wireless interface found"
     exit 1
 fi
 

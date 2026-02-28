@@ -4,9 +4,17 @@
 
 set -e
 
+# Find first wireless interface if none specified
+find_wireless_iface() {
+    for dev in /sys/class/net/*/wireless; do
+        [ -d "$dev" ] && basename "$(dirname "$dev")" && return
+    done
+    echo ""
+}
+
 SSID="$1"
 PASSWORD="$2"
-IFACE="${3:-wlan0}"
+IFACE="${3:-$(find_wireless_iface)}"
 CONF_FILE="/etc/wpa_supplicant/wpa_supplicant-${IFACE}.conf"
 
 usage() {
@@ -15,7 +23,7 @@ usage() {
     echo "Arguments:"
     echo "  SSID       WiFi network name"
     echo "  PASSWORD   WiFi password"
-    echo "  INTERFACE  Wireless interface (default: wlan0)"
+    echo "  INTERFACE  Wireless interface (auto-detected if omitted)"
     echo ""
     echo "Examples:"
     echo "  wifi-setup MyNetwork MyPassword"
@@ -35,9 +43,9 @@ if [ -z "$SSID" ] || [ -z "$PASSWORD" ]; then
     usage
 fi
 
-# Check if interface exists
-if ! ip link show "$IFACE" >/dev/null 2>&1; then
-    echo "Error: Interface $IFACE not found"
+# Check if interface was found/exists
+if [ -z "$IFACE" ] || ! ip link show "$IFACE" >/dev/null 2>&1; then
+    echo "Error: No wireless interface found"
     echo "Available wireless interfaces:"
     iw dev 2>/dev/null | grep Interface | awk '{print "  " $2}'
     exit 1

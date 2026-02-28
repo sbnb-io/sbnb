@@ -2,11 +2,19 @@
 # Scan for available WiFi networks
 # Usage: wifi-scan [INTERFACE]
 
-IFACE="${1:-wlan0}"
+# Find first wireless interface if none specified
+find_wireless_iface() {
+    for dev in /sys/class/net/*/wireless; do
+        [ -d "$dev" ] && basename "$(dirname "$dev")" && return
+    done
+    echo ""
+}
 
-# Check if interface exists
-if ! ip link show "$IFACE" >/dev/null 2>&1; then
-    echo "Error: Interface $IFACE not found"
+IFACE="${1:-$(find_wireless_iface)}"
+
+# Check if interface was found/exists
+if [ -z "$IFACE" ] || ! ip link show "$IFACE" >/dev/null 2>&1; then
+    echo "Error: No wireless interface found"
     echo "Available wireless interfaces:"
     iw dev 2>/dev/null | grep Interface | awk '{print "  " $2}'
     exit 1
