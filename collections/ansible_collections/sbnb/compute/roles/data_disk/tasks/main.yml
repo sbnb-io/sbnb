@@ -75,6 +75,7 @@
         src: "/dev/mapper/{{ sbnb_data_disk_mapper_name }}"
         path: "{{ sbnb_data_disk_mount_path }}"
         fstype: ext4
+        opts: nofail
         state: mounted
 
     - name: Display data disk status
