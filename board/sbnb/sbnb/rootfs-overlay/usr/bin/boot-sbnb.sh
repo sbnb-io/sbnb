@@ -134,7 +134,7 @@ execute_sbnb_cmds() {
 
     if [ -n "${cmd_file}" ]; then
         echo "[sbnb] Executing commands from ${cmd_file}"
-        sh "${cmd_file}"
+        sh "${cmd_file}" || echo "[sbnb] Warning: ${cmd_file} exited with error $?"
     else
         echo "[sbnb] No sbnb-cmds.sh file found!"
     fi
