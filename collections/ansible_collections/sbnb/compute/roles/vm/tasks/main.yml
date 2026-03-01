@@ -80,16 +80,29 @@
   until: pull_result is succeeded
   when: sbnb_docker_pull != 'never'
 
-- name: Check if bridge exists for network mode detection
+- name: Check if wired bridge (br0) exists
   ansible.builtin.command:
     cmd: ip link show {{ sbnb_bridge_name }}
   register: br0_check
   changed_when: false
   failed_when: false
 
-- name: Set network mode based on bridge availability
+- name: Check if NAT bridge (virbr0) exists
+  ansible.builtin.command:
+    cmd: ip link show virbr0
+  register: virbr0_check
+  changed_when: false
+  failed_when: false
+  when: br0_check.rc != 0
+
+- name: Set VM bridge name
   ansible.builtin.set_fact:
-    sbnb_vm_network_mode: "{{ 'bridge' if br0_check.rc == 0 else 'nat' }}"
+    sbnb_vm_bridge: "{{ sbnb_bridge_name if br0_check.rc == 0 else ('virbr0' if virbr0_check.rc | default(1) == 0 else '') }}"
+
+- name: Fail if no bridge available
+  ansible.builtin.fail:
+    msg: "No bridge found (br0 or virbr0). Run the networking role first."
+  when: sbnb_vm_bridge | length == 0
 
 - name: Manage VM
   sbnb.compute.qemu_vm:
@@ -106,8 +119,7 @@
     data_disk_name: "{{ sbnb_vm_data_disk_name | default(omit) }}"
     data_disk_size: "{{ sbnb_vm_data_disk_size | default(omit) }}"
     storage_path: "{{ sbnb_storage_mount }}"
-    bridge: "{{ sbnb_bridge_name }}"
-    network_mode: "{{ sbnb_vm_network_mode }}"
+    bridge: "{{ sbnb_vm_bridge }}"
     container_image: "{{ sbnb_docker_image }}"
     persist_boot_image: "{{ sbnb_vm_persist_boot_image }}"
     root_password: "{{ sbnb_vm_root_password | default(omit) }}"

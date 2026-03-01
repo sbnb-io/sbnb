@@ -33,27 +33,51 @@
 
 set -euxo pipefail
 
-# Configure host networking
-configure_host_networking() {
+# Configure NAT bridge (virbr0) for WiFi hosts
+configure_nat_bridge() {
+  if ip link show virbr0 &>/dev/null; then
+    echo "NAT bridge (virbr0) already configured."
+    return
+  fi
+
+  echo "WiFi interface ${MAIN_INTERFACE} detected, creating NAT bridge (virbr0)."
+
+  # Remove conflicting configs, preserve WiFi
+  rm -f /etc/systemd/network/*-br0.* /etc/systemd/network/*-virbr0.* /etc/systemd/network/99-wildcard.network /etc/systemd/network/30-*.network
+
+  cat > /etc/systemd/network/25-virbr0.netdev << EOF
+[NetDev]
+Name=virbr0
+Kind=bridge
+EOF
+
+  cat > /etc/systemd/network/25-virbr0.network << EOF
+[Match]
+Name=virbr0
+
+[Network]
+Address=192.168.122.1/24
+DHCPServer=yes
+IPMasquerade=ipv4
+
+[DHCPServer]
+PoolOffset=50
+PoolSize=100
+EmitDNS=yes
+EOF
+
+  networkctl reload
+}
+
+# Configure wired bridge (br0) for ethernet hosts
+configure_wired_bridge() {
   if ip link show br0 &>/dev/null; then
     echo "Host network already configured."
     return
   fi
 
-  MAIN_INTERFACE=$(ip route | grep default | awk '{print $5}')
-  if [ -z "${MAIN_INTERFACE}" ]; then
-    echo "Warning: No main interface found."
-    return
-  fi
-
-  # WiFi interfaces cannot be bridged (802.11 3-address frame limitation)
-  if [ -d "/sys/class/net/${MAIN_INTERFACE}/wireless" ]; then
-    echo "WiFi interface ${MAIN_INTERFACE} detected, skipping bridge setup."
-    return
-  fi
-
-  # Remove only bridge-conflicting configs (ethernet/wildcard), preserve WiFi
-  rm -f /etc/systemd/network/*-br0.* /etc/systemd/network/99-wildcard.network /etc/systemd/network/30-*.network
+  # Remove conflicting configs, preserve WiFi
+  rm -f /etc/systemd/network/*-br0.* /etc/systemd/network/*-virbr0.* /etc/systemd/network/99-wildcard.network /etc/systemd/network/30-*.network
 
   cat > /etc/systemd/network/25-br0.netdev << EOF
 [NetDev]
@@ -90,6 +114,21 @@ MACAddressPolicy=none
 EOF
 
   networkctl reload
+}
+
+# Configure host networking
+configure_host_networking() {
+  MAIN_INTERFACE=$(ip route | grep default | awk '{print $5}')
+  if [ -z "${MAIN_INTERFACE}" ]; then
+    echo "Warning: No main interface found."
+    return
+  fi
+
+  if [ -d "/sys/class/net/${MAIN_INTERFACE}/wireless" ]; then
+    configure_nat_bridge
+  else
+    configure_wired_bridge
+  fi
 }
 
 configure_host_networking

@@ -41,47 +41,64 @@
   ansible.builtin.set_fact:
     sbnb_main_is_wifi: "{{ wireless_check.stat.exists }}"
 
-- name: Skip bridge - WiFi only, no wired interface available
-  ansible.builtin.debug:
-    msg: "WiFi-only host (no wired interface found), skipping bridge (802.11 cannot be bridged)"
-  when: sbnb_main_is_wifi
-
 # =============================================================================
-# Configure Bridge Networking (always ensure correct configs are in place)
+# Common - ensure networkd directory and clean conflicting configs
 # =============================================================================
 
 - name: Display networking configuration
   ansible.builtin.debug:
     msg: |
-      Configuring bridge networking:
-        Bridge name: {{ sbnb_bridge_name }}
+      Configuring networking:
+        Mode: {{ 'NAT bridge (virbr0)' if sbnb_main_is_wifi else 'bridge (' + sbnb_bridge_name + ')' }}
         Main interface: {{ sbnb_main_interface }}
-        DHCP: {{ sbnb_bridge_dhcp }}
-  when: not sbnb_main_is_wifi
+        WiFi: {{ sbnb_main_is_wifi }}
 
 - name: Ensure networkd directory exists
   ansible.builtin.file:
     path: "{{ sbnb_networkd_path }}"
     state: directory
     mode: '0755'
-  when: not sbnb_main_is_wifi
 
-- name: Find bridge-conflicting networkd configurations
+- name: Find conflicting networkd configurations
   ansible.builtin.find:
     paths: "{{ sbnb_networkd_path }}"
     patterns:
       - "*-br0.*"
+      - "*-virbr0.*"
       - "99-wildcard.network"
       - "30-*.network"
   register: networkd_files
-  when: not sbnb_main_is_wifi
 
-- name: Remove bridge-conflicting networkd configurations
+- name: Remove conflicting networkd configurations
   ansible.builtin.file:
     path: "{{ item.path }}"
     state: absent
   loop: "{{ networkd_files.files }}"
-  when: not sbnb_main_is_wifi and networkd_files.files | length > 0
+  when: networkd_files.files | length > 0
+
+# =============================================================================
+# WiFi path: NAT bridge (virbr0) with DHCPServer + IPMasquerade
+# =============================================================================
+
+- name: Deploy virbr0 netdev configuration
+  ansible.builtin.template:
+    src: 25-virbr0.netdev.j2
+    dest: "{{ sbnb_networkd_path }}/25-virbr0.netdev"
+    mode: '0644'
+  notify: Restart systemd-networkd
+  when: sbnb_main_is_wifi
+
+- name: Deploy virbr0 network configuration
+  ansible.builtin.template:
+    src: 25-virbr0.network.j2
+    dest: "{{ sbnb_networkd_path }}/25-virbr0.network"
+    mode: '0644'
+  notify: Restart systemd-networkd
+  when: sbnb_main_is_wifi
+
+# =============================================================================
+# Wired path: bridge (br0) attached to physical interface
+# =============================================================================
 
 - name: Deploy bridge netdev configuration
   ansible.builtin.template:

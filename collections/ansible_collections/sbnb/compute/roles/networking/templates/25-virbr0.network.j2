@@ -1,0 +1,12 @@
+[Match]
+Name=virbr0
+
+[Network]
+Address=192.168.122.1/24
+DHCPServer=yes
+IPMasquerade=ipv4
+
+[DHCPServer]
+PoolOffset=50
+PoolSize=100
+EmitDNS=yes
