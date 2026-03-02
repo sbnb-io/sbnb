@@ -67,6 +67,12 @@ EmitDNS=yes
 EOF
 
   networkctl reload
+
+  # Docker sets FORWARD policy to DROP; allow virbr0 traffic through DOCKER-USER chain
+  iptables -C DOCKER-USER -i virbr0 -j ACCEPT 2>/dev/null || \
+    iptables -I DOCKER-USER -i virbr0 -j ACCEPT
+  iptables -C DOCKER-USER -o virbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+    iptables -I DOCKER-USER -o virbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 }
 
 # Configure wired bridge (br0) for ethernet hosts

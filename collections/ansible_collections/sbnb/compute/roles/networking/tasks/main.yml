@@ -96,6 +96,25 @@
   notify: Restart systemd-networkd
   when: sbnb_main_is_wifi
 
+- name: Allow virbr0 forwarding in DOCKER-USER chain (outbound)
+  ansible.builtin.iptables:
+    chain: DOCKER-USER
+    in_interface: virbr0
+    jump: ACCEPT
+    action: insert
+  when: sbnb_main_is_wifi
+
+- name: Allow virbr0 forwarding in DOCKER-USER chain (return traffic)
+  ansible.builtin.iptables:
+    chain: DOCKER-USER
+    out_interface: virbr0
+    ctstate:
+      - RELATED
+      - ESTABLISHED
+    jump: ACCEPT
+    action: insert
+  when: sbnb_main_is_wifi
+
 # =============================================================================
 # Wired path: bridge (br0) attached to physical interface
 # =============================================================================
