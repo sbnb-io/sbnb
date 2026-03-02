@@ -1,7 +1,15 @@
 ---
+# Configure SBNB host system (storage, networking, Docker)
+# This playbook configures the bare-metal host with storage (LVM), bridge networking, and Docker.
+#
+# Usage:
+#   ansible-playbook sbnb.compute.configure-system -i <hostname>,
+
 - hosts: all
   gather_facts: false
   ignore_unreachable: true
 
   roles:
-    - role: sbnb.compute.configure_system
+    - role: sbnb.compute.storage
+    - role: sbnb.compute.networking
+    - role: sbnb.compute.docker

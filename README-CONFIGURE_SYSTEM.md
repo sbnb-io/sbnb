@@ -16,7 +16,8 @@ Sbnb Linux boots a bare-metal server into a baseline usable state. In this state
 The automation system configures the server by executing specific tasks:
 
 #### **Networking**
-- The current implementation creates a bridge interface (`br0`) and attaches the main network interface to it.
+- For wired connections: Creates a bridge interface (`br0`) and attaches the main network interface to it.
+- For WiFi connections: Creates a NAT bridge (`virbr0`) with DHCP server, since WiFi interfaces cannot be bridged.
 - Advanced networking configurations such as `vfio-pci`, `ROCE`, or `Infiniband` can be implemented through this staged approach.
 
 #### **Storage (Disks)**
@@ -44,7 +45,12 @@ git clone https://github.com/sbnb-io/sbnb.git
 cd sbnb
 ```
 
-Under the hood, the Ansible playbook executes three scripts, [sbnb-configure-storage.sh](https://github.com/sbnb-io/sbnb/blob/main/scripts/sbnb-configure-storage.sh), [sbnb-configure-networking.sh](https://github.com/sbnb-io/sbnb/blob/main/scripts/sbnb-configure-networking.sh), and [sbnb-configure-system.sh](https://github.com/sbnb-io/sbnb/blob/main/scripts/sbnb-configure-system.sh) for those interested in a deeper dive.
+Under the hood, the Ansible playbook uses three roles from the `sbnb.compute` collection:
+- **[storage](https://github.com/sbnb-io/sbnb/tree/main/collections/ansible_collections/sbnb/compute/roles/storage)** - Configures LVM storage from available drives
+- **[networking](https://github.com/sbnb-io/sbnb/tree/main/collections/ansible_collections/sbnb/compute/roles/networking)** - Sets up bridge networking (br0 for wired, virbr0 NAT for WiFi)
+- **[docker](https://github.com/sbnb-io/sbnb/tree/main/collections/ansible_collections/sbnb/compute/roles/docker)** - Configures Docker daemon to use the storage mount
+
+For implementation details, see the [roles directory](https://github.com/sbnb-io/sbnb/tree/main/collections/ansible_collections/sbnb/compute/roles).
 
 ### **4. Run Ansible Playbook**
 
