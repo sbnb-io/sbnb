@@ -5,7 +5,7 @@
 sbnb_sglang_container_name: sglang
 sbnb_sglang_image: lmsysorg/sglang:latest
 sbnb_sglang_state: started
-sbnb_sglang_pull: true
+sbnb_sglang_pull: false  # Only pull when explicitly needed
 sbnb_sglang_recreate: false
 sbnb_sglang_shm_size: "32g"
 

@@ -20,4 +20,4 @@ sbnb_bridge_name: br0
 
 # Docker configuration
 sbnb_docker_image: sbnb/svsm
-sbnb_docker_pull: always
+sbnb_docker_pull: missing  # Only pull if not present locally

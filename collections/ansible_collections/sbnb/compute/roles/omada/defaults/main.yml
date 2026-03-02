@@ -5,7 +5,7 @@
 sbnb_omada_container_name: omada
 sbnb_omada_image: mbentley/omada-controller:latest
 sbnb_omada_state: started
-sbnb_omada_pull: always
+sbnb_omada_pull: missing  # Only pull if not present locally
 sbnb_omada_recreate: true
 
 # Timezone

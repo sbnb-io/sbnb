@@ -5,7 +5,7 @@
 sbnb_ollama_container_name: ollama
 sbnb_ollama_image: ollama/ollama:latest
 sbnb_ollama_state: started
-sbnb_ollama_pull: true
+sbnb_ollama_pull: false  # Only pull when explicitly needed
 sbnb_ollama_recreate: false
 
 # Port (Ollama listens on 11434)

@@ -7,7 +7,7 @@ sbnb_vllm_container_name: vllm
 # Uses LD_LIBRARY_PATH fix to prefer host libcuda over container cuda-compat
 sbnb_vllm_image: vllm/vllm-openai:v0.15.1
 sbnb_vllm_state: started
-sbnb_vllm_pull: true
+sbnb_vllm_pull: false  # Only pull when explicitly needed
 sbnb_vllm_recreate: false
 
 # Ports

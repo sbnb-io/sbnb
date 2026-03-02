@@ -5,14 +5,15 @@
 sbnb_openclaw_container_name: openclaw
 sbnb_openclaw_image: ghcr.io/openclaw/openclaw:latest
 sbnb_openclaw_state: started
-sbnb_openclaw_pull: true
+sbnb_openclaw_pull: false  # Only pull when explicitly needed
 sbnb_openclaw_recreate: false
 
 # Port for gateway web UI
 sbnb_openclaw_port: 18789
 
 # Storage path for OpenClaw data
-sbnb_openclaw_data_path: /mnt/sbnb-data/openclaw/.openclaw
+# Convention: {data_disk_mount}/{app_name}/{volume_name}
+sbnb_openclaw_data_path: /mnt/sbnb-data/openclaw/config
 
 # Gateway bind mode: lan (recommended for Docker) or loopback
 sbnb_openclaw_bind: lan

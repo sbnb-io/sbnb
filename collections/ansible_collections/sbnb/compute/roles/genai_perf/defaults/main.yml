@@ -5,7 +5,7 @@
 # Container configuration
 sbnb_genai_perf_container_name: genai-perf
 sbnb_genai_perf_image: nvcr.io/nvidia/tritonserver:25.01-py3-sdk
-sbnb_genai_perf_pull: true
+sbnb_genai_perf_pull: false  # Only pull when explicitly needed
 
 # Target API endpoint
 sbnb_genai_perf_url: "http://localhost:8000"

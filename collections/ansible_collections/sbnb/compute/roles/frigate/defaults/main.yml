@@ -5,7 +5,7 @@
 sbnb_frigate_container_name: frigate
 sbnb_frigate_image: ghcr.io/blakeblackshear/frigate:0.16.0-tensorrt
 sbnb_frigate_state: started
-sbnb_frigate_pull: always
+sbnb_frigate_pull: missing  # Only pull if not present locally
 sbnb_frigate_recreate: true
 sbnb_frigate_shm_size: "512M"
 
@@ -17,8 +17,9 @@ sbnb_frigate_ports:
   - "8555:8555/udp"
 
 # Storage paths
-sbnb_frigate_config_path: /mnt/sbnb-data/fg/config
-sbnb_frigate_media_path: /mnt/sbnb-data/fg/media
+# Convention: {data_disk_mount}/{app_name}/{volume_name}
+sbnb_frigate_config_path: /mnt/sbnb-data/frigate/config
+sbnb_frigate_media_path: /mnt/sbnb-data/frigate/media
 
 # Optional local config file to copy
 # sbnb_frigate_local_config: frigate-config.yaml
