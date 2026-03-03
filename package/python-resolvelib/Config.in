@@ -1,0 +1,7 @@
+config BR2_PACKAGE_PYTHON_RESOLVELIB
+	bool "python-resolvelib"
+	help
+	  A Python library to resolve abstract dependencies into
+	  concrete ones. Used by Ansible for dependency resolution.
+
+	  https://github.com/sarugaku/resolvelib

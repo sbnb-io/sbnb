@@ -1,0 +1,4 @@
+# sha256 from https://pypi.org/pypi/resolvelib/json
+sha256  7d08a2022f6e16ce405d60b68c390f054efcfd0477d4b9bd019cc941c28fad1c  resolvelib-1.2.1.tar.gz
+# Locally computed
+sha256  6852822682399a3d7f2bb407cdc1a8a8e87adaf82442d3af6184b1dcd2caf118  LICENSE

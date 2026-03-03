@@ -1,3 +1,5 @@
 source "$BR2_EXTERNAL_SBNB_PATH/package/sevctl/Config.in"
 source "$BR2_EXTERNAL_SBNB_PATH/package/snpguest/Config.in"
 source "$BR2_EXTERNAL_SBNB_PATH/package/fatresize/Config.in"
+source "$BR2_EXTERNAL_SBNB_PATH/package/python-ansible-core/Config.in"
+source "$BR2_EXTERNAL_SBNB_PATH/package/python-resolvelib/Config.in"

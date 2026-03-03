@@ -1,0 +1,4 @@
+# sha256 from https://pypi.org/pypi/ansible-core/json
+sha256  38670ab2d2ffd67ee7e9e562f7c94e0927c8b7b4b0eb69233bc008c29e32d591  ansible_core-2.20.3.tar.gz
+# Locally computed
+sha256  8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903  COPYING

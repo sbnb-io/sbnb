@@ -1,0 +1,19 @@
+config BR2_PACKAGE_PYTHON_ANSIBLE_CORE
+	bool "python-ansible-core"
+	select BR2_PACKAGE_PYTHON3
+	select BR2_PACKAGE_PYTHON_CRYPTOGRAPHY
+	select BR2_PACKAGE_PYTHON_JINJA2
+	select BR2_PACKAGE_PYTHON_PACKAGING
+	select BR2_PACKAGE_PYTHON_PYYAML
+	select BR2_PACKAGE_PYTHON_RESOLVELIB
+	help
+	  Ansible is a radically simple IT automation platform that
+	  makes your applications and systems easier to deploy and
+	  maintain. Automate everything from code deployment to
+	  network configuration to cloud management.
+
+	  This package installs ansible-core, the foundational
+	  component that includes ansible-playbook, ansible-vault,
+	  and other core utilities.
+
+	  https://www.ansible.com/
