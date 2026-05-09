@@ -100,6 +100,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: reefy-prod
+          # Level 1 vs default 6: ~5% size diff on already-compressed
+          # squashfs payloads but ~6x faster CPU.
+          compression-level: 1
           path: |
             ${{ env.BR_OUTPUT }}/images/reefy-prod.efi
             ${{ env.BR_OUTPUT }}/images/reefy-prod.raw
@@ -109,6 +112,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: reefy-dev
+          compression-level: 1
           path: |
             ${{ env.BR_OUTPUT }}/images/reefy-dev.efi
             ${{ env.BR_OUTPUT }}/images/reefy-dev.raw

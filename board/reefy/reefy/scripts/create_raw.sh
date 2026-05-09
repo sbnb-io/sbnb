@@ -53,9 +53,6 @@ done
 rm -rf ${TMP_DIR}
 losetup -d ${LOOP}
 
-zip ${IMG_FILE}.zip ${IMG_FILE}
-zip ${EFI}.zip ${EFI}
-
 qemu-img convert -f raw -O vpc ${IMG_FILE} ${VHD_FILE}
 
 echo Raw reefy image for bare metal is ${IMG_FILE}
