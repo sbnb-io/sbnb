@@ -9,9 +9,13 @@ set -euxo pipefail
 #     Partition 3: Key partition (1 MiB, msftres) — LUKS passphrase
 #     Partition 4: Data partition (rest of disk) — LUKS-encrypted f2fs
 
-EFI=reefy.efi
-IMG_FILE=reefy.raw
-VHD_FILE=reefy.vhd
+# Defaults preserve the historical filenames for backward-compat
+# with hand builds; post_image.sh overrides EFI/IMG_FILE/VHD_FILE
+# per flavor (reefy-prod.efi/.raw/.vhd, reefy-dev.efi/.raw/.vhd, ...)
+# when running the multi-flavor loop.
+EFI="${EFI:-reefy.efi}"
+IMG_FILE="${IMG_FILE:-reefy.raw}"
+VHD_FILE="${VHD_FILE:-reefy.vhd}"
 TMP_DIR=$(mktemp -d)
 FS_SIZE="2100" # in MB (2x 1GiB ESPs + slack)
 REEFY_TSKEY="${BR2_EXTERNAL_REEFY_PATH}"/reefy-tskey.txt

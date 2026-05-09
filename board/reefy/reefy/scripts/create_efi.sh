@@ -22,7 +22,10 @@ else
 fi
 echo "create_efi.sh: kernel cmdline = ${CMDLINE}"
 CMDLINE_TMP=$(mktemp)
-OUTPUT=reefy.efi
+# Output filename. Defaults to reefy.efi for backward-compat with
+# hand builds; post_image.sh overrides per flavor (reefy-prod.efi /
+# reefy-dev.efi / ...) when running the multi-flavor loop.
+OUTPUT="${OUTPUT:-reefy.efi}"
 
 # Write the command line to a temporary file
 echo -n "${CMDLINE}" > "${CMDLINE_TMP}"

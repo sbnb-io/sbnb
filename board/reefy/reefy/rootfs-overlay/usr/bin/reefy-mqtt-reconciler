@@ -1057,7 +1057,17 @@ class MQTTReconciler:
             log('mqtt', f'Backup error: {e}')
 
     def _restart_instance(self, payload, cmd_id=None):
-        """Restart an app instance container via docker compose."""
+        """Recreate an app instance container with current config.
+
+        Uses `up -d --force-recreate` rather than `restart`. Plain
+        `restart` keeps the same container - it bounces the process
+        but never re-reads the compose file, so any config change
+        the user made (env vars, ports, GPU directive, etc.) since
+        the container was last created stays UNapplied. Recreate
+        guarantees the running container reflects the current
+        compose. Costs ~1-2s extra; in-memory state isn't a concern
+        for our apps since durable state lives in mounted volumes.
+        """
         instance_uuid = payload.get('instance_uuid')
         if not instance_uuid:
             raise ValueError('missing instance_uuid')
@@ -1069,16 +1079,16 @@ class MQTTReconciler:
         svc_id = instance_uuid
         self._send_command_response(cmd_id, status='running',
                                     message=f'Restarting {svc_id}...')
-        log('mqtt', f'Restarting instance {svc_id}')
+        log('mqtt', f'Recreating instance {svc_id} with current compose config')
 
         result = subprocess.run(
             ['docker', 'compose', '-f', compose_file, '-p', 'state',
-             'restart', svc_id],
-            capture_output=True, text=True, timeout=120)
+             'up', '-d', '--force-recreate', '--no-deps', svc_id],
+            capture_output=True, text=True, timeout=180)
         if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or f'docker compose restart failed (exit {result.returncode})')
+            raise RuntimeError(result.stderr.strip() or f'docker compose up --force-recreate failed (exit {result.returncode})')
 
-        log('mqtt', f'Instance {svc_id} restarted')
+        log('mqtt', f'Instance {svc_id} recreated')
         return f'Instance {svc_id} restarted'
 
     def _reset_identity(self, payload=None, cmd_id=None):
@@ -2798,6 +2808,21 @@ Environment=MQTT_PORT={self.port}
         """Write compose JSON and run docker compose up, streaming output to logs.
         Returns True on success, False on failure."""
         os.makedirs(os.path.dirname(self.COMPOSE_PATH), exist_ok=True)
+
+        # Diagnostic: log which services' config changed vs current
+        # file. If a container later doesn't reflect a logged change,
+        # `docker compose up` missed the diff (e.g. the `devices`
+        # field bug seen with ollama+CDI). Hash, not full diff, to
+        # keep logs short.
+        try:
+            old = json.load(open(self.COMPOSE_PATH)) if os.path.exists(self.COMPOSE_PATH) else {}
+            def _h(c): return hashlib.sha256(json.dumps(c, sort_keys=True).encode()).hexdigest()[:8]
+            changed = [n for n, c in compose.get('services', {}).items()
+                       if _h(c) != _h(old.get('services', {}).get(n, {}))]
+            if changed:
+                log('reconciler', f'compose changes: {",".join(changed)}')
+        except Exception as e:
+            log('reconciler', f'compose-diff log failed: {e}')
 
         with open(self.COMPOSE_PATH, 'w') as f:
             json.dump(compose, f, indent=2)

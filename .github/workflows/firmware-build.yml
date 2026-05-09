@@ -1,0 +1,120 @@
+name: Build reefy firmware (self-hosted)
+
+# Self-hosted multi-flavor firmware build.
+#
+# Triggers on every push so feature-branch validation works:
+# push branch → CI builds artifacts → reefy-deploy --github-run <id>
+# pulls them → publish to reefy.dev → OTA test on a dev device →
+# merge to main when green.
+#
+# Output: two artifacts per run, named reefy-{prod,dev}, each
+# containing the corresponding .efi + .raw. reefy-deploy fetches
+# by name based on the YAML's `flavor:` field.
+#
+# Coexists with the existing build.yml (hosted ubuntu-large)
+# during the rollout period; remove that file once self-hosted is
+# proven stable.
+
+on:
+  workflow_dispatch:
+  push:
+    paths-ignore:
+      - '**/README*.md'
+      - 'scripts/**'
+      - 'containers/**'
+      - 'images/**'
+      - 'misc/**'
+      - 'collections/**'
+
+permissions:
+  contents: read
+  # For actions/attest-build-provenance@v2: write attestations to
+  # the repo's transparency log. id-token: write is what fetches
+  # the OIDC JWT used to sign.
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    runs-on: [self-hosted, large]
+    timeout-minutes: 360
+    env:
+      # Persistent caches in the github-runner Reefy app's
+      # buildroot-cache volume. dl/ = source tarballs (~2 GB),
+      # ccache = compiler cache, output/ = build tree (host tools,
+      # per-package work). Without an out-of-tree output, the build
+      # tree lives inside the checkout and gets wiped by every
+      # actions/checkout's `clean: true` default.
+      BR2_DL_DIR: /buildroot-cache/dl
+      BR2_CCACHE_DIR: /buildroot-cache/ccache
+      BR_OUTPUT: /buildroot-cache/output
+
+    steps:
+      - name: Checkout (with buildroot submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install buildroot prereqs
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential sed make binutils diffutils gcc g++ \
+            bash patch gzip bzip2 perl tar cpio unzip rsync file bc \
+            findutils gawk wget python3 git libncurses-dev libssl-dev \
+            systemd systemd-boot-efi qemu-utils zip ca-certificates \
+            ragel parted dosfstools udev
+
+      - name: Configure
+        working-directory: buildroot
+        run: make BR2_EXTERNAL=.. O="$BR_OUTPUT" reefy_defconfig
+
+      - name: Build (post_image.sh loops flavors → reefy-{prod,dev}.{efi,raw})
+        working-directory: buildroot
+        run: make O="$BR_OUTPUT" -j$(nproc)
+
+      - name: Verify multi-flavor outputs
+        run: |
+          ls -la "$BR_OUTPUT/images/"
+          for flavor in prod dev; do
+            test -f "$BR_OUTPUT/images/reefy-${flavor}.efi" \
+              || { echo "missing reefy-${flavor}.efi"; exit 1; }
+            test -f "$BR_OUTPUT/images/reefy-${flavor}.raw" \
+              || { echo "missing reefy-${flavor}.raw"; exit 1; }
+            du -h "$BR_OUTPUT/images/reefy-${flavor}".{efi,raw}
+          done
+
+      # Per-flavor artifact upload. Naming convention `reefy-<flavor>`
+      # is the contract reefy-deploy queries against
+      # (`gh api .../actions/artifacts?name=reefy-prod`). Don't
+      # rename without also updating tools/reefy-deploy/steps/firmware.py.
+      - name: Upload reefy-prod artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reefy-prod
+          path: |
+            ${{ env.BR_OUTPUT }}/images/reefy-prod.efi
+            ${{ env.BR_OUTPUT }}/images/reefy-prod.raw
+
+      - name: Upload reefy-dev artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reefy-dev
+          path: |
+            ${{ env.BR_OUTPUT }}/images/reefy-dev.efi
+            ${{ env.BR_OUTPUT }}/images/reefy-dev.raw
+
+      # Layer A from PLAN-firmware-via-artifacts.md: SLSA build
+      # provenance attestation, signed by Sigstore via OIDC, recorded
+      # in the public Rekor log. Lets reefy-deploy verify
+      # `gh attestation verify` before publishing to S3, defending
+      # against post-build artifact substitution by anyone with
+      # actions:write.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            ${{ env.BR_OUTPUT }}/images/reefy-prod.efi
+            ${{ env.BR_OUTPUT }}/images/reefy-prod.raw
+            ${{ env.BR_OUTPUT }}/images/reefy-dev.efi
+            ${{ env.BR_OUTPUT }}/images/reefy-dev.raw
