@@ -1510,9 +1510,21 @@ class MQTTReconciler:
             self._publish_stage('updating', f'Downloading firmware {version}')
             log('mqtt', f'Downloading firmware {version} from {url}')
 
+            # Drop any stale partial from a previous update attempt so
+            # `-C -` doesn't try to append-after a different-URL's bytes.
+            if os.path.exists(download_path):
+                os.remove(download_path)
+            # --retry-all-errors covers TLS mid-stream failures (curl
+            # exit 56) that the default --retry set skips. Real devices
+            # behind flaky wifi hit the same class of failures.
+            # -C - + --retry means each retry resumes from the current
+            # local size instead of re-downloading from byte 0.
             result = subprocess.run(
-                ['curl', '-f', '-L', '--retry', '3', '-o', download_path, url],
-                capture_output=True, text=True, timeout=600,
+                ['curl', '-f', '-L', '-C', '-',
+                 '--retry', '5', '--retry-delay', '5',
+                 '--retry-all-errors', '--retry-max-time', '300',
+                 '-o', download_path, url],
+                capture_output=True, text=True, timeout=900,
             )
             if result.returncode != 0:
                 msg = f'Firmware download failed: {result.stderr.strip()}'
