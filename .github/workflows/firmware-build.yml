@@ -84,6 +84,14 @@ jobs:
             du -h "$BR_OUTPUT/images/reefy-${flavor}".{efi,raw}
           done
 
+      # Stage os-release next to the images so it travels with the
+      # artifact zip. reefy-deploy reads IMAGE_VERSION from this file
+      # (e.g. `2026.04.14-07`) for S3 object naming and latest.json -
+      # without it the version label falls back to `gh-run-<id>` which
+      # isn't a meaningful release tag.
+      - name: Stage os-release alongside images
+        run: cp "$BR_OUTPUT/target/usr/lib/os-release" "$BR_OUTPUT/images/os-release"
+
       # Per-flavor artifact upload. Naming convention `reefy-<flavor>`
       # is the contract reefy-deploy queries against
       # (`gh api .../actions/artifacts?name=reefy-prod`). Don't
@@ -95,6 +103,7 @@ jobs:
           path: |
             ${{ env.BR_OUTPUT }}/images/reefy-prod.efi
             ${{ env.BR_OUTPUT }}/images/reefy-prod.raw
+            ${{ env.BR_OUTPUT }}/images/os-release
 
       - name: Upload reefy-dev artifact
         uses: actions/upload-artifact@v4
@@ -103,6 +112,7 @@ jobs:
           path: |
             ${{ env.BR_OUTPUT }}/images/reefy-dev.efi
             ${{ env.BR_OUTPUT }}/images/reefy-dev.raw
+            ${{ env.BR_OUTPUT }}/images/os-release
 
       # Layer A from PLAN-firmware-via-artifacts.md: SLSA build
       # provenance attestation, signed by Sigstore via OIDC, recorded
