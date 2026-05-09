@@ -1,0 +1,96 @@
+#!/bin/sh
+# Drop into a Reefy app container's shell, or proxy a file-transfer
+# subsystem through to it. Single canonical implementation - both
+# callers use it:
+#
+#   1. SSH ForceCommand (reefy-apps.conf in /etc/ssh/sshd_config.d/):
+#        sshd invokes us as `reefy-app-shell app-<instance_name>`.
+#        Look up the container via /mnt/reefy-data/state/desired-state.json.
+#
+#   2. Sidecar ttyd (reefy-app-sidecar-ttyd image bind-mounts this script
+#      in as /usr/bin/reefy-app-shell): invoked with NO args, reading
+#      $APP_CONTAINER + $APP_NAME from sidecar's compose env. The sidecar
+#      starts tmux first, then runs the script - so $TMUX is already set
+#      when we're called from there.
+#
+# Mode dispatch on $SSH_ORIGINAL_COMMAND (only meaningful for case 1):
+#   empty                       -> interactive shell
+#   internal-sftp / *sftp-server* -> docker exec sftp-server inside container
+#                                  (Filezilla, modern scp without -O)
+#   anything else               -> docker exec sh -c "$cmd"
+#                                  (legacy scp -t/-f, rsync over ssh, ad-hoc cmd)
+#
+# Interactive shell wraps in tmux when not already in one, matching the
+# web-terminal sidecar's persistence model: disconnect/reconnect resumes
+# the same session. Per-app system user has its own /tmp/tmux-<uid>/, so
+# different apps' SSH sessions don't share a server. Same-app multiple
+# SSH sessions attach to the SAME tmux session (multiplexed, all see
+# identical view).
+
+set -e
+
+# SSH-mode: derive $APP_CONTAINER from the SSH username + desired state.
+# Sidecar-mode (no args): $APP_CONTAINER + $APP_NAME come from compose env.
+if [ -n "${1:-}" ]; then
+    case "$1" in
+        app-?*) slug="${1#app-}" ;;
+        *) echo "expected SSH user 'app-<name>', got '$1'" >&2; exit 1 ;;
+    esac
+    state=/mnt/reefy-data/state/desired-state.json
+    [ -f "$state" ] || { echo "no desired-state on this device" >&2; exit 1; }
+    APP_CONTAINER=$(STATE="$state" SLUG="$slug" python3 -c '
+import json, os, sys
+s = json.load(open(os.environ["STATE"]))
+for i in s.get("instances", []):
+    if i.get("instance_name") == os.environ["SLUG"]:
+        uuid = i.get("instance_uuid") or i.get("instance_name")
+        print(f"state-{uuid}-1")
+        sys.exit(0)
+sys.exit(1)
+') || { echo "no installed app named '$slug' on this device" >&2; exit 1; }
+    APP_NAME="$slug"
+fi
+
+[ -n "${APP_CONTAINER:-}" ] || { echo "APP_CONTAINER not set (sidecar misconfigured?)" >&2; exit 1; }
+[ -n "${APP_NAME:-}" ] || APP_NAME="$APP_CONTAINER"
+
+case "${SSH_ORIGINAL_COMMAND:-}" in
+    '')
+        # Interactive shell.
+        if [ -n "${TMUX:-}" ]; then
+            # Already inside tmux (sidecar path, or SSH after tmux wrap):
+            # just docker exec. Bash with pretty prompt, sh fallback.
+            # `--norc --noprofile` skips the image's bashrc which often
+            # spams or breaks color escapes inside ttyd.
+            exec docker exec -it "$APP_CONTAINER" sh -c "
+                export PS1='\$(whoami 2>/dev/null || echo user)@${APP_NAME}# '
+                if command -v bash >/dev/null; then exec bash --norc --noprofile; else exec sh; fi"
+        fi
+        # Outside tmux (SSH first invocation): wrap in tmux for
+        # disconnect/reconnect persistence. `default-command` so new
+        # windows/panes (Ctrl-B c) also open in-container, not on host.
+        # `-A` attaches to an existing session of the same name; second
+        # ssh from another laptop joins this same view.
+        export APP_CONTAINER APP_NAME
+        exec sh -c "
+            tmux set -g default-command /usr/bin/reefy-app-shell 2>/dev/null
+            exec tmux new-session -A -s '$APP_NAME' /usr/bin/reefy-app-shell"
+        ;;
+    internal-sftp|*sftp-server*)
+        # sftp subsystem - try the binary at the common distro paths.
+        # Container needs openssh-sftp-server (Debian/Ubuntu) /
+        # openssh-server (Fedora) installed; failure here is a clean
+        # "sftp-server not installed" rather than a silent hang.
+        exec docker exec -i "$APP_CONTAINER" sh -c '
+            for p in /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server /usr/lib/ssh/sftp-server; do
+                [ -x "$p" ] && exec "$p"
+            done
+            echo "sftp-server not installed in this container" >&2
+            exit 127'
+        ;;
+    *)
+        # Legacy scp (-O flag), rsync, or `ssh app-X@host '<cmd>'`.
+        # Run the original command verbatim inside the container.
+        exec docker exec -i "$APP_CONTAINER" sh -c "$SSH_ORIGINAL_COMMAND"
+        ;;
+esac

@@ -1669,6 +1669,13 @@ class MQTTReconciler:
         # password-only auth).
         self._apply_user_ssh_keys(state.get('user_ssh_keys', []))
 
+        # Mirror installed app instances to `app-<name>` system users so
+        # per-app SSH (`ssh app-<name>@host`) routes via the sshd_config
+        # ForceCommand into the right container. Runs after SSH-keys
+        # apply so any newly-added user inherits the latest authorized_keys
+        # set on first connection.
+        self._sync_app_users(state.get('instances', []))
+
         # Build the set of paths that should be backed by per-volume
         # thin LVs (one LV per backup-true volume — see PLAN-backup.md
         # §"Storage Layout"). Pulled from the backup section so dirs
@@ -2082,6 +2089,56 @@ class MQTTReconciler:
                        f'{len(dev_keys)} dev + {len(cloud_keys)} cloud key(s)')
         except OSError as e:
             log('mqtt', f'ERROR: authorized_keys write failed: {e}')
+
+    def _sync_app_users(self, instances):
+        """Mirror desired-state.instances to `app-<name>` system users so
+        per-app SSH (`ssh app-<name>@host`) lands in the right container
+        via the sshd_config.d/reefy-apps.conf ForceCommand. The reefy
+        user's authorized_keys file is shared (set via AuthorizedKeysFile
+        in sshd_config), so adding a key on the dashboard grants access
+        to all app shells in one go.
+
+        Runs every state apply (cloud push or boot-from-saved). Idempotent:
+        useradd is a no-op if the user already exists, userdel only fires
+        for users that no longer have a matching instance."""
+        try:
+            wanted = set()
+            for inst in instances or []:
+                name = (inst.get('instance_name') or '').strip()
+                if name:
+                    wanted.add(f'app-{name}')
+
+            existing = set()
+            with open('/etc/passwd') as f:
+                for line in f:
+                    user = line.split(':', 1)[0]
+                    if user.startswith('app-'):
+                        existing.add(user)
+
+            for user in wanted - existing:
+                # -M: don't make a /home dir (we never need one - the
+                # ForceCommand drops straight into docker exec).
+                # -s /sbin/nologin: defense in depth - even if sshd_config
+                # were reverted, login would fail. ForceCommand bypasses
+                # the login shell anyway so this doesn't break SSH.
+                rc = subprocess.run(
+                    ['useradd', '-M', '-s', '/sbin/nologin', user],
+                    capture_output=True, text=True).returncode
+                if rc == 0:
+                    log('mqtt', f'Created system user {user}')
+                else:
+                    log('mqtt', f'useradd {user} failed (rc={rc})')
+
+            for user in existing - wanted:
+                rc = subprocess.run(
+                    ['userdel', user],
+                    capture_output=True, text=True).returncode
+                if rc == 0:
+                    log('mqtt', f'Removed system user {user}')
+                else:
+                    log('mqtt', f'userdel {user} failed (rc={rc})')
+        except Exception as e:
+            log('mqtt', f'_sync_app_users non-fatal error: {e}')
 
     def _apply_storage(self, storage):
         """Set up LUKS-encrypted internal storage with LVM, mounted at /mnt/reefy-data.

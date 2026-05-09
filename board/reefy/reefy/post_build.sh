@@ -30,6 +30,15 @@ if ! grep -q efivarfs ${FSTAB};then
   echo "efivarfs /sys/firmware/efi/efivars efivarfs ro,nosuid,nodev,noexec 0 0" >> ${FSTAB}
 fi
 
+# Make sure sshd reads /etc/ssh/sshd_config.d/*.conf so our reefy-apps
+# drop-in (Match User app-* + ForceCommand) is honored. Buildroot's
+# openssh ships the unmodified upstream sshd_config which does NOT
+# include the drop-in directory by default.
+SSHD_CONFIG="${TARGET_DIR}/etc/ssh/sshd_config"
+if [ -f "${SSHD_CONFIG}" ] && ! grep -qE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' "${SSHD_CONFIG}"; then
+  echo 'Include /etc/ssh/sshd_config.d/*.conf' >> "${SSHD_CONFIG}"
+fi
+
 # Remove network-online.target from Docker's unit file.
 # Docker doesn't need network for boot — cached images start offline
 # (--pull missing). Drop-in After= reset doesn't work in systemd 257,
