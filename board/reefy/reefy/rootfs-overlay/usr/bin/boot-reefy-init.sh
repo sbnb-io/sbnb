@@ -57,15 +57,16 @@ setup_device_credentials() {
 
     echo "[reefy] Device credentials applied"
 
-    # If a key is staged on the ESP, install it for the reefy user.
-    # Independent of dev_shell — that flag only gates the kmsg password
+    # If a key is staged on the ESP, install it as the canonical
+    # reefy/app-* shared authorized_keys (root:root 0644 so sshd can
+    # read it after dropping privs to any user - see
+    # sshd_config.d/reefy-apps.conf for the AuthorizedKeysFile path).
+    # Independent of dev_shell - that flag only gates the kmsg password
     # leak above.
     if [ -f /mnt/reefy/reefy/dev/authorized_keys ]; then
-        mkdir -p /home/reefy/.ssh
-        cp /mnt/reefy/reefy/dev/authorized_keys /home/reefy/.ssh/authorized_keys
-        chown -R reefy:reefy /home/reefy/.ssh
-        chmod 700 /home/reefy/.ssh
-        chmod 600 /home/reefy/.ssh/authorized_keys
+        mkdir -p /etc/ssh/authorized_keys.d
+        cp /mnt/reefy/reefy/dev/authorized_keys /etc/ssh/authorized_keys.d/reefy
+        chmod 644 /etc/ssh/authorized_keys.d/reefy
     fi
 }
 

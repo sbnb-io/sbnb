@@ -31,12 +31,16 @@ if ! grep -q efivarfs ${FSTAB};then
 fi
 
 # Make sure sshd reads /etc/ssh/sshd_config.d/*.conf so our reefy-apps
-# drop-in (Match User app-* + ForceCommand) is honored. Buildroot's
-# openssh ships the unmodified upstream sshd_config which does NOT
-# include the drop-in directory by default.
+# drop-in (Match User app-* + ForceCommand + shared AuthorizedKeysFile)
+# is honored. Buildroot's openssh ships the unmodified upstream
+# sshd_config which does NOT include the drop-in directory by default.
+#
+# Prepended (not appended) because sshd's first-occurrence-wins rule
+# means drop-ins must appear BEFORE the upstream defaults to override
+# global directives like AuthorizedKeysFile.
 SSHD_CONFIG="${TARGET_DIR}/etc/ssh/sshd_config"
 if [ -f "${SSHD_CONFIG}" ] && ! grep -qE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' "${SSHD_CONFIG}"; then
-  echo 'Include /etc/ssh/sshd_config.d/*.conf' >> "${SSHD_CONFIG}"
+  sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' "${SSHD_CONFIG}"
 fi
 
 # Remove network-online.target from Docker's unit file.

@@ -2026,7 +2026,7 @@ class MQTTReconciler:
     _DEV_INJECTED_KEY_PATH = '/mnt/reefy/reefy/dev/authorized_keys'
 
     def _apply_user_ssh_keys(self, keys):
-        """Rewrite /home/reefy/.ssh/authorized_keys atomically.
+        """Rewrite /etc/ssh/authorized_keys.d/reefy atomically.
 
         Sources, concatenated in this order:
          1. The dev/e2e ESP-injected key (if /mnt/reefy/reefy/dev/
@@ -2042,18 +2042,19 @@ class MQTTReconciler:
         and no dev-injected key = delete the file (back to
         password-only auth).
 
+        File path lives under /etc/ssh/ as root:root mode 0644 because
+        sshd reads authorized_keys AS THE TARGET USER after dropping
+        privileges. The per-app SSH path (`ssh app-<name>@host`) drops
+        to the `app-<name>` system user, which can't read /home/reefy.
+        Stashing the file in a globally-readable system path (writable
+        only by root) keeps the file the single source of truth shared
+        between the reefy user and all app-* users - configured via
+        AuthorizedKeysFile in sshd_config.d/reefy-apps.conf.
+
         Atomic rename to avoid leaving a half-written authorized_keys
         if the host loses power mid-write."""
-        ssh_dir = '/home/reefy/.ssh'
-        auth_file = os.path.join(ssh_dir, 'authorized_keys')
-
-        try:
-            import pwd
-            ent = pwd.getpwnam('reefy')
-            uid, gid = ent.pw_uid, ent.pw_gid
-        except (KeyError, ImportError):
-            log('mqtt', 'reefy user not found; skipping SSH-key apply')
-            return
+        ssh_dir = '/etc/ssh/authorized_keys.d'
+        auth_file = os.path.join(ssh_dir, 'reefy')
 
         cloud_keys = [k.strip() for k in (keys or []) if k and k.strip()]
         dev_keys = []
@@ -2077,13 +2078,11 @@ class MQTTReconciler:
             return
 
         try:
-            os.makedirs(ssh_dir, mode=0o700, exist_ok=True)
-            os.chown(ssh_dir, uid, gid)
+            os.makedirs(ssh_dir, mode=0o755, exist_ok=True)
             tmp = auth_file + '.tmp'
             with open(tmp, 'w') as f:
                 f.write('\n'.join(all_keys) + '\n')
-            os.chown(tmp, uid, gid)
-            os.chmod(tmp, 0o600)
+            os.chmod(tmp, 0o644)
             os.rename(tmp, auth_file)
             log('mqtt', f'Wrote authorized_keys with '
                        f'{len(dev_keys)} dev + {len(cloud_keys)} cloud key(s)')
@@ -2099,8 +2098,28 @@ class MQTTReconciler:
         to all app shells in one go.
 
         Runs every state apply (cloud push or boot-from-saved). Idempotent:
-        useradd is a no-op if the user already exists, userdel only fires
-        for users that no longer have a matching instance."""
+        adduser is skipped if the user already exists, deluser only fires
+        for users that no longer have a matching instance.
+
+        Uses busybox `adduser`/`deluser` (Reefy OS = buildroot, no shadow-utils).
+        Flag mapping:
+          -H            no home dir (ForceCommand never uses one)
+          -D            don't prompt for password
+          -S            system user (UID < 1000)
+          -G nobody     primary group must exist; busybox `-S` defaults
+                        to "nogroup" which Reefy OS doesn't ship
+          -s /bin/sh    sshd executes ForceCommand via the user's login
+                        shell (`<shell> -c <cmd>`), so /sbin/nologin
+                        would block it with "account not available".
+                        /bin/sh is fine: PasswordAuthentication=no +
+                        ForceCommand in the Match block constrain access.
+
+        After adduser, runs `passwd -u` because `adduser -D` leaves the
+        shadow entry as `!` (locked) and sshd refuses locked accounts
+        even for publickey auth. With PasswordAuthentication=no and
+        PermitEmptyPasswords=no in the Match block (and
+        AuthorizedKeysFile pointing at a root-managed file), unlocking
+        the account does NOT enable password login."""
         try:
             wanted = set()
             for inst in instances or []:
@@ -2116,27 +2135,35 @@ class MQTTReconciler:
                         existing.add(user)
 
             for user in wanted - existing:
-                # -M: don't make a /home dir (we never need one - the
-                # ForceCommand drops straight into docker exec).
-                # -s /sbin/nologin: defense in depth - even if sshd_config
-                # were reverted, login would fail. ForceCommand bypasses
-                # the login shell anyway so this doesn't break SSH.
-                rc = subprocess.run(
-                    ['useradd', '-M', '-s', '/sbin/nologin', user],
-                    capture_output=True, text=True).returncode
-                if rc == 0:
+                proc = subprocess.run(
+                    ['adduser', '-H', '-D', '-S',
+                     '-G', 'nobody', '-s', '/bin/sh', user],
+                    capture_output=True, text=True)
+                if proc.returncode != 0:
+                    log('mqtt',
+                        f'adduser {user} failed (rc={proc.returncode}): '
+                        f'{proc.stderr.strip()}')
+                    continue
+                unlock = subprocess.run(
+                    ['passwd', '-u', user],
+                    capture_output=True, text=True)
+                if unlock.returncode == 0:
                     log('mqtt', f'Created system user {user}')
                 else:
-                    log('mqtt', f'useradd {user} failed (rc={rc})')
+                    log('mqtt',
+                        f'passwd -u {user} failed (rc={unlock.returncode}): '
+                        f'{unlock.stderr.strip()}')
 
             for user in existing - wanted:
-                rc = subprocess.run(
-                    ['userdel', user],
-                    capture_output=True, text=True).returncode
-                if rc == 0:
+                proc = subprocess.run(
+                    ['deluser', user],
+                    capture_output=True, text=True)
+                if proc.returncode == 0:
                     log('mqtt', f'Removed system user {user}')
                 else:
-                    log('mqtt', f'userdel {user} failed (rc={rc})')
+                    log('mqtt',
+                        f'deluser {user} failed (rc={proc.returncode}): '
+                        f'{proc.stderr.strip()}')
         except Exception as e:
             log('mqtt', f'_sync_app_users non-fatal error: {e}')
 

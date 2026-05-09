@@ -4,8 +4,12 @@
 # callers use it:
 #
 #   1. SSH ForceCommand (reefy-apps.conf in /etc/ssh/sshd_config.d/):
-#        sshd invokes us as `reefy-app-shell app-<instance_name>`.
-#        Look up the container via /mnt/reefy-data/state/desired-state.json.
+#        sshd execs us via the user's login shell (`sh -c reefy-app-shell`)
+#        with no args. We derive the app from $USER (set by sshd to
+#        the authenticated SSH user, e.g. `app-foo`) and look up the
+#        container via /mnt/reefy-data/state/desired-state.json.
+#        ForceCommand does NOT expand %u tokens, so %u must NOT be passed
+#        as an argv - that's why we read $USER instead.
 #
 #   2. Sidecar ttyd (reefy-app-sidecar-ttyd image bind-mounts this script
 #      in as /usr/bin/reefy-app-shell): invoked with NO args, reading
@@ -29,12 +33,12 @@
 
 set -e
 
-# SSH-mode: derive $APP_CONTAINER from the SSH username + desired state.
-# Sidecar-mode (no args): $APP_CONTAINER + $APP_NAME come from compose env.
-if [ -n "${1:-}" ]; then
-    case "$1" in
-        app-?*) slug="${1#app-}" ;;
-        *) echo "expected SSH user 'app-<name>', got '$1'" >&2; exit 1 ;;
+# Sidecar mode: $APP_CONTAINER pre-set in env. Otherwise SSH mode:
+# derive from $USER (sshd sets it to the authenticated username).
+if [ -z "${APP_CONTAINER:-}" ]; then
+    case "${USER:-}" in
+        app-?*) slug="${USER#app-}" ;;
+        *) echo "expected SSH user 'app-<name>', got '${USER:-<unset>}'" >&2; exit 1 ;;
     esac
     state=/mnt/reefy-data/state/desired-state.json
     [ -f "$state" ] || { echo "no desired-state on this device" >&2; exit 1; }
@@ -51,7 +55,6 @@ sys.exit(1)
     APP_NAME="$slug"
 fi
 
-[ -n "${APP_CONTAINER:-}" ] || { echo "APP_CONTAINER not set (sidecar misconfigured?)" >&2; exit 1; }
 [ -n "${APP_NAME:-}" ] || APP_NAME="$APP_CONTAINER"
 
 case "${SSH_ORIGINAL_COMMAND:-}" in
