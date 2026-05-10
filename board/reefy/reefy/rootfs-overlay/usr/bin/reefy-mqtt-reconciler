@@ -2101,25 +2101,31 @@ class MQTTReconciler:
         adduser is skipped if the user already exists, deluser only fires
         for users that no longer have a matching instance.
 
-        Uses busybox `adduser`/`deluser` (Reefy OS = buildroot, no shadow-utils).
-        Flag mapping:
-          -H            no home dir (ForceCommand never uses one)
-          -D            don't prompt for password
+        Uses busybox `adduser`/`deluser`/`addgroup` (Reefy OS = buildroot,
+        no shadow-utils). Flag mapping:
+          -D            do not prompt for password
           -S            system user (UID < 1000)
           -G nobody     primary group must exist; busybox `-S` defaults
-                        to "nogroup" which Reefy OS doesn't ship
-          -s /bin/sh    sshd executes ForceCommand via the user's login
+                        to "nogroup" which Reefy OS does not ship
+          -s /bin/sh    sshd executes ForceCommand via the user login
                         shell (`<shell> -c <cmd>`), so /sbin/nologin
                         would block it with "account not available".
-                        /bin/sh is fine: PasswordAuthentication=no +
-                        ForceCommand in the Match block constrain access.
+                        PasswordAuthentication=no + ForceCommand in the
+                        Match block still constrain access.
+          (no -H/-h)    Let busybox create /home/<user> normally, owned
+                        by the user. Things like `docker` (~/.docker/),
+                        `tmux` (~/.tmux.conf), or any tool the user
+                        invokes inside the container that bind-mounts
+                        their host HOME would otherwise be surprised
+                        by HOME=/.
 
-        After adduser, runs `passwd -u` because `adduser -D` leaves the
-        shadow entry as `!` (locked) and sshd refuses locked accounts
-        even for publickey auth. With PasswordAuthentication=no and
-        PermitEmptyPasswords=no in the Match block (and
-        AuthorizedKeysFile pointing at a root-managed file), unlocking
-        the account does NOT enable password login."""
+        After adduser:
+          - `passwd -u` clears the locked-account flag (`adduser -D`
+            leaves shadow entry as `!`, which sshd refuses even for
+            publickey auth).
+          - `addgroup <user> docker` grants access to /var/run/docker.sock
+            so reefy-app-shell can `docker exec` into the container.
+            Bounded by ForceCommand to that one container."""
         try:
             wanted = set()
             for inst in instances or []:
@@ -2136,7 +2142,7 @@ class MQTTReconciler:
 
             for user in wanted - existing:
                 proc = subprocess.run(
-                    ['adduser', '-H', '-D', '-S',
+                    ['adduser', '-D', '-S',
                      '-G', 'nobody', '-s', '/bin/sh', user],
                     capture_output=True, text=True)
                 if proc.returncode != 0:
@@ -2147,12 +2153,19 @@ class MQTTReconciler:
                 unlock = subprocess.run(
                     ['passwd', '-u', user],
                     capture_output=True, text=True)
-                if unlock.returncode == 0:
-                    log('mqtt', f'Created system user {user}')
-                else:
+                if unlock.returncode != 0:
                     log('mqtt',
                         f'passwd -u {user} failed (rc={unlock.returncode}): '
                         f'{unlock.stderr.strip()}')
+                docker_grp = subprocess.run(
+                    ['addgroup', user, 'docker'],
+                    capture_output=True, text=True)
+                if docker_grp.returncode != 0:
+                    log('mqtt',
+                        f'addgroup {user} docker failed '
+                        f'(rc={docker_grp.returncode}): '
+                        f'{docker_grp.stderr.strip()}')
+                log('mqtt', f'Created system user {user}')
 
             for user in existing - wanted:
                 proc = subprocess.run(
