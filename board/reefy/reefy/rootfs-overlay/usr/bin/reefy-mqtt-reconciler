@@ -2123,9 +2123,13 @@ class MQTTReconciler:
           - `passwd -u` clears the locked-account flag (`adduser -D`
             leaves shadow entry as `!`, which sshd refuses even for
             publickey auth).
-          - `addgroup <user> docker` grants access to /var/run/docker.sock
+          - `adduser <user> docker` grants access to /var/run/docker.sock
             so reefy-app-shell can `docker exec` into the container.
-            Bounded by ForceCommand to that one container."""
+            Requires CONFIG_FEATURE_ADDUSER_TO_GROUP=y in the buildroot
+            busybox config (set in board/reefy/reefy/busybox.fragment);
+            without it, busybox silently treats the second arg as a
+            stray and membership is never updated. Bounded by
+            ForceCommand to that one container."""
         try:
             wanted = set()
             for inst in instances or []:
@@ -2158,11 +2162,11 @@ class MQTTReconciler:
                         f'passwd -u {user} failed (rc={unlock.returncode}): '
                         f'{unlock.stderr.strip()}')
                 docker_grp = subprocess.run(
-                    ['addgroup', user, 'docker'],
+                    ['adduser', user, 'docker'],
                     capture_output=True, text=True)
                 if docker_grp.returncode != 0:
                     log('mqtt',
-                        f'addgroup {user} docker failed '
+                        f'adduser {user} docker failed '
                         f'(rc={docker_grp.returncode}): '
                         f'{docker_grp.stderr.strip()}')
                 log('mqtt', f'Created system user {user}')
