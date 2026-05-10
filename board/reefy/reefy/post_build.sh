@@ -35,11 +35,15 @@ fi
 # is honored. Buildroot's openssh ships the unmodified upstream
 # sshd_config which does NOT include the drop-in directory by default.
 #
-# Prepended (not appended) because sshd's first-occurrence-wins rule
-# means drop-ins must appear BEFORE the upstream defaults to override
-# global directives like AuthorizedKeysFile.
+# Must be at the TOP of the file: sshd's first-occurrence-wins rule
+# means drop-ins only override upstream defaults (like
+# AuthorizedKeysFile) if processed first. Strip any existing Include
+# anywhere in the file before prepending - prior firmware revisions
+# appended at the bottom, which silently nullified the drop-in's
+# global directives.
 SSHD_CONFIG="${TARGET_DIR}/etc/ssh/sshd_config"
-if [ -f "${SSHD_CONFIG}" ] && ! grep -qE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' "${SSHD_CONFIG}"; then
+if [ -f "${SSHD_CONFIG}" ]; then
+  sed -i '/^[[:space:]]*Include[[:space:]]\+\/etc\/ssh\/sshd_config\.d\/\*\.conf/d' "${SSHD_CONFIG}"
   sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' "${SSHD_CONFIG}"
 fi
 
