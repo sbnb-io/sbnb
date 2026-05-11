@@ -508,6 +508,13 @@ def main():
             elif client.is_connected():
                 payload = json.dumps({'ts': ts, 'samples': samples}, separators=(',', ':'))
                 client.publish(metrics_topic, payload, qos=0, retain=False)
+                log_throttled('cycle',
+                              f'cycle ts={int(ts)} samples={len(samples)} '
+                              f'bytes={len(payload)} (throttled)')
+            else:
+                log_throttled('disconnected',
+                              f'cycle ts={int(ts)} samples={len(samples)}; '
+                              'mqtt not connected, dropped')
 
 
 if __name__ == '__main__':
