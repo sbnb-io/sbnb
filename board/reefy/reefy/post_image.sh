@@ -12,11 +12,9 @@ set -euxo pipefail
 #
 # Add a flavor by appending to the FLAVORS array. CI workflow picks
 # up new flavors automatically via the `reefy-*.efi` glob.
-# Common kernel boot args. ipmi_si.trydefaults=1 makes the IPMI
-# System Interface driver probe standard KCS/BT/SSIF ports when
-# SMBIOS DMI Type 38 doesn't describe the BMC (which happens on some
-# Supermicro boards). Off by default since kernel 4.x.
-COMMON_CMDLINE="console=tty0 console=ttyS0,115200 panic=10 intel_iommu=on module_blacklist=nouveau,nvidiafb,snd_hda_intel,r8169 ipmi_si.trydefaults=1"
+# Kernel boot args shared by every flavor. Per-flavor extras (e.g.
+# reefy.dev_shell=1) get appended below.
+COMMON_CMDLINE="console=tty0 console=ttyS0,115200 panic=10 intel_iommu=on module_blacklist=nouveau,nvidiafb,snd_hda_intel,r8169"
 
 declare -A FLAVORS=(
     [prod]="${COMMON_CMDLINE}"
