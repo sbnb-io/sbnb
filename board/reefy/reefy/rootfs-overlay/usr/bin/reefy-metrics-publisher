@@ -276,13 +276,22 @@ def _parse_mem(s: str) -> float | None:
 
 
 def collect_gpu() -> list[dict]:
-    """nvidia-smi → util / VRAM / temp. Empty if no GPU."""
+    """nvidia-smi → util / VRAM / temp. Empty if no GPU.
+
+    Labels emitted on every sample so multi-GPU devices can be told
+    apart in the dashboard:
+      gpu  : zero-based index (sorts naturally, short legend label)
+      name : model string ("NVIDIA GeForce RTX 3090") - legend display
+      pci  : PCI bus id ("00000000:01:00.0") - stable per slot
+      uuid : nvml GPU UUID ("GPU-abc...") - stable per physical card
+    """
     if not shutil.which('nvidia-smi'):
         return []
     try:
         r = subprocess.run(
             ['nvidia-smi',
-             '--query-gpu=index,utilization.gpu,memory.used,memory.total,temperature.gpu',
+             '--query-gpu=index,name,pci.bus_id,uuid,utilization.gpu,'
+             'memory.used,memory.total,temperature.gpu',
              '--format=csv,noheader,nounits'],
             capture_output=True, text=True, timeout=2)
         if r.returncode != 0:
@@ -293,17 +302,23 @@ def collect_gpu() -> list[dict]:
     samples = []
     for line in r.stdout.strip().splitlines():
         parts = [p.strip() for p in line.split(',')]
-        if len(parts) != 5:
+        if len(parts) != 8:
             continue
-        idx, util, used_mb, total_mb, temp = parts
-        labels = {'gpu': idx}
+        idx, name, pci, uuid_str, util, used_mb, total_mb, temp = parts
+        labels = {'gpu': idx, 'name': name, 'pci': pci, 'uuid': uuid_str}
         try:
+            used_bytes = float(used_mb) * 1024 * 1024
+            total_bytes = float(total_mb) * 1024 * 1024
             samples.append({'name': 'reefy_gpu_util_pct',
                             'labels': labels, 'value': float(util)})
             samples.append({'name': 'reefy_gpu_mem_used_bytes',
-                            'labels': labels, 'value': float(used_mb) * 1024 * 1024})
+                            'labels': labels, 'value': used_bytes})
             samples.append({'name': 'reefy_gpu_mem_total_bytes',
-                            'labels': labels, 'value': float(total_mb) * 1024 * 1024})
+                            'labels': labels, 'value': total_bytes})
+            if total_bytes > 0:
+                samples.append({'name': 'reefy_gpu_mem_used_pct',
+                                'labels': labels,
+                                'value': used_bytes / total_bytes * 100})
             samples.append({'name': 'reefy_gpu_temp_celsius',
                             'labels': labels, 'value': float(temp)})
         except ValueError:
