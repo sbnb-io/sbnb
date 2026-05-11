@@ -170,27 +170,34 @@ def collect_system() -> list[dict]:
     except OSError:
         pass
 
-    # CPU temperature via psutil. psutil.sensors_temperatures()
-    # abstracts over the different kernel exposures (thermal_zone,
-    # hwmon, ACPI) and returns a {driver_name: [shwtemp(...)]} dict.
-    # Filter to CPU-related drivers so we skip nvme / wifi / battery
-    # sensors. Drop readings outside [5, 130]°C - some acpitz zones
-    # report ~-273°C as an "unavailable" sentinel.
-    CPU_TEMP_DRIVERS = ('coretemp', 'k10temp', 'k8temp', 'zenpower',
-                        'cpu_thermal', 'x86_pkg_temp', 'acpitz')
+    # All temperatures + fans via psutil. psutil wraps
+    # /sys/class/hwmon and /sys/class/thermal so a single call covers
+    # CPU (coretemp/k10temp/etc.), NVMe, motherboard super-I/O chips
+    # (nct67xx, it87, ...), wifi cards, and AMD GPU. NVIDIA GPU temp
+    # is collected separately by collect_gpu() via nvidia-smi.
+    # Drop garbage values: some acpitz zones report ~-273°C as an
+    # "unavailable" sentinel, and stopped fans report 0 RPM.
     try:
         import psutil
         for driver, sensors in (psutil.sensors_temperatures() or {}).items():
-            if driver not in CPU_TEMP_DRIVERS:
-                continue
             for s in sensors:
-                if not (5 <= s.current <= 130):
+                if not (0 <= s.current <= 130):
                     continue
-                zone = driver + '/' + s.label if s.label else driver
                 samples.append({
-                    'name': 'reefy_cpu_temp_celsius',
-                    'labels': {'zone': zone},
+                    'name': 'reefy_temp_celsius',
+                    'labels': {'device': driver,
+                               'sensor': s.label or 'default'},
                     'value': float(s.current),
+                })
+        for driver, fans in (psutil.sensors_fans() or {}).items():
+            for f in fans:
+                if f.current <= 0:
+                    continue
+                samples.append({
+                    'name': 'reefy_fan_rpm',
+                    'labels': {'device': driver,
+                               'sensor': f.label or 'default'},
+                    'value': float(f.current),
                 })
     except Exception:
         pass
