@@ -170,34 +170,29 @@ def collect_system() -> list[dict]:
     except OSError:
         pass
 
-    # CPU temperature(s) from the kernel's thermal subsystem. Each
-    # thermal zone reports one millidegrees-C value plus a "type"
-    # string that identifies the sensor source. Filter to
-    # CPU-relevant types so we don't emit fan/PCH/battery noise; the
-    # `zone` label distinguishes them when a device exposes more than
-    # one (e.g. Intel x86_pkg_temp + per-core coretemp).
-    CPU_THERMAL_TYPES = ('x86_pkg_temp', 'cpu_thermal', 'coretemp',
-                         'k10temp', 'k8temp', 'acpitz')
+    # CPU temperature via psutil. psutil.sensors_temperatures()
+    # abstracts over the different kernel exposures (thermal_zone,
+    # hwmon, ACPI) and returns a {driver_name: [shwtemp(...)]} dict.
+    # Filter to CPU-related drivers so we skip nvme / wifi / battery
+    # sensors. Drop readings outside [5, 130]°C - some acpitz zones
+    # report ~-273°C as an "unavailable" sentinel.
+    CPU_TEMP_DRIVERS = ('coretemp', 'k10temp', 'k8temp', 'zenpower',
+                        'cpu_thermal', 'x86_pkg_temp', 'acpitz')
     try:
-        for zone in sorted(os.listdir('/sys/class/thermal')):
-            if not zone.startswith('thermal_zone'):
+        import psutil
+        for driver, sensors in (psutil.sensors_temperatures() or {}).items():
+            if driver not in CPU_TEMP_DRIVERS:
                 continue
-            zone_path = '/sys/class/thermal/' + zone
-            try:
-                with open(zone_path + '/type') as f:
-                    ztype = f.read().strip()
-                if ztype not in CPU_THERMAL_TYPES:
+            for s in sensors:
+                if not (5 <= s.current <= 130):
                     continue
-                with open(zone_path + '/temp') as f:
-                    milli_c = int(f.read().strip())
+                zone = driver + '/' + s.label if s.label else driver
                 samples.append({
                     'name': 'reefy_cpu_temp_celsius',
-                    'labels': {'zone': ztype},
-                    'value': milli_c / 1000.0,
+                    'labels': {'zone': zone},
+                    'value': float(s.current),
                 })
-            except (OSError, ValueError):
-                continue
-    except OSError:
+    except Exception:
         pass
 
     # Network — bytes in/out per interface, computed as rate over the cycle
