@@ -67,6 +67,7 @@ COLLECTOR_DEADLINES = {
     'gpu':        2.0,
     'storage':    3.0,
     'reefy':      0.5,
+    'ipmi':       5.0,   # BMC roundtrip can be slow; only fires on server hw
 }
 
 
@@ -191,7 +192,10 @@ def collect_system() -> list[dict]:
                 })
         for driver, fans in (psutil.sensors_fans() or {}).items():
             for f in fans:
-                if f.current <= 0:
+                # Drop stopped fans (0) and the LM80 "no fan wired"
+                # sentinel (count=1 floating tach -> driver returns
+                # 1,350,000). Real fans cap around 10-15k RPM.
+                if not (0 < f.current < 30000):
                     continue
                 samples.append({
                     'name': 'reefy_fan_rpm',
@@ -410,12 +414,65 @@ def collect_reefy() -> list[dict]:
     return samples
 
 
+def collect_ipmi() -> list[dict]:
+    """IPMI sensors via ipmitool. Server-class hardware (Supermicro,
+    Dell, HPE, ...) exposes fans + chassis temps only through the
+    BMC, not via hwmon. Returns [] when ipmitool isn't installed or
+    the kernel ipmi interface (/dev/ipmi0) isn't present (i.e. on
+    consumer hardware with no BMC)."""
+    if not shutil.which('ipmitool') or not os.path.exists('/dev/ipmi0'):
+        return []
+    samples = []
+    try:
+        r = subprocess.run(
+            ['ipmitool', 'sensor', 'list'],
+            capture_output=True, text=True, timeout=4)
+        if r.returncode != 0:
+            return []
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return []
+
+    # `ipmitool sensor list` pipes 10 columns per line:
+    # name | value | unit | status | ... thresholds ...
+    # We only care about the first four. Value may be "na" when the
+    # sensor isn't readable in the current state.
+    for line in r.stdout.splitlines():
+        parts = [p.strip() for p in line.split('|')]
+        if len(parts) < 4:
+            continue
+        sname, sval, sunit, sstatus = parts[0], parts[1], parts[2], parts[3]
+        if sstatus not in ('ok', 'cr', 'nr', 'nc'):  # skip 'na' / disabled
+            continue
+        try:
+            v = float(sval)
+        except ValueError:
+            continue
+        if sunit == 'RPM':
+            if not (0 < v < 30000):
+                continue
+            samples.append({
+                'name': 'reefy_fan_rpm',
+                'labels': {'device': 'ipmi', 'sensor': sname},
+                'value': v,
+            })
+        elif sunit == 'degrees C':
+            if not (0 <= v <= 130):
+                continue
+            samples.append({
+                'name': 'reefy_temp_celsius',
+                'labels': {'device': 'ipmi', 'sensor': sname},
+                'value': v,
+            })
+    return samples
+
+
 COLLECTORS: dict[str, Callable[[], list[dict]]] = {
     'system':     collect_system,
     'containers': collect_containers,
     'gpu':        collect_gpu,
     'storage':    collect_storage,
     'reefy':      collect_reefy,
+    'ipmi':       collect_ipmi,
 }
 
 
