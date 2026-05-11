@@ -1,0 +1,14 @@
+[Unit]
+Description=Reefy Metrics Publisher (system + container + GPU stats → MQTT)
+After=reefy-mqtt.service docker.service
+Wants=reefy-mqtt.service
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/reefy-metrics-publisher
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

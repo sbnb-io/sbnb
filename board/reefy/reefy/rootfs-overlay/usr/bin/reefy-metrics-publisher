@@ -1,0 +1,514 @@
+#!/usr/bin/env python3
+"""Reefy metrics publisher.
+
+Sibling of reefy-log-publisher: a dedicated systemd service that
+collects device metrics on aligned wall-clock boundaries (:00 sharp
+per minute) and publishes them to MQTT for the cloud backend to
+ingest into the time-series store.
+
+Why a separate service from reefy-mqtt (the reconciler):
+- Single responsibility (collect + publish, nothing else)
+- Failure isolation (a metrics-collector bug can't break state apply)
+- Independently restartable
+- Different cadence from reconciler's event-driven model
+
+Cycle timing pattern (A+Y):
+1. All devices wake at :00 sharp - sample timestamps line up across
+   the fleet, so dashboards can compare devices side-by-side without
+   smear.
+2. Collectors run in parallel on a long-lived ThreadPoolExecutor with
+   per-collector deadlines. A slow probe (nvidia-smi, docker stats,
+   lvs) drops its samples for that cycle but doesn't stall the publish
+   or drift the cadence. Cloud treats a missing metric as a gap, not
+   a stale value.
+3. Each device sleeps a deterministic per-device offset (0..59s,
+   derived from the device UUID hash) before publishing. Broker load
+   is spread evenly across the minute - no thundering herd at :00.
+   Sample timestamp on the wire stays :00 (when the data was actually
+   read), so the per-device publish delay is invisible to queries.
+
+Tenant identity (which device / which user) is NOT in the payload -
+the cloud's MQTT subscriber derives it from the topic path, which was
+authenticated by EMQX's mTLS handshake against the device cert.
+"""
+
+from __future__ import annotations
+
+import concurrent.futures as cf
+import json
+import os
+import re
+import shutil
+import ssl
+import subprocess
+import sys
+import time
+from typing import Callable
+
+try:
+    import paho.mqtt.client as mqtt
+except ImportError:
+    print("[metrics-publisher] ERROR: paho-mqtt not installed", file=sys.stderr)
+    sys.exit(1)
+
+
+# ── Config ────────────────────────────────────────────────────────
+
+MQTT_CONF_PATH = '/mnt/reefy/mqtt/mqtt.conf'
+STATE_DIR = '/mnt/reefy-data/state'
+INTERVAL_S = 60                      # publish cadence
+MAX_SAMPLES_PER_BATCH = 200          # cloud caps at 200; self-limit too
+
+# Per-collector deadlines (seconds). Slow probes hit these and drop
+# their samples this cycle. Tuned so a clean cycle finishes in <2s.
+COLLECTOR_DEADLINES = {
+    'system':     1.0,
+    'containers': 5.0,
+    'gpu':        2.0,
+    'storage':    3.0,
+    'reefy':      0.5,
+}
+
+
+# ── Helpers ───────────────────────────────────────────────────────
+
+def load_config() -> dict | None:
+    if not os.path.exists(MQTT_CONF_PATH):
+        return None
+    config = {}
+    with open(MQTT_CONF_PATH) as f:
+        for line in f:
+            line = line.strip()
+            if '=' in line and not line.startswith('#'):
+                key, val = line.split('=', 1)
+                config[key.strip()] = val.strip()
+    return config
+
+
+def get_device_uuid() -> str | None:
+    for path in [os.path.join(STATE_DIR, 'device-uuid'), '/tmp/bootstrap-uuid']:
+        if os.path.exists(path):
+            with open(path) as f:
+                u = f.read().strip()
+                if u:
+                    return u
+    return None
+
+
+def device_publish_offset(device_uuid: str) -> int:
+    """Deterministic offset 0..INTERVAL_S-1 for this device. Used to
+    spread per-device publish times across the minute and avoid a
+    fleet-wide thundering herd at :00. Same offset every reboot.
+
+    Hash the first 8 hex chars of the UUID; not crypto, just a stable
+    spread. UUIDs are random enough that mod 60 distributes evenly."""
+    try:
+        return int(device_uuid.replace('-', '')[:8], 16) % INTERVAL_S
+    except (ValueError, AttributeError):
+        return 0
+
+
+# Throttled logger so a busted collector doesn't spam the journal.
+_log_last_seen: dict[str, float] = {}
+def log_throttled(key: str, msg: str, every_s: float = 300.0):
+    now = time.time()
+    if now - _log_last_seen.get(key, 0) >= every_s:
+        print(f'[metrics-publisher] {msg}')
+        _log_last_seen[key] = now
+
+
+# ── Collectors ────────────────────────────────────────────────────
+
+# State for delta calculations between cycles.
+_prev_cpu: list[int] | None = None
+_prev_net: dict[str, tuple[int, int]] = {}
+
+
+def _read_proc_stat() -> list[int] | None:
+    try:
+        with open('/proc/stat') as f:
+            line = f.readline()
+            if line.startswith('cpu '):
+                return [int(x) for x in line.split()[1:8]]
+    except OSError:
+        pass
+    return None
+
+
+def collect_system() -> list[dict]:
+    """CPU, memory, network — fast /proc reads."""
+    global _prev_cpu, _prev_net
+    samples = []
+
+    # CPU% — delta vs previous cycle
+    curr_cpu = _read_proc_stat()
+    if _prev_cpu and curr_cpu:
+        delta = [b - a for a, b in zip(_prev_cpu, curr_cpu)]
+        idle = delta[3]
+        total = sum(delta)
+        if total > 0:
+            cpu_pct = (1 - idle / total) * 100
+            samples.append({'name': 'reefy_cpu_pct', 'value': cpu_pct})
+    _prev_cpu = curr_cpu
+
+    # Memory
+    try:
+        mem_info = {}
+        with open('/proc/meminfo') as f:
+            for line in f:
+                k, _, rest = line.partition(':')
+                v = rest.strip().split()[0]
+                if k in ('MemTotal', 'MemAvailable'):
+                    mem_info[k] = int(v) * 1024  # KiB → bytes
+        total = mem_info.get('MemTotal', 0)
+        avail = mem_info.get('MemAvailable', 0)
+        if total > 0:
+            samples.append({'name': 'reefy_mem_total_bytes', 'value': total})
+            samples.append({'name': 'reefy_mem_available_bytes', 'value': avail})
+            samples.append({'name': 'reefy_mem_used_pct',
+                            'value': (1 - avail / total) * 100})
+    except OSError:
+        pass
+
+    # Network — bytes in/out per interface, computed as rate over the cycle
+    try:
+        with open('/proc/net/dev') as f:
+            lines = f.readlines()[2:]
+        for line in lines:
+            iface, _, rest = line.partition(':')
+            iface = iface.strip()
+            if iface in ('lo',) or iface.startswith(('docker', 'br-', 'veth')):
+                continue
+            cols = rest.split()
+            if len(cols) < 9:
+                continue
+            rx = int(cols[0])
+            tx = int(cols[8])
+            prev = _prev_net.get(iface)
+            if prev:
+                rx_rate = max(0, (rx - prev[0]) / INTERVAL_S)
+                tx_rate = max(0, (tx - prev[1]) / INTERVAL_S)
+                samples.append({'name': 'reefy_net_rx_bps',
+                                'labels': {'iface': iface}, 'value': rx_rate})
+                samples.append({'name': 'reefy_net_tx_bps',
+                                'labels': {'iface': iface}, 'value': tx_rate})
+            _prev_net[iface] = (rx, tx)
+    except OSError:
+        pass
+
+    return samples
+
+
+def collect_containers() -> list[dict]:
+    """Per-container CPU% + memory via `docker stats --no-stream`.
+
+    Cardinality strategy: label by `app_slug` (low cardinality, stable)
+    rather than instance_uuid (churns per install). app_slug derived
+    from the docker image's repo path.
+    """
+    if not shutil.which('docker'):
+        return []
+
+    samples = []
+    try:
+        r = subprocess.run(
+            ['docker', 'stats', '--no-stream', '--format',
+             '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}'],
+            capture_output=True, text=True, timeout=4)
+        if r.returncode != 0:
+            return []
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return []
+
+    # Map container name -> app_slug (cheap; small fleet per device)
+    slugs: dict[str, str] = {}
+    try:
+        ls = subprocess.run(
+            ['docker', 'ps', '--format', '{{.Names}}|{{.Image}}'],
+            capture_output=True, text=True, timeout=2)
+        for line in ls.stdout.splitlines():
+            name, _, image = line.partition('|')
+            img_no_tag = image.split('@')[0].split(':')[0]
+            slug = img_no_tag.rsplit('/', 1)[-1] or 'unknown'
+            slugs[name] = slug
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    for line in r.stdout.splitlines():
+        parts = line.split('|')
+        if len(parts) != 3:
+            continue
+        name, cpu_str, mem_str = parts
+        # Skip our own infra containers
+        if any(name.startswith(prefix) for prefix in ('state-reefy-', 'state-cloudflared')):
+            continue
+        labels = {'app_slug': slugs.get(name, 'unknown'), 'container': name}
+
+        # CPU: "12.34%"
+        try:
+            cpu_pct = float(cpu_str.strip('%'))
+            samples.append({'name': 'reefy_container_cpu_pct',
+                            'labels': labels, 'value': cpu_pct})
+        except ValueError:
+            pass
+
+        # Mem usage: "123.4MiB / 8GiB" → bytes (use the LHS)
+        used_str = mem_str.split('/')[0].strip()
+        bytes_val = _parse_mem(used_str)
+        if bytes_val is not None:
+            samples.append({'name': 'reefy_container_mem_used_bytes',
+                            'labels': labels, 'value': bytes_val})
+
+    return samples
+
+
+def _parse_mem(s: str) -> float | None:
+    """Parse '123.4MiB' / '1.5GiB' / '700KB' to bytes."""
+    m = re.match(r'^([\d.]+)\s*([KMGT]?i?B?)$', s, re.IGNORECASE)
+    if not m:
+        return None
+    num = float(m.group(1))
+    unit = m.group(2).upper().rstrip('B')
+    if unit.endswith('I'):
+        unit = unit[:-1]
+    mult = {'': 1, 'K': 1024, 'M': 1024**2, 'G': 1024**3, 'T': 1024**4}
+    return num * mult.get(unit, 1)
+
+
+def collect_gpu() -> list[dict]:
+    """nvidia-smi → util / VRAM / temp. Empty if no GPU."""
+    if not shutil.which('nvidia-smi'):
+        return []
+    try:
+        r = subprocess.run(
+            ['nvidia-smi',
+             '--query-gpu=index,utilization.gpu,memory.used,memory.total,temperature.gpu',
+             '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, timeout=2)
+        if r.returncode != 0:
+            return []
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return []
+
+    samples = []
+    for line in r.stdout.strip().splitlines():
+        parts = [p.strip() for p in line.split(',')]
+        if len(parts) != 5:
+            continue
+        idx, util, used_mb, total_mb, temp = parts
+        labels = {'gpu': idx}
+        try:
+            samples.append({'name': 'reefy_gpu_util_pct',
+                            'labels': labels, 'value': float(util)})
+            samples.append({'name': 'reefy_gpu_mem_used_bytes',
+                            'labels': labels, 'value': float(used_mb) * 1024 * 1024})
+            samples.append({'name': 'reefy_gpu_mem_total_bytes',
+                            'labels': labels, 'value': float(total_mb) * 1024 * 1024})
+            samples.append({'name': 'reefy_gpu_temp_celsius',
+                            'labels': labels, 'value': float(temp)})
+        except ValueError:
+            continue
+    return samples
+
+
+def collect_storage() -> list[dict]:
+    """Disk usage via statvfs + LVM thin-pool fill (if applicable)."""
+    samples = []
+    for mount in ('/', '/mnt/reefy-data'):
+        try:
+            st = os.statvfs(mount)
+            total = st.f_blocks * st.f_frsize
+            free = st.f_bavail * st.f_frsize
+            if total > 0:
+                samples.append({'name': 'reefy_disk_total_bytes',
+                                'labels': {'mount': mount}, 'value': total})
+                samples.append({'name': 'reefy_disk_used_bytes',
+                                'labels': {'mount': mount}, 'value': total - free})
+                samples.append({'name': 'reefy_disk_used_pct',
+                                'labels': {'mount': mount},
+                                'value': (1 - free / total) * 100})
+        except OSError:
+            pass
+
+    # LVM thin-pool fill (relevant for backup capacity)
+    try:
+        r = subprocess.run(
+            ['lvs', '--noheadings', '--nosuffix', '-o', 'data_percent',
+             'reefy/reefy-thinpool'],
+            capture_output=True, text=True, timeout=2)
+        if r.returncode == 0 and r.stdout.strip():
+            samples.append({'name': 'reefy_lvm_pool_pct',
+                            'value': float(r.stdout.strip())})
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+        pass
+
+    return samples
+
+
+def collect_reefy() -> list[dict]:
+    """Reefy-internal: publisher heartbeat, fw_version label."""
+    samples = [{'name': 'reefy_publisher_up', 'value': 1}]
+
+    try:
+        with open('/etc/os-release') as f:
+            for line in f:
+                if line.startswith('IMAGE_VERSION='):
+                    fw = line.split('=', 1)[1].strip().strip('"')
+                    samples.append({'name': 'reefy_info',
+                                    'labels': {'fw_version': fw}, 'value': 1})
+                    break
+    except OSError:
+        pass
+
+    return samples
+
+
+COLLECTORS: dict[str, Callable[[], list[dict]]] = {
+    'system':     collect_system,
+    'containers': collect_containers,
+    'gpu':        collect_gpu,
+    'storage':    collect_storage,
+    'reefy':      collect_reefy,
+}
+
+
+def run_cycle(executor: cf.ThreadPoolExecutor) -> list[dict]:
+    """Submit all collectors to the long-lived pool; wait up to each
+    collector's deadline. The pool's worker threads persist across
+    cycles - submit() just queues a new task. A timed-out future's
+    underlying thread keeps running (Python doesn't kill threads
+    mid-operation), but its result is discarded for this cycle; the
+    next cycle's submission gets a fresh task once the worker frees up.
+    """
+    futures = {
+        executor.submit(fn): name for name, fn in COLLECTORS.items()
+    }
+    samples = []
+    for fut, name in futures.items():
+        deadline = COLLECTOR_DEADLINES.get(name, 1.0)
+        try:
+            samples.extend(fut.result(timeout=deadline))
+        except cf.TimeoutError:
+            log_throttled(f'tmo-{name}',
+                          f'collector {name!r} exceeded {deadline}s; dropped this cycle')
+            fut.cancel()
+        except Exception as e:
+            log_throttled(f'err-{name}',
+                          f'collector {name!r} failed: {e!r}')
+    return samples[:MAX_SAMPLES_PER_BATCH]
+
+
+# ── MQTT plumbing ─────────────────────────────────────────────────
+
+def create_mqtt_client(config: dict) -> mqtt.Client:
+    # Defaults match prod; per-deployment values come from
+    # /mnt/reefy/mqtt/mqtt.conf which the reconciler writes early in
+    # boot. These fallbacks only fire if the conf file is empty.
+    broker = config.get('MQTT_BROKER', 'mqtt.reefy.ai')
+    port = int(config.get('MQTT_PORT', '443'))
+    transport = config.get('MQTT_TRANSPORT', 'websockets')
+    ws_path = config.get('MQTT_WS_PATH', '/mqtt')
+    ca_cert = config.get('MQTT_CA_CERT', '/mnt/reefy/mqtt/ca.crt')
+    client_cert = config.get('MQTT_CLIENT_CERT', os.path.join(STATE_DIR, 'device.crt'))
+    client_key = config.get('MQTT_CLIENT_KEY', os.path.join(STATE_DIR, 'device.key'))
+
+    client = mqtt.Client(
+        callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+        client_id=f'reefy-metrics-publisher-{os.getpid()}',
+        transport=transport,
+    )
+    client.tls_set(
+        ca_certs=ca_cert,
+        certfile=client_cert,
+        keyfile=client_key,
+        cert_reqs=ssl.CERT_REQUIRED,
+        tls_version=ssl.PROTOCOL_TLSv1_2,
+    )
+    if transport == 'websockets':
+        client.ws_set_options(path=ws_path)
+    client.reconnect_delay_set(min_delay=1, max_delay=60)
+
+    def on_connect(c, userdata, flags, rc, properties):
+        print(f'[metrics-publisher] Connected to {broker}:{port}')
+
+    def on_disconnect(c, userdata, flags, rc, properties):
+        print(f'[metrics-publisher] Disconnected (rc={rc}); paho will reconnect')
+
+    client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
+
+    client.connect(broker, port, keepalive=120)
+    client.loop_start()
+    return client
+
+
+def main():
+    print(f'[metrics-publisher] Starting, interval={INTERVAL_S}s')
+
+    # Wait for config + UUID (reconciler bootstraps these)
+    while not os.path.exists(MQTT_CONF_PATH):
+        time.sleep(5)
+    config = load_config()
+    if not config:
+        print('[metrics-publisher] ERROR: failed to load config', file=sys.stderr)
+        sys.exit(1)
+
+    device_uuid = None
+    while not device_uuid:
+        device_uuid = get_device_uuid()
+        if not device_uuid:
+            time.sleep(5)
+
+    publish_offset = device_publish_offset(device_uuid)
+    print(f'[metrics-publisher] Device {device_uuid[:8]}, '
+          f'publish offset {publish_offset}s within each {INTERVAL_S}s cycle')
+
+    topic_prefix = config.get('MQTT_TOPIC_PREFIX', 'reefy')
+    metrics_topic = f'{topic_prefix}/devices/{device_uuid}/metrics'
+    print(f'[metrics-publisher] Publishing to {metrics_topic}')
+
+    # Use device certs if present, else bootstrap (early boot before adoption)
+    device_cert = os.path.join(STATE_DIR, 'device.crt')
+    device_key = os.path.join(STATE_DIR, 'device.key')
+    if os.path.exists(device_cert) and os.path.exists(device_key):
+        config['MQTT_CLIENT_CERT'] = device_cert
+        config['MQTT_CLIENT_KEY'] = device_key
+
+    while True:
+        try:
+            client = create_mqtt_client(config)
+            break
+        except Exception as e:
+            print(f'[metrics-publisher] MQTT connect failed: {e}; retrying in 10s')
+            time.sleep(10)
+
+    # Long-lived ThreadPoolExecutor: workers persist across cycles, we
+    # only submit a new batch of tasks per cycle. No per-cycle thread
+    # spawn cost.
+    with cf.ThreadPoolExecutor(max_workers=len(COLLECTORS),
+                                thread_name_prefix='reefy-metric') as executor:
+        while True:
+            # Sleep until the next aligned boundary (:00, :01:00, ...)
+            now = time.time()
+            next_boundary = (int(now / INTERVAL_S) + 1) * INTERVAL_S
+            time.sleep(max(0.0, next_boundary - now))
+
+            # All devices wake up here at :00 sharp. Sample timestamp
+            # = boundary, so dashboards line up across the fleet.
+            ts = float(next_boundary)
+
+            samples = run_cycle(executor)
+
+            # Spread broker load: each device sleeps its deterministic
+            # offset before publishing. Wire timestamp stays :00.
+            time.sleep(publish_offset)
+
+            if not samples:
+                log_throttled('empty', 'cycle produced 0 samples (all collectors failed?)')
+            elif client.is_connected():
+                payload = json.dumps({'ts': ts, 'samples': samples}, separators=(',', ':'))
+                client.publish(metrics_topic, payload, qos=0, retain=False)
+
+
+if __name__ == '__main__':
+    main()
