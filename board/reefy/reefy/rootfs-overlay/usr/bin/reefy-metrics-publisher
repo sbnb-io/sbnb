@@ -192,10 +192,16 @@ def collect_system() -> list[dict]:
                 })
         for driver, fans in (psutil.sensors_fans() or {}).items():
             for f in fans:
-                # Drop stopped fans (0) and the LM80 "no fan wired"
-                # sentinel (count=1 floating tach -> driver returns
-                # 1,350,000). Real fans cap around 10-15k RPM.
-                if not (0 < f.current < 30000):
+                # Drop only the LM80 "no fan wired" sentinel (count=1
+                # floating tach -> driver returns 1,350,000); real
+                # fans cap around 10-15k RPM. 0 RPM is a legitimate
+                # publishable state - many PSUs (Corsair, Seasonic)
+                # ship with zero-fan-mode at idle, so an absence of
+                # samples would be ambiguous between "fan off" and
+                # "publisher failure". Negative readings are
+                # impossible from hwmon but the lower bound stays as
+                # a defensive filter.
+                if not (0 <= f.current < 30000):
                     continue
                 samples.append({
                     'name': 'reefy_fan_rpm',
