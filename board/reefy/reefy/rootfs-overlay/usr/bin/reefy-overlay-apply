@@ -1,0 +1,44 @@
+#!/bin/sh
+# reefy-overlay: apply user-persistent rootfs additions.
+#
+# Mirrors the directory tree under /mnt/reefy-data/overlay/ into '/'
+# via symlinks: any file at /mnt/reefy-data/overlay/<path> appears as
+# /<path>. Runs on every boot via reefy-overlay.service because '/'
+# is an overlayfs with a tmpfs upper layer (initramfs creates /upper)
+# and nothing under it survives a reboot.
+#
+# Use cases:
+#   - drop a custom systemd unit at /etc/systemd/system/foo.service
+#   - shadow a stock binary by placing a wrapper at /usr/local/bin/<name>
+#     (PATH precedence makes systemd services pick the wrapper up)
+#   - ship runtime config under /etc that you want to persist across
+#     firmware updates without baking it into the rootfs
+#
+# If the overlay dir doesn't exist this is a no-op (the systemd unit
+# also short-circuits via ConditionPathIsDirectory before invoking us).
+#
+# Risk: a misconfigured overlay can break boot (e.g. shadowing
+# /sbin/init or a critical lib). The reverse-out is to mount the
+# storage from another OS and rm -rf /mnt/reefy-data/overlay.
+
+set -eu
+
+SRC=/mnt/reefy-data/overlay
+[ -d "$SRC" ] || exit 0
+
+# Mirror directory structure first so symlinks have somewhere to land
+# (parent dirs may not exist in the rootfs - e.g. /etc/systemd/system/
+# does, /usr/share/myapp/ may not).
+find "$SRC" -mindepth 1 -type d | while read -r d; do
+    rel=${d#$SRC}
+    mkdir -p "$rel"
+done
+
+# Symlink each file. -f overwrites any prior symlink/file at the
+# target so re-running on the same boot is idempotent.
+find "$SRC" -type f | while read -r f; do
+    rel=${f#$SRC}
+    mkdir -p "$(dirname "$rel")"
+    ln -sf "$f" "$rel"
+    echo "[reefy-overlay] $rel -> $f"
+done
