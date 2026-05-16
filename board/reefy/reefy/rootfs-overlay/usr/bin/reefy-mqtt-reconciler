@@ -660,11 +660,35 @@ class MQTTReconciler:
             print("[mqtt] ERROR: USB data partition not created")
             return
 
-        # Fresh LUKS on the USB data partition (120s for slow drives).
-        subprocess.run(
-            ['cryptsetup', 'luksFormat', data_part,
-             '--key-file', key_part, '--keyfile-size', '44', '--batch-mode'],
-            capture_output=True, timeout=120)
+        # Fresh LUKS on the USB data partition. 600s matches the
+        # sibling NVMe / SATA paths below; the USB path was previously
+        # inconsistent at 120s and a slow USB stick blew through it
+        # without finishing. On timeout, surface whatever cryptsetup
+        # wrote to stdout/stderr plus a dmesg tail - bare
+        # TimeoutExpired.__str__ drops the captured output, leaving
+        # only the command line and the wall-clock budget, which
+        # makes the failure unactionable upstream.
+        try:
+            subprocess.run(
+                ['cryptsetup', 'luksFormat', data_part,
+                 '--key-file', key_part, '--keyfile-size', '44',
+                 '--batch-mode'],
+                capture_output=True, timeout=600, check=False)
+        except subprocess.TimeoutExpired as e:
+            out = (e.stdout or b'').decode(errors='replace').strip()
+            err = (e.stderr or b'').decode(errors='replace').strip()
+            try:
+                dmesg = subprocess.run(
+                    ['dmesg', '--ctime'], capture_output=True,
+                    text=True, timeout=5).stdout.strip().splitlines()[-20:]
+                dmesg_tail = '\n'.join(dmesg)
+            except Exception:
+                dmesg_tail = '(dmesg unavailable)'
+            raise RuntimeError(
+                f'cryptsetup luksFormat on {data_part} timed out after '
+                f'{e.timeout}s.\nstdout: {out or "(empty)"}\n'
+                f'stderr: {err or "(empty)"}\n'
+                f'dmesg tail:\n{dmesg_tail}') from e
         subprocess.run(
             ['cryptsetup', 'luksOpen', data_part, 'reefy-data',
              '--key-file', key_part, '--keyfile-size', '44'],
