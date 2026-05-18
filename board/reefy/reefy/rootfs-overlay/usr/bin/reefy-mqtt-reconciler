@@ -1725,6 +1725,16 @@ class MQTTReconciler:
         if backup and backup.get('instances'):
             failed_restores = self._restore_instances(backup)
 
+        # Apply the generic `files` directive: write any files the
+        # backend has rendered (credential bootstrap bundles, configs,
+        # certs, ...) to the host before docker compose up so that
+        # any compose service that bind-mounts them sees real files
+        # at run-time (docker creates an empty DIR at the host path
+        # if the source doesn't exist when the bind-mount is
+        # established). Done AFTER _prepare_app_dirs so the per-
+        # instance parent dir exists.
+        self._apply_files(state.get('files', []))
+
         # Write compose file and run docker compose up
         compose = state.get('compose')
         if compose:
@@ -1742,6 +1752,68 @@ class MQTTReconciler:
                 return False
 
         return True
+
+    # Allow-list of host-path roots the `files` primitive is allowed
+    # to write to. Even though the backend should only ever target
+    # /mnt/reefy-data/apps/<iuuid>/.credentials/... we enforce on the
+    # device side too - the backend is the trust boundary, but if a
+    # bug ever has it emit /etc/passwd or /root/.ssh/authorized_keys
+    # we want the device to refuse rather than silently obey.
+    _FILES_ALLOWED_ROOTS = ('/mnt/reefy-data/apps/',)
+
+    def _apply_files(self, files):
+        """Apply the generic `files` directive from desired-state.
+
+        Each entry: { host_path, content_b64, uid, mode, if_absent }.
+        Writes content_b64 (base64-decoded) atomically to host_path
+        with the given ownership + permissions, but only if the
+        target is under _FILES_ALLOWED_ROOTS. The if_absent flag
+        prevents overwriting an existing file - the credential use
+        case relies on this so an agent self-refreshing inside the
+        container can't be clobbered by a subsequent state push.
+
+        Errors on individual entries are logged but never abort the
+        whole apply - a single bad entry (e.g. malformed base64)
+        shouldn't take the rest of the device down.
+        """
+        if not files:
+            return
+        for spec in files:
+            host_path = os.path.realpath(spec.get('host_path', ''))
+            if not host_path or not any(
+                    host_path.startswith(root)
+                    for root in self._FILES_ALLOWED_ROOTS):
+                log('mqtt',
+                    f'files: rejected path outside allow-list: '
+                    f'{spec.get("host_path", "")!r}')
+                continue
+            if spec.get('if_absent') and os.path.exists(host_path):
+                continue
+            try:
+                content = base64.b64decode(
+                    spec.get('content_b64', ''), validate=True)
+            except (ValueError, TypeError) as e:
+                log('mqtt',
+                    f'files: bad content_b64 for {host_path}: {e}')
+                continue
+            try:
+                os.makedirs(os.path.dirname(host_path), exist_ok=True)
+                tmp = host_path + '.tmp'
+                with open(tmp, 'wb') as f:
+                    f.write(content)
+                mode = int(spec.get('mode', '0600'), 8)
+                os.chmod(tmp, mode)
+                uid = int(spec.get('uid', 0))
+                # gid == uid: matches the convention used by
+                # _prepare_app_dirs and the per-app entrypoints
+                # that chown the data volume to a single (uid,uid).
+                os.chown(tmp, uid, uid)
+                os.rename(tmp, host_path)
+                log('mqtt',
+                    f'files: wrote {host_path} '
+                    f'({len(content)} bytes, mode={spec.get("mode", "0600")})')
+            except OSError as e:
+                log('mqtt', f'files: failed to write {host_path}: {e}')
 
     def _apply_wifi(self, wifi, old_wifi=None):
         """Configure or disconnect WiFi based on desired state diff."""
