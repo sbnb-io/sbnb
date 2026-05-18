@@ -31,11 +31,18 @@ ExecStart=/usr/bin/reefy-mqtt-reconciler
 Restart=always
 RestartSec=10
 
-# Resource limits. Soft knobs only: CPUWeight yields to user apps
-# under contention, MemoryHigh throttles page reclaim above 1G. Hard
-# caps (CPUQuota / MemoryMax) would kill or stall spawned children
-# like `borg list`/`borg extract` mid-restore on large archives.
-MemoryHigh=1G
+# Resource policy: CPUWeight yields to user apps under CPU contention
+# (default weight is 100; we run at 20 so containers preempt under
+# load). No memory cap. A prior MemoryHigh=1G was removed: cryptsetup
+# spawned by the reconciler inherits the cgroup, and Argon2id's auto-
+# tuned 1 GiB working set hit the ceiling exactly - causing thousands
+# of synchronous reclaim events per provision and stalling
+# luksFormat/luksOpen until the subprocess timeout fired. Hard caps
+# (CPUQuota / MemoryMax) would also kill spawned children like
+# `borg extract` mid-restore on large archives - the failure mode we
+# don't want. If the reconciler ever truly leaks memory, the kernel's
+# system-wide OOM-killer is the backstop; observability comes from
+# system-level memory monitoring, not cgroup-level soft caps.
 CPUWeight=20
 
 # Logging
