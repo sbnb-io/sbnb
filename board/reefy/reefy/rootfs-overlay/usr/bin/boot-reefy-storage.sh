@@ -113,6 +113,7 @@ setup_data_partition() {
     if [ -b "${DATA_PART}" ]; then
         if cryptsetup isLuks "${DATA_PART}" 2>/dev/null; then
             if cryptsetup luksOpen "${DATA_PART}" "${LUKS_NAME}" \
+                --allow-discards --persistent \
                 --key-file "${KEY_PART}" --keyfile-size "${LUKS_KEY_SIZE}" 2>/dev/null; then
                 FS_TYPE=$(blkid -o value -s TYPE "/dev/mapper/${LUKS_NAME}" 2>/dev/null)
                 if [ "${FS_TYPE}" = "LVM2_member" ]; then
@@ -125,7 +126,7 @@ setup_data_partition() {
                     for lv in "${STORAGE_LV}" "${LEGACY_STORAGE_LV}"; do
                         lv_path="/dev/${STORAGE_VG}/${lv}"
                         [ -e "${lv_path}" ] || continue
-                        if mount -o noatime,commit=60 "${lv_path}" \
+                        if mount -o noatime,commit=60,discard "${lv_path}" \
                                 "${REEFY_DATA_MNT}" 2>/dev/null; then
                             echo "[reefy] Mounted LVM LV ${lv} at ${REEFY_DATA_MNT}"
                             return 0
@@ -135,7 +136,7 @@ setup_data_partition() {
                 else
                     case "${FS_TYPE}" in
                         f2fs)  MOUNT_OPTS="noatime" ;;
-                        *)     MOUNT_OPTS="noatime,commit=60" ;;
+                        *)     MOUNT_OPTS="noatime,commit=60,discard" ;;
                     esac
                     if mount -o "${MOUNT_OPTS}" "/dev/mapper/${LUKS_NAME}" \
                             "${REEFY_DATA_MNT}" 2>/dev/null; then
@@ -185,6 +186,7 @@ setup_internal_storage() {
         luks_name="reefy-$(basename ${dev})"
         [ -e "/dev/mapper/${luks_name}" ] && continue
         cryptsetup luksOpen "${dev}" "${luks_name}" \
+            --allow-discards --persistent \
             --key-file "${KEY_PART}" --keyfile-size "${LUKS_KEY_SIZE}" 2>/dev/null || continue
         echo "[reefy] Opened LUKS on ${dev}"
     done
@@ -205,7 +207,7 @@ setup_internal_storage() {
     # Mount internal drive as /mnt/reefy-data
     echo "[reefy] Internal drive found, mounting ${lv_path} as ${REEFY_DATA_MNT}..."
     mkdir -p "${REEFY_DATA_MNT}"
-    mount -o noatime,commit=60 "${lv_path}" "${REEFY_DATA_MNT}" || {
+    mount -o noatime,commit=60,discard "${lv_path}" "${REEFY_DATA_MNT}" || {
         echo "[reefy] WARNING: Internal drive mount failed"
         return 0
     }

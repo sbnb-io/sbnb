@@ -520,6 +520,101 @@ class MQTTReconciler:
         subprocess.run(['systemctl', 'restart', 'reefy-mqtt.service'])
         return "Provisioned"
 
+    def _write_fresh_keyfile(self, key_part, _log=None):
+        """Write 44 high-entropy bytes (base64 of urandom(32)) to
+        key_part. Called immediately before luksFormat: the new LUKS
+        volume will be keyed with these bytes, so any prior keyfile
+        contents (real, stale, or degraded from a partial wipe)
+        become meaningless and are safely overwritten.
+        """
+        if _log:
+            _log('Writing fresh LUKS keyfile...')
+        subprocess.run(
+            ['dd', 'if=/dev/urandom', f'of={key_part}', 'bs=1M', 'count=1'],
+            capture_output=True, timeout=10)
+        passphrase = subprocess.run(
+            ['openssl', 'rand', '-base64', '32'],
+            capture_output=True, text=True, timeout=5
+        ).stdout.strip()
+        subprocess.run(
+            ['sh', '-c', f'echo -n "{passphrase}" | dd of={key_part} conv=notrunc'],
+            capture_output=True, timeout=10)
+
+    def _provision_luks_stack(self, targets, key_part, _log=None):
+        """Provision fresh LUKS volumes on `targets`, all keyed by a
+        single freshly-written keyfile. Returns the /dev/mapper/<name>
+        paths that opened successfully - the PV list for the next LVM
+        stack step.
+
+        `targets` is a list of (device_path, mapper_name) tuples; the
+        USB-p4 fallback passes `[('/dev/sda4', 'reefy-data')]`, the
+        internal-drive path passes one tuple per device in
+        storage_config.devices with mapper names `reefy-<dev>`.
+
+        For each target: tear down any prior dm/LUKS layers
+        (`_force_wipe_device`), luksFormat with a 600s budget that
+        captures stdout/stderr/dmesg on timeout (bare TimeoutExpired
+        drops the captured output, leaving only the command line and
+        budget - unactionable upstream), then luksOpen.
+
+        Fresh keyfile is written ONCE up front. All targets in this
+        call share the same key, which matches the existing single-
+        key-unlocks-all-reefy-volumes invariant the boot scripts
+        depend on.
+        """
+        self._write_fresh_keyfile(key_part, _log)
+
+        luks_pvs = []
+        for target, mapper_name in targets:
+            if _log:
+                _log(f'LUKS formatting {target}...')
+            self._force_wipe_device(target)
+
+            try:
+                result = subprocess.run(
+                    ['cryptsetup', 'luksFormat', target,
+                     '--key-file', key_part, '--keyfile-size', '44',
+                     '--batch-mode'],
+                    capture_output=True, timeout=600, check=False)
+            except subprocess.TimeoutExpired as e:
+                out = (e.stdout or b'').decode(errors='replace').strip()
+                err = (e.stderr or b'').decode(errors='replace').strip()
+                try:
+                    dmesg = subprocess.run(
+                        ['dmesg', '--ctime'], capture_output=True,
+                        text=True, timeout=5
+                    ).stdout.strip().splitlines()[-20:]
+                    dmesg_tail = '\n'.join(dmesg)
+                except Exception:
+                    dmesg_tail = '(dmesg unavailable)'
+                raise RuntimeError(
+                    f'cryptsetup luksFormat on {target} timed out after '
+                    f'{e.timeout}s.\nstdout: {out or "(empty)"}\n'
+                    f'stderr: {err or "(empty)"}\n'
+                    f'dmesg tail:\n{dmesg_tail}') from e
+
+            if result.returncode != 0:
+                err = result.stderr.decode(errors='replace').strip()
+                if _log:
+                    _log(f'LUKS format failed on {target}: {err}')
+                continue
+
+            # --allow-discards lets dm-crypt pass TRIM down to the
+            # drive; --persistent stores the flag in the LUKS header
+            # so subsequent opens (boot-reefy-storage.sh) inherit it.
+            # Required for dm-thin discard_passdown and FTL recovery.
+            result = subprocess.run(
+                ['cryptsetup', 'luksOpen', target, mapper_name,
+                 '--allow-discards', '--persistent',
+                 '--key-file', key_part, '--keyfile-size', '44'],
+                capture_output=True, timeout=120)
+            if result.returncode != 0:
+                continue
+
+            luks_pvs.append(f'/dev/mapper/{mapper_name}')
+
+        return luks_pvs
+
     def _ensure_persistent_storage(self, storage_config=None, _log=None):
         """Set up persistent storage during adoption. Replaces tmpfs with real storage.
 
@@ -541,9 +636,16 @@ class MQTTReconciler:
 
         key_part = f'{disk}3'
 
-        # Check if key partition already exists (e.g. restored LUKS key scenario)
+        # Ensure the keyfile partition slot exists so both the restore
+        # scan below (reads existing key bytes, if any) and the
+        # provision paths (overwrite with fresh bytes via
+        # _provision_luks_stack -> _write_fresh_keyfile, immediately
+        # before luksFormat) have a device node to operate on. Do NOT
+        # write key bytes here: that decision belongs to the provision
+        # paths so a fresh LUKS header is always keyed with fresh
+        # bytes, regardless of whether the partition was just created
+        # or had degraded contents from a partial wipe.
         if not os.path.exists(key_part):
-            # Create key partition
             if _log:
                 _log('Creating key partition...')
             subprocess.run(
@@ -561,18 +663,6 @@ class MQTTReconciler:
             if not os.path.exists(key_part):
                 print("[mqtt] ERROR: Key partition not created")
                 return
-
-            # Generate LUKS key
-            subprocess.run(
-                ['dd', 'if=/dev/urandom', f'of={key_part}', 'bs=1M', 'count=1'],
-                capture_output=True, timeout=10)
-            passphrase = subprocess.run(
-                ['openssl', 'rand', '-base64', '32'],
-                capture_output=True, text=True, timeout=5
-            ).stdout.strip()
-            subprocess.run(
-                ['sh', '-c', f'echo -n "{passphrase}" | dd of={key_part} conv=notrunc'],
-                capture_output=True, timeout=10)
 
         # Try to open existing internal drives with our key (restore scenario)
         parent = subprocess.run(
@@ -660,43 +750,20 @@ class MQTTReconciler:
             print("[mqtt] ERROR: USB data partition not created")
             return
 
-        # Fresh LUKS on the USB data partition. 600s matches the
-        # sibling NVMe / SATA paths below; the USB path was previously
-        # inconsistent at 120s and a slow USB stick blew through it
-        # without finishing. On timeout, surface whatever cryptsetup
-        # wrote to stdout/stderr plus a dmesg tail - bare
-        # TimeoutExpired.__str__ drops the captured output, leaving
-        # only the command line and the wall-clock budget, which
-        # makes the failure unactionable upstream.
-        try:
-            subprocess.run(
-                ['cryptsetup', 'luksFormat', data_part,
-                 '--key-file', key_part, '--keyfile-size', '44',
-                 '--batch-mode'],
-                capture_output=True, timeout=600, check=False)
-        except subprocess.TimeoutExpired as e:
-            out = (e.stdout or b'').decode(errors='replace').strip()
-            err = (e.stderr or b'').decode(errors='replace').strip()
-            try:
-                dmesg = subprocess.run(
-                    ['dmesg', '--ctime'], capture_output=True,
-                    text=True, timeout=5).stdout.strip().splitlines()[-20:]
-                dmesg_tail = '\n'.join(dmesg)
-            except Exception:
-                dmesg_tail = '(dmesg unavailable)'
-            raise RuntimeError(
-                f'cryptsetup luksFormat on {data_part} timed out after '
-                f'{e.timeout}s.\nstdout: {out or "(empty)"}\n'
-                f'stderr: {err or "(empty)"}\n'
-                f'dmesg tail:\n{dmesg_tail}') from e
-        subprocess.run(
-            ['cryptsetup', 'luksOpen', data_part, 'reefy-data',
-             '--key-file', key_part, '--keyfile-size', '44'],
-            capture_output=True, timeout=120)
+        # Fresh LUKS on the USB data partition via shared provision
+        # helper (handles wipe + luksFormat + luksOpen + timeout
+        # capture + fresh-key write). Mapper name `reefy-data` matches
+        # what boot-reefy-storage.sh's setup_data_partition expects on
+        # subsequent boots.
+        luks_pvs = self._provision_luks_stack(
+            [(data_part, 'reefy-data')], key_part, _log)
+        if not luks_pvs:
+            print("[mqtt] ERROR: USB data partition LUKS provision failed")
+            return
 
         # Build VG + thin pool + reefy_default LV on top of the LUKS-
         # opened mapper. Helper handles the fresh-install path here.
-        self._ensure_lvm_stack(['/dev/mapper/reefy-data'], _log)
+        self._ensure_lvm_stack(luks_pvs, _log)
         lv_path = self._active_reefy_lv_path()
         if not lv_path:
             print("[mqtt] ERROR: No reefy LV after USB LVM setup")
@@ -728,36 +795,18 @@ class MQTTReconciler:
         subprocess.run(['modprobe', 'dm_crypt'], capture_output=True, timeout=5)
         subprocess.run(['modprobe', 'dm_mod'], capture_output=True, timeout=5)
 
-        luks_pvs = []
+        targets = []
         for dev_name in devices:
             target = f'/dev/{dev_name}'
             if not os.path.exists(target):
                 if _log:
                     _log(f'Device {target} not found, skipping')
                 continue
+            # Mapper names `reefy-<dev_name>` match what
+            # boot-reefy-storage.sh's setup_internal_storage expects.
+            targets.append((target, f'reefy-{dev_name}'))
 
-            luks_name = f'reefy-{dev_name}'
-            self._force_wipe_device(target)
-            if _log:
-                _log(f'LUKS formatting {target}...')
-            result = subprocess.run(
-                ['cryptsetup', 'luksFormat', target,
-                 '--key-file', key_part, '--keyfile-size', '44', '--batch-mode'],
-                capture_output=True, text=True, timeout=600)
-            if result.returncode != 0:
-                if _log:
-                    _log(f'LUKS format failed on {target}')
-                continue
-
-            result = subprocess.run(
-                ['cryptsetup', 'luksOpen', target, luks_name,
-                 '--key-file', key_part, '--keyfile-size', '44'],
-                capture_output=True, text=True, timeout=120)
-            if result.returncode != 0:
-                continue
-
-            luks_pvs.append(f'/dev/mapper/{luks_name}')
-
+        luks_pvs = self._provision_luks_stack(targets, key_part, _log)
         if not luks_pvs:
             return
 
@@ -1196,11 +1245,17 @@ class MQTTReconciler:
                 return
             download_path = os.path.join(data_dir, 'reefy-reflash.raw')
 
-            # Download
+            # Download. `--retry-all-errors` is critical: bare `--retry`
+            # ignores mid-stream errors (e.g. TLS bad-record-mac) which
+            # we hit in prod after ~86% of a 2 GB download.
             self._publish_stage('downloading', f'Downloading firmware ({expected_size // 1048576} MB)')
             log('mqtt', f'Downloading image to {download_path}')
             result = subprocess.run(
-                ['curl', '-fSL', '--retry', '3', '-o', download_path, image_url],
+                ['curl', '-fSL',
+                 '--retry', '5',
+                 '--retry-all-errors',
+                 '--retry-delay', '5',
+                 '-o', download_path, image_url],
                 capture_output=True, text=True, timeout=3600)
             if result.returncode != 0:
                 log('mqtt', f'Reflash download failed: {result.stderr}')
