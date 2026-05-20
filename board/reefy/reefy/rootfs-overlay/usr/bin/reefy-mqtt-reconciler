@@ -708,7 +708,7 @@ class MQTTReconciler:
                                capture_output=True, timeout=10)
                 subprocess.run(['umount', '/mnt/reefy-data'], capture_output=True, timeout=5)
                 result = subprocess.run(
-                    ['mount', '-o', 'noatime,commit=60', lv_path, '/mnt/reefy-data'],
+                    ['mount', '-o', self.REEFY_DATA_MOUNT_OPTS, lv_path, '/mnt/reefy-data'],
                     capture_output=True, timeout=10)
                 if result.returncode == 0:
                     subprocess.run(['cp', '-a', '/tmp/reefy-state', '/mnt/reefy-data/state'],
@@ -774,7 +774,7 @@ class MQTTReconciler:
                        capture_output=True, timeout=10)
         subprocess.run(['umount', '/mnt/reefy-data'], capture_output=True, timeout=5)
         subprocess.run(
-            ['mount', '-o', 'noatime', lv_path, '/mnt/reefy-data'],
+            ['mount', '-o', self.REEFY_DATA_MOUNT_OPTS, lv_path, '/mnt/reefy-data'],
             capture_output=True, timeout=10)
         subprocess.run(['cp', '-a', '/tmp/reefy-state', '/mnt/reefy-data/state'],
                        capture_output=True, timeout=10)
@@ -824,7 +824,7 @@ class MQTTReconciler:
                        capture_output=True, timeout=10)
         subprocess.run(['umount', '/mnt/reefy-data'], capture_output=True, timeout=5)
         subprocess.run(
-            ['mount', '-o', 'noatime,commit=60', lv_path, '/mnt/reefy-data'],
+            ['mount', '-o', self.REEFY_DATA_MOUNT_OPTS, lv_path, '/mnt/reefy-data'],
             capture_output=True, timeout=10)
         subprocess.run(['cp', '-a', '/tmp/reefy-state', '/mnt/reefy-data/state'],
                        capture_output=True, timeout=10)
@@ -1993,6 +1993,14 @@ class MQTTReconciler:
     # backup path until they factory-reset into the new layout.
     LEGACY_STORAGE_LV = 'data'
     REEFY_DATA_MNT = '/mnt/reefy-data'
+    # ext4 mount opts used everywhere we mount a reefy LV (default LV,
+    # per-volume backup LVs, USB-p4 fallback). Single source so all
+    # mount sites stay in sync. `discard` is the TRIM-passthrough
+    # half of the chain (the LUKS half is --allow-discards at open
+    # time); without both, the drive's FTL doesn't reclaim freed
+    # blocks. Kept identical for default + per-volume LVs since they
+    # all live on the same drive with the same wear semantics.
+    REEFY_DATA_MOUNT_OPTS = 'noatime,commit=60,discard'
 
     def _ensure_lvm_stack(self, luks_pvs, _log=None):
         """Bring up the LVM stack on top of the given LUKS-mapped PVs.
@@ -2162,7 +2170,7 @@ class MQTTReconciler:
 
         os.makedirs(path, mode=0o755, exist_ok=True)
         r = subprocess.run(
-            ['mount', '-o', 'noatime', lv_path, path],
+            ['mount', '-o', self.REEFY_DATA_MOUNT_OPTS, lv_path, path],
             capture_output=True, text=True, timeout=10)
         if r.returncode != 0:
             log('mqtt', f'mount {lv_path} -> {path} failed: {r.stderr}')
@@ -2437,7 +2445,7 @@ class MQTTReconciler:
         subprocess.run(['umount', self.REEFY_DATA_MNT],
                        capture_output=True, timeout=5)
         result = subprocess.run(
-            ['mount', '-o', 'noatime,commit=60', lv_path, self.REEFY_DATA_MNT],
+            ['mount', '-o', self.REEFY_DATA_MOUNT_OPTS, lv_path, self.REEFY_DATA_MNT],
             capture_output=True, text=True, timeout=15
         )
         if result.returncode == 0:

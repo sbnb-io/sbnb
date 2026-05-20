@@ -18,6 +18,13 @@ REEFY_MNT="/mnt/reefy"
 REEFY_DATA_MNT="/mnt/reefy-data"
 LUKS_NAME="reefy-data"
 LUKS_KEY_SIZE=44
+# ext4 mount opts for reefy LVs. `discard` is the FS-level half of
+# the TRIM passthrough chain (LUKS half is --allow-discards); without
+# it, deleted blocks aren't communicated to the drive at unlink time,
+# causing FTL write amplification under high-churn workloads. Kept
+# identical in reefy-mqtt-reconciler.REEFY_DATA_MOUNT_OPTS — change
+# both if you change one.
+REEFY_DATA_MOUNT_OPTS="noatime,commit=60,discard"
 
 # Hostname-setting moved out of boot-reefy-storage.sh — it used to run
 # here before virtio_net had finished probing, causing ~25% of QEMU
@@ -126,7 +133,7 @@ setup_data_partition() {
                     for lv in "${STORAGE_LV}" "${LEGACY_STORAGE_LV}"; do
                         lv_path="/dev/${STORAGE_VG}/${lv}"
                         [ -e "${lv_path}" ] || continue
-                        if mount -o noatime,commit=60,discard "${lv_path}" \
+                        if mount -o "${REEFY_DATA_MOUNT_OPTS}" "${lv_path}" \
                                 "${REEFY_DATA_MNT}" 2>/dev/null; then
                             echo "[reefy] Mounted LVM LV ${lv} at ${REEFY_DATA_MNT}"
                             return 0
@@ -136,7 +143,7 @@ setup_data_partition() {
                 else
                     case "${FS_TYPE}" in
                         f2fs)  MOUNT_OPTS="noatime" ;;
-                        *)     MOUNT_OPTS="noatime,commit=60,discard" ;;
+                        *)     MOUNT_OPTS="${REEFY_DATA_MOUNT_OPTS}" ;;
                     esac
                     if mount -o "${MOUNT_OPTS}" "/dev/mapper/${LUKS_NAME}" \
                             "${REEFY_DATA_MNT}" 2>/dev/null; then
@@ -207,7 +214,7 @@ setup_internal_storage() {
     # Mount internal drive as /mnt/reefy-data
     echo "[reefy] Internal drive found, mounting ${lv_path} as ${REEFY_DATA_MNT}..."
     mkdir -p "${REEFY_DATA_MNT}"
-    mount -o noatime,commit=60,discard "${lv_path}" "${REEFY_DATA_MNT}" || {
+    mount -o "${REEFY_DATA_MOUNT_OPTS}" "${lv_path}" "${REEFY_DATA_MNT}" || {
         echo "[reefy] WARNING: Internal drive mount failed"
         return 0
     }
