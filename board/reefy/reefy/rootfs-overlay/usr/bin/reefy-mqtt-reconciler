@@ -514,6 +514,20 @@ class MQTTReconciler:
             "message": "Certificate received, switching to device mode",
             "timestamp": time.time()
         }))
+
+        # Mark the bootstrap UUID offline before we tear the session
+        # down. Without this, the bootstrap record stays online forever
+        # in the cloud: clean disconnect doesn't fire LWT, and we never
+        # speak to that topic again under the bootstrap UUID. Retained
+        # so future broker reconnects see the final state.
+        bootstrap_status_topic = (
+            f"{self.topic_prefix}/devices/{self.bootstrap_uuid}/status"
+        )
+        self.client.publish(
+            bootstrap_status_topic,
+            json.dumps({"status": "offline", "hostname": self.hostname}),
+            qos=1, retain=True,
+        )
         time.sleep(0.5)
 
         self.client.disconnect()
