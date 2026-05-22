@@ -33,8 +33,9 @@
 
 set -e
 
-# Sidecar mode: $APP_CONTAINER pre-set in env. Otherwise SSH mode:
-# derive from $USER (sshd sets it to the authenticated username).
+# Sidecar mode: $APP_CONTAINER + $APP_UID pre-set in env. Otherwise
+# SSH mode: derive from $USER (sshd sets it to the authenticated
+# username) and read uid from desired-state.json's instances entry.
 if [ -z "${APP_CONTAINER:-}" ]; then
     case "${USER:-}" in
         app-?*) slug="${USER#app-}" ;;
@@ -42,30 +43,39 @@ if [ -z "${APP_CONTAINER:-}" ]; then
     esac
     state=/mnt/reefy-data/state/desired-state.json
     [ -f "$state" ] || { echo "no desired-state on this device" >&2; exit 1; }
-    APP_CONTAINER=$(STATE="$state" SLUG="$slug" python3 -c '
+    APP_INFO=$(STATE="$state" SLUG="$slug" python3 -c '
 import json, os, sys
 s = json.load(open(os.environ["STATE"]))
 for i in s.get("instances", []):
     if i.get("instance_name") == os.environ["SLUG"]:
         uuid = i.get("instance_uuid") or i.get("instance_name")
-        print(f"state-{uuid}-1")
+        print(f"state-{uuid}-1 {int(i.get(\"uid\", 0))}")
         sys.exit(0)
 sys.exit(1)
 ') || { echo "no installed app named '$slug' on this device" >&2; exit 1; }
+    APP_CONTAINER=${APP_INFO% *}
+    APP_UID=${APP_INFO##* }
     APP_NAME="$slug"
 fi
 
 [ -n "${APP_NAME:-}" ] || APP_NAME="$APP_CONTAINER"
+# Default to root if the desired-state on this device is from
+# pre-this-change firmware/backend and doesn't carry uid. Matches
+# today's behavior so the rollout is back-compat.
+[ -n "${APP_UID:-}" ] || APP_UID=0
 
 case "${SSH_ORIGINAL_COMMAND:-}" in
     '')
-        # Interactive shell.
+        # Interactive shell. `--user $APP_UID` opens as the app's
+        # declared uid instead of the image's default (usually root).
+        # For root access escape, use host SSH + `sudo docker exec
+        # -u 0 ...`.
         if [ -n "${TMUX:-}" ]; then
             # Already inside tmux (sidecar path, or SSH after tmux wrap):
             # just docker exec. Bash with pretty prompt, sh fallback.
             # `--norc --noprofile` skips the image's bashrc which often
             # spams or breaks color escapes inside ttyd.
-            exec docker exec -it "$APP_CONTAINER" sh -c "
+            exec docker exec -it --user "$APP_UID" "$APP_CONTAINER" sh -c "
                 export PS1='\$(whoami 2>/dev/null || echo user)@${APP_NAME}# '
                 if command -v bash >/dev/null; then exec bash --norc --noprofile; else exec sh; fi"
         fi
@@ -74,7 +84,7 @@ case "${SSH_ORIGINAL_COMMAND:-}" in
         # windows/panes (Ctrl-B c) also open in-container, not on host.
         # `-A` attaches to an existing session of the same name; second
         # ssh from another laptop joins this same view.
-        export APP_CONTAINER APP_NAME
+        export APP_CONTAINER APP_NAME APP_UID
         exec sh -c "
             tmux set -g default-command /usr/bin/reefy-app-shell 2>/dev/null
             exec tmux new-session -A -s '$APP_NAME' /usr/bin/reefy-app-shell"
@@ -84,7 +94,7 @@ case "${SSH_ORIGINAL_COMMAND:-}" in
         # Container needs openssh-sftp-server (Debian/Ubuntu) /
         # openssh-server (Fedora) installed; failure here is a clean
         # "sftp-server not installed" rather than a silent hang.
-        exec docker exec -i "$APP_CONTAINER" sh -c '
+        exec docker exec -i --user "$APP_UID" "$APP_CONTAINER" sh -c '
             for p in /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server /usr/lib/ssh/sftp-server; do
                 [ -x "$p" ] && exec "$p"
             done
@@ -94,6 +104,6 @@ case "${SSH_ORIGINAL_COMMAND:-}" in
     *)
         # Legacy scp (-O flag), rsync, or `ssh app-X@host '<cmd>'`.
         # Run the original command verbatim inside the container.
-        exec docker exec -i "$APP_CONTAINER" sh -c "$SSH_ORIGINAL_COMMAND"
+        exec docker exec -i --user "$APP_UID" "$APP_CONTAINER" sh -c "$SSH_ORIGINAL_COMMAND"
         ;;
 esac
