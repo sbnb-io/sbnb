@@ -49,7 +49,8 @@ s = json.load(open(os.environ["STATE"]))
 for i in s.get("instances", []):
     if i.get("instance_name") == os.environ["SLUG"]:
         uuid = i.get("instance_uuid") or i.get("instance_name")
-        print(f"state-{uuid}-1 {int(i.get(\"uid\", 0))}")
+        uid = int(i.get("uid", 0))
+        print(f"state-{uuid}-1 {uid}")
         sys.exit(0)
 sys.exit(1)
 ') || { echo "no installed app named '$slug' on this device" >&2; exit 1; }
