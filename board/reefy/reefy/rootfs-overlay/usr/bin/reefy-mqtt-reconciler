@@ -2189,9 +2189,13 @@ class MQTTReconciler:
             log('mqtt', f'Created per-volume LV {lv_name} for {path}')
 
         os.makedirs(path, mode=0o755, exist_ok=True)
+        # mount can stall on thin-pool metadata ops when the pool's
+        # under load (Frigate-class write pressure, restore, big
+        # docker pull). 60s gives the kernel enough headroom; the
+        # whole state-apply retries on failure anyway.
         r = subprocess.run(
             ['mount', '-o', self.REEFY_DATA_MOUNT_OPTS, lv_path, path],
-            capture_output=True, text=True, timeout=10)
+            capture_output=True, text=True, timeout=60)
         if r.returncode != 0:
             log('mqtt', f'mount {lv_path} -> {path} failed: {r.stderr}')
             return
