@@ -132,6 +132,9 @@ BR2_PACKAGE_R8127=y
 BR2_PACKAGE_R8168=y
 BR2_PACKAGE_JQ=y
 BR2_PACKAGE_LOGROTATE=y
+# ttyd binary stays in the image as a manual fallback for terminal
+# access if the MQTT bridge ever breaks. No systemd unit - operator
+# starts it ad-hoc via `ttyd -W -i 127.0.0.1 -p 7681 ...`.
 BR2_PACKAGE_TTYD=y
 BR2_PACKAGE_BRIDGE_UTILS=y
 BR2_PACKAGE_ETHTOOL=y
