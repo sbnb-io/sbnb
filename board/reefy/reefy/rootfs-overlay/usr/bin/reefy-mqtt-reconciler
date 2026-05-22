@@ -1823,12 +1823,18 @@ class MQTTReconciler:
         return True
 
     # Allow-list of host-path roots the `files` primitive is allowed
-    # to write to. Even though the backend should only ever target
-    # /mnt/reefy-data/apps/<iuuid>/.credentials/... we enforce on the
-    # device side too - the backend is the trust boundary, but if a
-    # bug ever has it emit /etc/passwd or /root/.ssh/authorized_keys
-    # we want the device to refuse rather than silently obey.
-    _FILES_ALLOWED_ROOTS = ('/mnt/reefy-data/apps/',)
+    # to write to. The backend is the trust boundary, but if a bug
+    # ever has it emit /etc/passwd or /root/.ssh/authorized_keys we
+    # want the device to refuse rather than silently obey.
+    # Roots:
+    #   /mnt/reefy-data/apps/   - per-app credential templates (the
+    #                             original credential-vault-mvp use)
+    #   /mnt/reefy-data/state/  - system-container config (e.g.
+    #                             reefy-llm-proxy credentials.json)
+    _FILES_ALLOWED_ROOTS = (
+        '/mnt/reefy-data/apps/',
+        '/mnt/reefy-data/state/',
+    )
 
     def _apply_files(self, files):
         """Apply the generic `files` directive from desired-state.
