@@ -2085,8 +2085,20 @@ class MQTTReconciler:
         pool_exists = subprocess.run(
             ['lvs', pool_path], capture_output=True).returncode == 0
         if not pool_exists:
+            # chunksize 4M + -Zn (no zero-on-allocate). Chunk-size
+            # matrix on Patriot M.2 P300 NVMe showed +5-12% across
+            # seq write / seq read / rand-read IOPS vs the default
+            # 64K-with-zeroing. -Zn is safe under LUKS - the entire
+            # pool is encrypted, so "leaked" deallocated chunks are
+            # encrypted noise without the passphrase. Bigger
+            # advantage expected under multi-writer contention (32x
+            # fewer dm-thin metadata ops per write). Affects
+            # newly-provisioned devices only; existing pools keep
+            # their 64K chunks (chunk size is set at pool creation
+            # and can't change in place).
             result = subprocess.run(
                 ['lvcreate', '--type', 'thin-pool', '-l', '100%FREE',
+                 '--chunksize', '4M', '-Zn',
                  '-n', self.STORAGE_POOL, self.STORAGE_VG],
                 capture_output=True, text=True, timeout=30)
             if result.returncode != 0:
