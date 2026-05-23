@@ -94,6 +94,22 @@ def _get_container_shell(container):
     return None
 
 
+def _get_app_uid(session_id):
+    """Look up the app's declared uid by instance UUID. Same source as
+    reefy-app-shell (the SSH path) - keeps both terminal entrypoints
+    in sync. Returns 0 (root) if not declared or state is missing, so
+    apps that pre-date the uid field stay backwards-compatible."""
+    try:
+        with open(os.path.join(STATE_DIR, 'desired-state.json')) as f:
+            state = json.load(f)
+        for i in state.get('instances', []):
+            if i.get('instance_uuid') == session_id:
+                return int(i.get('uid', 0))
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        pass
+    return 0
+
+
 def spawn_pty(session_id, container=None, name=None):
     """Spawn a PTY shell. If container specified, docker exec into it.
     Reads APP_SHELL from the container's env for custom shell commands
@@ -109,9 +125,15 @@ def spawn_pty(session_id, container=None, name=None):
             shell_cmd = shell
         else:
             shell_cmd = 'if command -v bash >/dev/null; then exec bash --norc --noprofile; else exec sh; fi'
+        # Mirror reefy-app-shell's `--user $APP_UID` so the web/MQTT
+        # terminal lands as the app's declared uid, not root. Without
+        # this the SSH path runs as the app user but the web path runs
+        # as root - inconsistent, and files created via the web shell
+        # end up owned by root, breaking the app at runtime.
+        app_uid = _get_app_uid(session_id)
         with open(wrapper_path, 'w') as f:
             f.write("#!/bin/sh\n"
-                    f"exec docker exec -e REEFY_APP='{display}' -it {container} sh -c '\n"
+                    f"exec docker exec --user {app_uid} -e REEFY_APP='{display}' -it {container} sh -c '\n"
                     '    export "PS1=$(whoami 2>/dev/null || echo user)@${REEFY_APP}# "\n'
                     f"    {shell_cmd}\n"
                     "'\n")
