@@ -68,6 +68,7 @@ COLLECTOR_DEADLINES = {
     'storage':    3.0,
     'reefy':      0.5,
     'ipmi':       5.0,   # BMC roundtrip can be slow; only fires on server hw
+    'llm_proxy':  2.0,   # localhost http GET; should be sub-50ms
 }
 
 
@@ -420,6 +421,53 @@ def collect_reefy() -> list[dict]:
     return samples
 
 
+def collect_llm_proxy() -> list[dict]:
+    """Poll the reefy-llm-proxy /internal/stats endpoint and translate
+    into Reefy sample shape.
+
+    The proxy compose service binds 127.0.0.1:9080 on the host only
+    when at least one LLM provider is attached (desired-state gating);
+    a connection error therefore just means "no LLM on this device"
+    and silently emits []. urllib (stdlib) keeps the publisher
+    dependency-free."""
+    import urllib.request
+    import urllib.error
+    try:
+        with urllib.request.urlopen(
+                'http://127.0.0.1:9080/internal/stats', timeout=2) as r:
+            body = json.loads(r.read())
+    except (urllib.error.URLError, OSError, ValueError):
+        return []
+
+    samples: list[dict] = []
+    for entry in body.get('requests_total') or []:
+        try:
+            samples.append({
+                'name': 'reefy_llm_requests_total',
+                'labels': {
+                    'provider': str(entry.get('provider', '')),
+                    'model':    str(entry.get('model', '')),
+                },
+                'value': float(entry.get('value', 0)),
+            })
+        except (TypeError, ValueError):
+            pass
+    for entry in body.get('tokens_total') or []:
+        try:
+            samples.append({
+                'name': 'reefy_llm_tokens_total',
+                'labels': {
+                    'provider':  str(entry.get('provider', '')),
+                    'model':     str(entry.get('model', '')),
+                    'direction': str(entry.get('direction', '')),
+                },
+                'value': float(entry.get('value', 0)),
+            })
+        except (TypeError, ValueError):
+            pass
+    return samples
+
+
 def collect_ipmi() -> list[dict]:
     """IPMI sensors via ipmitool. Server-class hardware (Supermicro,
     Dell, HPE, ...) exposes fans + chassis temps only through the
@@ -479,6 +527,7 @@ COLLECTORS: dict[str, Callable[[], list[dict]]] = {
     'storage':    collect_storage,
     'reefy':      collect_reefy,
     'ipmi':       collect_ipmi,
+    'llm_proxy':  collect_llm_proxy,
 }
 
 
