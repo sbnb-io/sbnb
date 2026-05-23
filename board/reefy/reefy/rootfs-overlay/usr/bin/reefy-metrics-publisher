@@ -609,9 +609,14 @@ def main():
 
             samples = run_cycle(executor)
 
-            # Spread broker load: each device sleeps its deterministic
-            # offset before publishing. Wire timestamp stays :00.
-            time.sleep(publish_offset)
+            # Spread broker load: publish at boundary+offset (absolute
+            # target, not "sleep(offset) after run_cycle"). Wire
+            # timestamp stays :00. Absolute target is critical: with a
+            # relative sleep, run_cycle+offset can exceed INTERVAL_S
+            # for devices with high offsets (e.g. offset=58 + ~3s
+            # run_cycle > 60s), pushing the next iteration past its
+            # boundary and dropping the cadence from 60s to 120s.
+            time.sleep(max(0.0, (next_boundary + publish_offset) - time.time()))
 
             if not samples:
                 log_throttled('empty', 'cycle produced 0 samples (all collectors failed?)')
