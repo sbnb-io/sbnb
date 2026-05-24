@@ -34,13 +34,31 @@ boot_num_for_label() {
         | head -1
 }
 
-# Find the reefy USB disk from what's mounted at /mnt/reefy
+# Find the reefy boot disk from what's mounted at /mnt/reefy. The
+# supported hardware shape is USB-boot (sda); EC2 / mmcblk / NVMe-boot
+# is exotic but the tool works on them too once part_dev() handles the
+# kernel's partition-name separator rule.
 # Sets: MOUNTED_DEV, DISK
 find_disk() {
     MOUNTED_DEV=$(findmnt -n -o SOURCE "$REEFY_MNT" 2>/dev/null) || true
     [ -z "$MOUNTED_DEV" ] && return 1
     DISK="/dev/$(lsblk -no PKNAME "$MOUNTED_DEV" 2>/dev/null)"
     [ -b "$DISK" ] || return 1
+}
+
+# Build the kernel partition device path for the given disk + partition
+# number. The kernel inserts a 'p' separator when the disk name ends in
+# a digit (NVMe: nvme0n1 -> nvme0n1p1; mmcblk: mmcblk0 -> mmcblk0p1) and
+# omits it when it ends in a letter (SATA/USB: sda -> sda1). Without
+# this the calling code produced names like /dev/nvme0n11 that don't
+# exist on disk.
+part_dev() {
+    DISKARG="$1"
+    PARTNUM="$2"
+    case "$DISKARG" in
+        *[0-9]) echo "${DISKARG}p${PARTNUM}" ;;
+        *)      echo "${DISKARG}${PARTNUM}" ;;
+    esac
 }
 
 # Resolve active/inactive slots
@@ -52,7 +70,7 @@ resolve_slots() {
 
     # Always resolve from what's mounted — BootCurrent can be a transient entry
     # that doesn't match the mounted ESP (e.g., after USB swap or UEFI quirks)
-    if [ "$MOUNTED_DEV" = "${DISK}1" ]; then
+    if [ "$MOUNTED_DEV" = "$(part_dev "$DISK" 1)" ]; then
         ACTIVE_LABEL="reefy-a"
         INACTIVE_LABEL="reefy-b"
         INACTIVE_PART=2
@@ -62,7 +80,7 @@ resolve_slots() {
         INACTIVE_PART=1
     fi
 
-    INACTIVE_DEV="${DISK}${INACTIVE_PART}"
+    INACTIVE_DEV="$(part_dev "$DISK" "$INACTIVE_PART")"
 }
 
 # Verify and fix all EFI boot entries. Idempotent.
@@ -73,8 +91,8 @@ resolve_slots() {
 fix_entries() {
     find_disk || die "$REEFY_MNT not mounted"
 
-    GUID_A=$(blkid -s PARTUUID -o value "${DISK}1" 2>/dev/null)
-    GUID_B=$(blkid -s PARTUUID -o value "${DISK}2" 2>/dev/null)
+    GUID_A=$(blkid -s PARTUUID -o value "$(part_dev "$DISK" 1)" 2>/dev/null)
+    GUID_B=$(blkid -s PARTUUID -o value "$(part_dev "$DISK" 2)" 2>/dev/null)
 
     mount -o remount,rw /sys/firmware/efi/efivars 2>/dev/null || true
 
@@ -159,8 +177,8 @@ cmd_status() {
     REEFY_B_NUM=$(boot_num_for_label reefy-b)
     echo "Active:   ${ACTIVE_LABEL} (Boot${CURRENT_BOOTNUM})"
     echo "Inactive: ${INACTIVE_LABEL} → ${INACTIVE_DEV}"
-    echo "reefy-a:   Boot${REEFY_A_NUM:-missing} → ${DISK}1"
-    echo "reefy-b:   Boot${REEFY_B_NUM:-missing} → ${DISK}2"
+    echo "reefy-a:   Boot${REEFY_A_NUM:-missing} → $(part_dev "$DISK" 1)"
+    echo "reefy-b:   Boot${REEFY_B_NUM:-missing} → $(part_dev "$DISK" 2)"
     efibootmgr 2>/dev/null | grep -E '^Boot(Current|Order|Next)'
 }
 
