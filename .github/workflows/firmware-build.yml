@@ -118,6 +118,18 @@ jobs:
             ${{ env.BR_OUTPUT }}/images/reefy-dev.raw
             ${{ env.BR_OUTPUT }}/images/os-release
 
+      # Workaround: sigstore Fulcio/Rekor GeoDNS returns an AWS IP
+      # whose :443 serves plain HTTP 400 instead of TLS, breaking
+      # the attest step with "FetchError ... wrong version number".
+      # Pin to the GCP backend (working) via /etc/hosts. Drop once
+      # sigstore fixes their DNS pool; re-test by removing this
+      # step + retrying.
+      - name: Pin sigstore IPs (GeoDNS workaround)
+        run: |
+          echo "34.36.164.164  fulcio.sigstore.dev" >> /etc/hosts
+          echo "34.36.47.134   rekor.sigstore.dev"  >> /etc/hosts
+          getent hosts fulcio.sigstore.dev rekor.sigstore.dev
+
       # Layer A from PLAN-firmware-via-artifacts.md: SLSA build
       # provenance attestation, signed by Sigstore via OIDC, recorded
       # in the public Rekor log. Lets reefy-deploy verify
