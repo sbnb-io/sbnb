@@ -31,6 +31,20 @@ except ImportError:
     sys.exit(1)
 
 
+def _part_dev(disk, partnum):
+    """Build the kernel partition device path for a given disk + part
+    number. The kernel inserts a 'p' separator when the disk name ends
+    in a digit (NVMe: nvme0n1 -> nvme0n1p1; mmcblk: mmcblk0 -> mmcblk0p1)
+    and omits it otherwise (SATA/USB: sda -> sda1).
+
+    Historically this code ran only on USB-boot devices (sda) so the
+    naive f'{disk}{n}' worked. Booting Reefy on NVMe (EC2, mini-PC with
+    M.2 boot) needs the 'p'."""
+    if disk and disk[-1].isdigit():
+        return f'{disk}p{partnum}'
+    return f'{disk}{partnum}'
+
+
 def log(source, msg):
     """Log a message to stdout (captured by journald → reefy-log-publisher → MQTT)."""
     print(f"[{source}] {msg}")
@@ -648,7 +662,7 @@ class MQTTReconciler:
             print("[mqtt] ERROR: Cannot find reefy USB disk")
             return
 
-        key_part = f'{disk}3'
+        key_part = _part_dev(disk, 3)
 
         # Ensure the keyfile partition slot exists so both the restore
         # scan below (reads existing key bytes, if any) and the
@@ -752,7 +766,7 @@ class MQTTReconciler:
         # snapshot-backed backups too).
         if _log:
             _log('Creating USB data partition...')
-        data_part = f'{disk}4'
+        data_part = _part_dev(disk, 4)
         if not os.path.exists(data_part):
             subprocess.run(
                 ['parted', '-s', disk, 'mkpart', 'reefy-data', '2050MiB', '100%'],
@@ -1297,7 +1311,7 @@ class MQTTReconciler:
 
         # Regular factory reset: secure wipe
         if usb_disk:
-            key_part = f'{usb_disk}3'
+            key_part = _part_dev(usb_disk, 3)
             if os.path.exists(key_part):
                 try:
                     subprocess.run(
@@ -2745,7 +2759,7 @@ class MQTTReconciler:
         """Find the LUKS key partition on the reefy USB drive (partition 3)."""
         disk, _ = self._find_reefy_disk()
         if disk:
-            key_part = f'{disk}3'
+            key_part = _part_dev(disk, 3)
             if os.path.exists(key_part):
                 return key_part
         return None

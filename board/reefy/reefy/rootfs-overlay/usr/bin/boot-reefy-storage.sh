@@ -26,6 +26,20 @@ LUKS_KEY_SIZE=44
 # both if you change one.
 REEFY_DATA_MOUNT_OPTS="noatime,commit=60,discard"
 
+# Build the kernel partition device path for a given disk + part
+# number. Kernel inserts a 'p' separator when the disk name ends in
+# a digit (NVMe: nvme0n1 -> nvme0n1p1, mmcblk: mmcblk0 -> mmcblk0p1).
+# USB-boot (sda) skips the separator. Same helper as reefy-efi +
+# reefy-mqtt-reconciler::_part_dev.
+part_dev() {
+    DISKARG="$1"
+    PARTNUM="$2"
+    case "$DISKARG" in
+        *[0-9]) echo "${DISKARG}p${PARTNUM}" ;;
+        *)      echo "${DISKARG}${PARTNUM}" ;;
+    esac
+}
+
 # Hostname-setting moved out of boot-reefy-storage.sh — it used to run
 # here before virtio_net had finished probing, causing ~25% of QEMU
 # boots to land with a random hostname (see 2026-04 investigation).
@@ -110,8 +124,8 @@ setup_data_partition() {
     PARENT_NAME=$(lsblk -no PKNAME "${REEFY_DEV}" 2>/dev/null)
     [ -z "${PARENT_NAME}" ] && return 0
     REEFY_DISK="/dev/${PARENT_NAME}"
-    KEY_PART="${REEFY_DISK}3"
-    DATA_PART="${REEFY_DISK}4"
+    KEY_PART="$(part_dev "${REEFY_DISK}" 3)"
+    DATA_PART="$(part_dev "${REEFY_DISK}" 4)"
 
     mkdir -p "${REEFY_DATA_MNT}"
     modprobe dm_crypt 2>/dev/null || true
