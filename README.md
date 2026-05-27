@@ -32,6 +32,16 @@ Run multiple OpenClaw and Hermes agents. Spin them up for different tasks, fully
 
 <p align="center"><img src="images/feature-agents.gif" alt="Adding multiple OpenClaw and Hermes agents in the Reefy dashboard" width="480"></p>
 
+### Bring your own OpenAI or xAI subscription
+
+Don't pay per token - point OpenClaw and Hermes at your flat-rate OpenAI Codex or xAI Grok subscription instead. Reefy hides the OAuth dance: a one-time device-code flow attaches your account, and the agents get a local `OPENAI_BASE_URL` to talk to. The proxy refreshes access tokens, persists rotated refresh tokens, and handles 401/403 retry transparently - the agents see nothing but the standard OpenAI HTTP API.
+
+<p align="center"><img src="images/feature-byos.gif" alt="Hermes agent on Reefy calling an OpenAI/xAI subscription through the local LLM proxy" width="480"></p>
+
+The proxy is its own open-source project, MIT-licensed: [**reefyai/reefy-llm-proxy**](https://github.com/reefyai/reefy-llm-proxy).
+
+> Use at your own risk and have a read of your provider's terms - allowed use varies by plan.
+
 ### Move to a new PC like it's a new iPhone
 
 Your apps and data are encrypted and backed up to the cloud. Use Adopt & Clone to restore everything and get back to work in minutes.
