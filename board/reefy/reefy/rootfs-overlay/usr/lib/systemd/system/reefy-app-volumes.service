@@ -1,0 +1,27 @@
+[Unit]
+Description=Mount reefy per-app volumes before containers
+Documentation=https://github.com/reefyai/reefy
+# Runs after the base data LV is mounted, before docker. dockerd
+# restores restart:unless-stopped containers the instant it starts; if
+# that races the reconciler's per-app LV mounts, a container bind-mounts
+# the empty pre-mount directory (the boot mount-race that shadowed
+# Frigate's config). This oneshot mounts all per-app volumes from the
+# persisted desired-state first; docker.service (After=this, via a
+# drop-in) cannot start until it exits.
+After=reefy-storage.service
+Requires=reefy-storage.service
+Before=docker.service
+RequiresMountsFor=/mnt/reefy-data
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/reefy-mqtt-reconciler --boot-mount
+# Bound the barrier: a wedged volume mount must not hang the device
+# forever. With the docker drop-in using Wants= (not Requires=), a
+# timeout here degrades to "docker starts anyway" and the reconciler's
+# runtime reconcile re-mounts stragglers, rather than blocking boot.
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
