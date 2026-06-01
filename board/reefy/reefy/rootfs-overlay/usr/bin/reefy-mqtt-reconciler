@@ -12,6 +12,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1800,6 +1801,16 @@ class MQTTReconciler:
         if app_volumes:
             self._prepare_app_dirs(app_volumes, backup_paths=backup_paths)
 
+        # Reclaim per-volume LVs whose owning instance was deleted since
+        # the last apply, so a removed app frees its pool space instead of
+        # leaking an orphaned LV. Keyed on the *instance* being gone (uuid
+        # from the path absent from the whole new state), NOT merely on a
+        # path leaving the backup set - a volume that only un-backup-flags
+        # keeps live data and must never be reclaimed. e2e covers both
+        # directions.
+        if old_state is not None:
+            self._reclaim_deleted_instance_lvs(old_state, state, backup_paths)
+
         # Apply backup config (SSH keys, config, systemd timer)
         if backup:
             self._apply_backup_config(backup)
@@ -2352,6 +2363,67 @@ class MQTTReconciler:
                 except Exception as e:
                     log('mqtt', f'[boot-mount] {p} failed: {e}')
         log('mqtt', f'[boot-mount] processed {len(seen)} volume(s) before docker')
+
+    def _reclaim_deleted_instance_lvs(self, old_state, new_state,
+                                       new_backup_paths):
+        """lvremove per-volume LVs whose owning app instance is gone from
+        desired-state, so a deleted app frees its pool space instead of
+        leaking an orphaned LV.
+
+        Conservative by design (this deletes data): derive the set of
+        'live' instance uuids from EVERY apps/<uuid>/ path anywhere in the
+        new state (backup paths + app_volumes + instances, scanned
+        recursively, schema-agnostic). Only reclaim a removed backup path
+        whose uuid is in NONE of them - i.e. the whole instance is gone.
+        A volume that merely un-backup-flags keeps its uuid live elsewhere
+        in the state, so it is never reclaimed."""
+        if not self._has_thin_pool():
+            return
+        old_paths = set()
+        for inst in (old_state.get('backup') or {}).get('instances', []):
+            old_paths.update(inst.get('paths', []))
+        removed = old_paths - new_backup_paths
+        if not removed:
+            return
+
+        def _collect_uuids(obj, acc):
+            if isinstance(obj, str):
+                m = re.search(r'/apps/([^/]+)/', obj)
+                if m:
+                    acc.add(m.group(1))
+            elif isinstance(obj, dict):
+                for v in obj.values():
+                    _collect_uuids(v, acc)
+            elif isinstance(obj, (list, tuple, set)):
+                for v in obj:
+                    _collect_uuids(v, acc)
+
+        live = set()
+        for p in new_backup_paths:
+            _collect_uuids(p, live)
+        _collect_uuids(new_state.get('app_volumes', []), live)
+        _collect_uuids(new_state.get('instances', []), live)
+
+        with self._volume_lock():
+            for path in removed:
+                m = re.search(r'/apps/([^/]+)/', path)
+                uuid = m.group(1) if m else None
+                if not uuid or uuid in live:
+                    continue  # instance still present (or unparseable) - keep
+                lv_name = self._volume_lv_name(path)
+                if subprocess.run(
+                        ['lvs', f'{self.STORAGE_VG}/{lv_name}'],
+                        capture_output=True).returncode != 0:
+                    continue  # LV already gone
+                subprocess.run(['umount', path],
+                               capture_output=True, text=True, timeout=30)
+                r = subprocess.run(
+                    ['lvremove', '-f', f'{self.STORAGE_VG}/{lv_name}'],
+                    capture_output=True, text=True, timeout=30)
+                if r.returncode == 0:
+                    log('mqtt', f'Reclaimed LV {lv_name} (instance {uuid} deleted)')
+                else:
+                    log('mqtt', f'lvremove {lv_name} failed: {r.stderr}')
 
     # Dev/e2e ESP-injected key path. boot-reefy-init.sh copies this
     # file into the reefy user's authorized_keys on every boot so e2e
