@@ -388,15 +388,24 @@ def collect_storage() -> list[dict]:
         except OSError:
             pass
 
-    # LVM thin-pool fill (relevant for backup capacity)
+    # LVM thin-pool fill: data % AND metadata % (either hitting 100%
+    # locks the pool and can knock filesystems read-only). Drives the
+    # backend's pool-fullness admin alarm + the backup capacity guard.
+    # NB: pool LV is reefy/reefy_pool - the old 'reefy-thinpool' name
+    # never matched, so this metric was silently never collected.
     try:
         r = subprocess.run(
-            ['lvs', '--noheadings', '--nosuffix', '-o', 'data_percent',
-             'reefy/reefy-thinpool'],
+            ['lvs', '--noheadings', '--nosuffix',
+             '-o', 'data_percent,metadata_percent', 'reefy/reefy_pool'],
             capture_output=True, text=True, timeout=2)
         if r.returncode == 0 and r.stdout.strip():
-            samples.append({'name': 'reefy_lvm_pool_pct',
-                            'value': float(r.stdout.strip())})
+            parts = r.stdout.split()
+            if parts:
+                samples.append({'name': 'reefy_lvm_pool_pct',
+                                'value': float(parts[0])})
+            if len(parts) > 1:
+                samples.append({'name': 'reefy_lvm_pool_meta_pct',
+                                'value': float(parts[1])})
     except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
         pass
 
