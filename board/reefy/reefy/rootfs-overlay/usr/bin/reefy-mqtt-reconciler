@@ -2024,6 +2024,13 @@ class MQTTReconciler:
     STORAGE_VG = 'reefy'
     STORAGE_LV = 'reefy_default'
     STORAGE_POOL = 'reefy_pool'
+    # Thick LV (real blocks, OUTSIDE the thin pool) holding
+    # /mnt/reefy-data/state. Guarantees control-plane state always has
+    # space even when the app pool hits 100% - so comms/identity survive
+    # a full disk instead of going read-only with everything else.
+    # Created only on fresh provision (the pool takes 100%FREE, so an
+    # existing device has no room and keeps state on reefy_default).
+    STATE_LV = 'reefy_state'
     # Legacy LV name used by pre-thin-pool installs — keep mounting it
     # for backward compat; those devices don't get the snapshot-backed
     # backup path until they factory-reset into the new layout.
@@ -2096,6 +2103,10 @@ class MQTTReconciler:
                 _log(f'Using legacy {self.LEGACY_STORAGE_LV} LV (no thin pool)')
             return 'legacy'
 
+        # Thick state LV BEFORE the pool: the pool grabs 100%FREE, so
+        # the guaranteed-space state LV must be carved out first.
+        self._ensure_state_lv(_log)
+
         # Fresh VG or upgrade from empty VG — create thin pool + default LV.
         pool_path = f'{self.STORAGE_VG}/{self.STORAGE_POOL}'
         pool_exists = subprocess.run(
@@ -2142,6 +2153,47 @@ class MQTTReconciler:
         if _log:
             _log(f'Created thin LV {self.STORAGE_LV} (ext4)')
         return 'new'
+
+    def _ensure_state_lv(self, _log=None):
+        """Create the thick state LV (reefy_state), sized
+        min(4 GiB, 10% of VG), floored at 256 MiB. Real blocks outside
+        the thin pool so /mnt/reefy-data/state is never starved by a full
+        app pool. Idempotent; must run BEFORE the pool's 100%FREE.
+        State's footprint is tiny+bounded, so a fixed-but-generous size
+        is correct (unlike unbounded app data); growable later via
+        lvextend + xfs_growfs if a disk is added."""
+        lv_path = f'/dev/{self.STORAGE_VG}/{self.STATE_LV}'
+        if os.path.exists(lv_path):
+            return
+        vg_raw = subprocess.run(
+            ['vgs', '--noheadings', '--nosuffix', '--units', 'b',
+             '-o', 'vg_size', self.STORAGE_VG],
+            capture_output=True, text=True, timeout=10).stdout.strip()
+        try:
+            vg_bytes = int(float(vg_raw))
+        except (ValueError, TypeError):
+            vg_bytes = 0
+        gib = 1024 ** 3
+        size = min(4 * gib, vg_bytes // 10) if vg_bytes else gib
+        size = max(size, 256 * 1024 * 1024)  # floor for tiny media
+        size_mib = size // (1024 * 1024)
+        r = subprocess.run(
+            ['lvcreate', '-L', f'{size_mib}M', '-n', self.STATE_LV,
+             self.STORAGE_VG],
+            capture_output=True, text=True, timeout=15)
+        if r.returncode != 0:
+            if _log:
+                _log(f'state LV create failed: {r.stderr}')
+            return
+        r = subprocess.run(
+            ['mkfs.xfs', '-q', lv_path],
+            capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            if _log:
+                _log(f'state LV mkfs.xfs failed: {r.stderr}')
+            return
+        if _log:
+            _log(f'Created thick state LV {self.STATE_LV} ({size_mib} MiB)')
 
     def _active_reefy_lv_path(self):
         """Return the path to mount as /mnt/reefy-data: reefy_default
