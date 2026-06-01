@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""Data-plane executable: serves the io.reefy.Reconciler Varlink
+interface and does the storage/container work, no MQTT. Imports the
+shared reconciler module and runs only the data-plane entrypoint -
+this file IS the data-plane role, no flags, no role-branching."""
+
+import sys
+
+sys.path.insert(0, '/usr/lib/reefy')
+
+from reefy_reconciler import main_data_plane
+
+main_data_plane()

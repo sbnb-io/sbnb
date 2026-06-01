@@ -16,7 +16,7 @@ RequiresMountsFor=/mnt/reefy-data
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/bin/reefy-mqtt-reconciler --boot-mount
+ExecStart=/usr/bin/reefy-mount-volumes
 # Bound the barrier: a wedged volume mount must not hang the device
 # forever. With the docker drop-in using Wants= (not Requires=), a
 # timeout here degrades to "docker starts anyway" and the reconciler's
