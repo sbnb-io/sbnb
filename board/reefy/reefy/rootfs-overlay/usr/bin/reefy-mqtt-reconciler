@@ -2244,13 +2244,18 @@ class MQTTReconciler:
                 if r.returncode != 0:
                     log('mqtt', f'per-volume LV create failed for {path}: {r.stderr}')
                     return
+                # XFS for new volumes: dynamic inode allocation -> no
+                # ~58 GiB upfront inode-table tax that ext4 paid on these
+                # full-pool-size LVs. (No -L: the LV name exceeds XFS's
+                # 12-char label limit; the dm path identifies it anyway.)
+                # Existing ext4 LVs are untouched - we only mkfs on create.
                 r = subprocess.run(
-                    ['mkfs.ext4', '-q', '-L', lv_name, lv_path],
+                    ['mkfs.xfs', '-q', lv_path],
                     capture_output=True, text=True, timeout=60)
                 if r.returncode != 0:
-                    log('mqtt', f'mkfs.ext4 failed on {lv_path}: {r.stderr}')
+                    log('mqtt', f'mkfs.xfs failed on {lv_path}: {r.stderr}')
                     return
-                log('mqtt', f'Created per-volume LV {lv_name} for {path}')
+                log('mqtt', f'Created per-volume LV {lv_name} (xfs) for {path}')
 
             os.makedirs(path, mode=0o755, exist_ok=True)
             # mount can stall on thin-pool metadata ops when the pool's
