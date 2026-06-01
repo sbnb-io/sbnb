@@ -2374,16 +2374,21 @@ class MQTTReconciler:
             return
         self._volume_caps = state.get('volume_caps') or {}
         backup = state.get('backup') or {}
-        seen = set()
+        # Mount backup-flagged paths AND fair-share-capped paths (e.g.
+        # Frigate media) - both get a per-volume LV that must be mounted
+        # before docker.
+        paths = list(self._volume_caps.keys())
         for inst in backup.get('instances', []):
-            for p in inst.get('paths', []):
-                if not p or p in seen:
-                    continue
-                seen.add(p)
-                try:
-                    self._ensure_volume_lv(p)
-                except Exception as e:
-                    log('mqtt', f'[boot-mount] {p} failed: {e}')
+            paths.extend(inst.get('paths', []))
+        seen = set()
+        for p in paths:
+            if not p or p in seen:
+                continue
+            seen.add(p)
+            try:
+                self._ensure_volume_lv(p)
+            except Exception as e:
+                log('mqtt', f'[boot-mount] {p} failed: {e}')
         log('mqtt', f'[boot-mount] processed {len(seen)} volume(s) before docker')
 
     def _reclaim_deleted_instance_lvs(self, old_state, new_state,
@@ -3007,8 +3012,11 @@ class MQTTReconciler:
             uid = vol.get('uid', 0)
             if not path:
                 continue
-            # Per-volume thin LV provisioning (only for backup paths).
-            if path in backup_paths:
+            # Per-volume thin LV: for backup paths (so reefy-backup can
+            # snapshot them) AND for fair-share-capped paths (so a cap
+            # can be enforced via the LV's virtualsize - e.g. Frigate
+            # media, which isn't backed up but must not eat the pool).
+            if path in backup_paths or path in self._volume_caps:
                 self._ensure_volume_lv(path)
             if not os.path.exists(path):
                 os.makedirs(path, mode=0o755, exist_ok=True)
