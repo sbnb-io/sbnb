@@ -64,6 +64,11 @@ class MQTTReconciler:
         self._apply_lock = threading.Lock()
         self._pending_state = None  # queued apply_state payload when lock is held
         self._subscribe_confirmed = threading.Event()
+        # path -> fair-share cap (% of pool) for contained volumes. Set
+        # from desired-state on each apply / boot-mount; consumed by
+        # _ensure_volume_lv to size the thin LV's virtualsize so one
+        # volume (e.g. Frigate media) can't consume the whole pool.
+        self._volume_caps = {}
 
     def wait_for_config(self):
         """Block until MQTT configuration becomes available."""
@@ -1753,6 +1758,10 @@ class MQTTReconciler:
             log('mqtt', f'ERROR: Failed to read desired state: {e}')
             return False
 
+        # Fair-share volume caps (path -> % of pool) consumed by
+        # _ensure_volume_lv when it creates per-volume LVs.
+        self._volume_caps = state.get('volume_caps') or {}
+
         # Apply hostname (or revert to default if not specified)
         hostname = state.get('hostname', '') or self._get_default_hostname()
         self._set_hostname(hostname)
@@ -2300,8 +2309,20 @@ class MQTTReconciler:
                     ['lvs', '--noheadings', '--nosuffix', '--units', 'b',
                      '-o', 'lv_size', f'{self.STORAGE_VG}/{self.STORAGE_POOL}'],
                     capture_output=True, text=True, timeout=10).stdout.strip()
+                # Fair-share containment: a capped volume's thin LV gets a
+                # virtualsize of pct% of the pool. A thin LV can't map more
+                # physical blocks than its virtualsize, so this guarantees a
+                # (100-pct)% pool margin and ENOSPC lands only on this
+                # volume - no quota machinery needed. Uncapped -> full pool.
+                vsize = pool_size
+                cap_pct = self._volume_caps.get(path)
+                if cap_pct:
+                    try:
+                        vsize = str(int(int(pool_size) * float(cap_pct) / 100))
+                    except (ValueError, TypeError):
+                        vsize = pool_size
                 r = subprocess.run(
-                    ['lvcreate', '--thin', '--virtualsize', f'{pool_size}B',
+                    ['lvcreate', '--thin', '--virtualsize', f'{vsize}B',
                      '-n', lv_name, f'{self.STORAGE_VG}/{self.STORAGE_POOL}'],
                     capture_output=True, text=True, timeout=15)
                 if r.returncode != 0:
@@ -2351,6 +2372,7 @@ class MQTTReconciler:
         except (OSError, json.JSONDecodeError) as e:
             log('mqtt', f'[boot-mount] cannot read desired-state: {e}')
             return
+        self._volume_caps = state.get('volume_caps') or {}
         backup = state.get('backup') or {}
         seen = set()
         for inst in backup.get('instances', []):
