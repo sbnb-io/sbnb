@@ -70,6 +70,64 @@ class EventPublishingTests(unittest.TestCase):
         self.assertIsNone(self.dp._send_command_response(None, status='running'))
 
 
+class RunDataPlaneWiringTests(unittest.TestCase):
+    """Regression for the Varlink handler binding: a class body cannot see
+    run_data_plane's local `service`, so `class _Handler: service = service`
+    raised NameError and the data plane never served (device stuck adopting)."""
+
+    def test_run_data_plane_wires_handler_without_nameerror(self):
+        import sys
+        import types as _types
+
+        served = {}
+
+        fake = _types.ModuleType('varlink')
+
+        class _FakeService:
+            def __init__(self, **kw):
+                pass
+
+            def interface(self, name):
+                def deco(cls):
+                    return cls
+                return deco
+
+        class _FakeRequestHandler:
+            pass
+
+        class _FakeThreadingServer:
+            def __init__(self, addr, handler):
+                served['addr'] = addr
+                served['handler'] = handler
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def serve_forever(self):
+                served['served'] = True
+                raise KeyboardInterrupt  # stop the otherwise-infinite serve
+
+        fake.Service = _FakeService
+        fake.RequestHandler = _FakeRequestHandler
+        fake.ThreadingServer = _FakeThreadingServer
+
+        sys.modules['varlink'] = fake
+        try:
+            dp = _make_dp()
+            with mock.patch.object(dataplane.os, 'makedirs'), \
+                    self.assertRaises(KeyboardInterrupt):
+                dp.run_data_plane()
+        finally:
+            del sys.modules['varlink']
+
+        self.assertTrue(served.get('served'), 'serve_forever was never reached')
+        # The handler must carry the service (the bug NameError'd before this).
+        self.assertIs(served['handler'].service.__class__, _FakeService)
+
+
 class DataSideBehaviorTests(unittest.TestCase):
     def setUp(self):
         self.dp = _make_dp()

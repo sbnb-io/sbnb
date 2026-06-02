@@ -555,8 +555,13 @@ class DataPlane:
             def RestartInstance(self, instance_uuid, _more=False):
                 return recon._dp_restart_instance(instance_uuid)
 
+        # Bind the service as a class attr after definition: a class body
+        # can't see run_data_plane's local `service` (class bodies don't
+        # close over enclosing-function locals), so `service = service`
+        # inside the body raises NameError.
         class _Handler(varlink.RequestHandler):
-            service = service
+            pass
+        _Handler.service = service
 
         # Clean up a stale socket from a previous run.
         sock_path = self.VARLINK_ADDRESS.split(':', 1)[1]
