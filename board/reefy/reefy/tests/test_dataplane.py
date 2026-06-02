@@ -234,5 +234,68 @@ class DataSideBehaviorTests(unittest.TestCase):
         self.assertEqual(self.dp.topic_prefix, 'reefy')
 
 
+class BootApplyTests(unittest.TestCase):
+    """_boot_apply: the data plane owns boot reconcile (control no longer
+    does an offline apply that raced the Varlink socket). Runs under the
+    apply lock so a state control forwards on connect serializes behind
+    it instead of racing."""
+
+    def setUp(self):
+        self.dp = _make_dp()
+
+    def test_applies_when_saved_state_exists(self):
+        with mock.patch.object(dataplane.os.path, 'exists', return_value=True), \
+                mock.patch.object(self.dp, '_apply_desired_state') as ad, \
+                mock.patch.object(self.dp, '_apply_state') as as_:
+            self.dp._boot_apply()
+        ad.assert_called_once()
+        as_.assert_not_called()
+        self.assertTrue(self.dp._apply_lock.acquire(blocking=False),
+                        'apply lock not released after boot apply')
+
+    def test_noop_when_no_saved_state(self):
+        with mock.patch.object(dataplane.os.path, 'exists', return_value=False), \
+                mock.patch.object(self.dp, '_apply_desired_state') as ad:
+            self.dp._boot_apply()
+        ad.assert_not_called()
+
+    def test_skips_when_apply_lock_held(self):
+        # A forwarded apply already holds the lock -> boot apply must not
+        # run concurrently (it would race the same mounts/compose work).
+        self.dp._apply_lock.acquire()
+        try:
+            with mock.patch.object(dataplane.os.path, 'exists',
+                                   return_value=True), \
+                    mock.patch.object(self.dp, '_apply_desired_state') as ad:
+                self.dp._boot_apply()
+            ad.assert_not_called()
+        finally:
+            self.dp._apply_lock.release()
+
+    def test_drains_state_queued_during_boot_apply(self):
+        # State control forwarded while boot apply held the lock must be
+        # applied after, not dropped.
+        forwarded = {'forwarded': True}
+
+        def queue_during(*a, **k):
+            self.dp._pending_state = forwarded
+
+        with mock.patch.object(dataplane.os.path, 'exists', return_value=True), \
+                mock.patch.object(self.dp, '_apply_desired_state',
+                                  side_effect=queue_during), \
+                mock.patch.object(self.dp, '_apply_state') as as_:
+            self.dp._boot_apply()
+        as_.assert_called_once_with(forwarded)
+        self.assertIsNone(self.dp._pending_state)
+
+    def test_apply_failure_is_non_fatal_and_releases_lock(self):
+        with mock.patch.object(dataplane.os.path, 'exists', return_value=True), \
+                mock.patch.object(self.dp, '_apply_desired_state',
+                                  side_effect=RuntimeError('boom')):
+            self.dp._boot_apply()  # must not raise
+        self.assertTrue(self.dp._apply_lock.acquire(blocking=False),
+                        'apply lock not released after a failed boot apply')
+
+
 if __name__ == '__main__':
     unittest.main()

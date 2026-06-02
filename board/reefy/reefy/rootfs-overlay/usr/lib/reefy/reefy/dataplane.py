@@ -522,21 +522,36 @@ class DataPlane:
         # Re-publish status with updated ip_addr so dashboard reflects changes
         self._publish_status('online', 'Network config updated')
 
+    def _boot_apply(self):
+        """Apply persisted desired state once on startup, under the apply
+        lock. The data plane owns boot reconcile (control just calls home);
+        running it under the lock means a state control forwards on connect
+        serializes behind this instead of racing it. Drains any state
+        queued while we held the lock."""
+        if not os.path.exists(self.DESIRED_STATE_PATH):
+            return
+        if not self._apply_lock.acquire(blocking=False):
+            # A forwarded apply is already running; it covers current state.
+            return
+        try:
+            self._apply_desired_state()
+            while self._pending_state is not None:
+                pending = self._pending_state
+                self._pending_state = None
+                self._apply_state(pending)
+        except Exception as e:
+            log('mqtt', f'[data-plane] initial apply failed: {e}')
+        finally:
+            self._apply_lock.release()
+
     def run_data_plane(self):
-        """Data-plane entrypoint (reefy-reconciler): apply persisted desired
-        state once, then serve the Varlink interface forever. No MQTT -
+        """Data-plane entrypoint (reefy-reconciler): serve the Varlink
+        interface and apply persisted desired state on startup. No MQTT -
         the control process owns that. Storage/container work runs here,
         isolated so a crash/OOM/hang can't take down control. Each Varlink
         call is handled in its own thread (ThreadingServer)."""
         import varlink
         os.makedirs('/run/reefy', exist_ok=True)
-        # The data plane owns reconcile: apply saved state on startup.
-        # Control forwards later changes over Varlink.
-        try:
-            if os.path.exists(self.DESIRED_STATE_PATH):
-                self._apply_desired_state()
-        except Exception as e:
-            log('mqtt', f'[data-plane] initial apply failed: {e}')
 
         service = varlink.Service(
             vendor='Reefy', product='reconciler', version='1',
@@ -570,6 +585,15 @@ class DataPlane:
                 os.unlink(sock_path)
         except OSError:
             pass
+
+        # Apply saved state on startup in the BACKGROUND so the Varlink
+        # socket binds immediately below. Control starts ~4s earlier (to
+        # call home) and forwards state on connect; previously the socket
+        # only opened after this boot apply finished its docker compose up,
+        # so control's forward raced a missing socket ("data plane
+        # unreachable"). _boot_apply holds the apply lock, so a forwarded
+        # apply serializes behind it rather than running concurrently.
+        threading.Thread(target=self._boot_apply, daemon=True).start()
 
         log('mqtt', f'[data-plane] serving Varlink at {self.VARLINK_ADDRESS}')
         with varlink.ThreadingServer(self.VARLINK_ADDRESS, _Handler) as server:

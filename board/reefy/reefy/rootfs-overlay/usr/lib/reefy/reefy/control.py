@@ -1659,13 +1659,12 @@ class ControlPlane:
         if self.transport == 'websockets':
             self.client.ws_set_options(path=self.ws_path)
 
-        # Apply saved desired state in background — MQTT connect loop
-        # starts immediately in parallel
-        if self.mode == 'device' and os.path.exists(self.DESIRED_STATE_PATH):
-            self._run_in_background(
-                self._apply_and_publish, args=('Applying saved desired state (offline)',),
-                skip_msg="apply already running, skipping offline apply"
-            )
+        # No boot-time apply here: the data plane owns boot reconcile (it
+        # applies saved desired state on its own startup, offline-capable,
+        # no socket needed). Control's job at boot is to call home fast.
+        # On connect, on_connect forwards the current state over Varlink.
+        # (A control-side offline apply would race the data-plane socket,
+        # which isn't up until the data plane finishes its own boot apply.)
 
         # Start network monitor thread for instant MQTT reconnect
         self._start_network_monitor()
