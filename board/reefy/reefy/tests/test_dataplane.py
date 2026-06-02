@@ -29,6 +29,18 @@ class ImportIsolationTests(unittest.TestCase):
         self.assertNotIn('_is_data_plane', src)
         self.assertNotIn('_varlink_call', src)
 
+    def test_reclaim_runs_after_compose_up(self):
+        # lvremove of a deleted instance's volume must happen AFTER docker
+        # compose up --remove-orphans tears down its container; before it,
+        # the volume is still bind-mounted and lvremove fails "filesystem
+        # in use", leaking the LV (the e2e backup-lvm failure / prod bug).
+        src = open(dataplane.__file__).read()
+        self.assertLess(
+            src.index('_apply_compose(compose)'),
+            src.index('_reclaim_deleted_instance_lvs('),
+            'reclaim must run after compose up (container teardown), '
+            'else lvremove fails "filesystem in use"')
+
 
 class EventPublishingTests(unittest.TestCase):
     def setUp(self):

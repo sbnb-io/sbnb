@@ -305,16 +305,6 @@ class DataPlane:
         if app_volumes:
             self._storage._prepare_app_dirs(app_volumes, backup_paths=backup_paths)
 
-        # Reclaim per-volume LVs whose owning instance was deleted since
-        # the last apply, so a removed app frees its pool space instead of
-        # leaking an orphaned LV. Keyed on the *instance* being gone (uuid
-        # from the path absent from the whole new state), NOT merely on a
-        # path leaving the backup set - a volume that only un-backup-flags
-        # keeps live data and must never be reclaimed. e2e covers both
-        # directions.
-        if old_state is not None:
-            self._storage._reclaim_deleted_instance_lvs(old_state, state, backup_paths)
-
         # Apply backup config (SSH keys, config, systemd timer)
         if backup:
             self._apply_backup_config(backup)
@@ -350,6 +340,19 @@ class DataPlane:
             if not self._apply_compose(compose):
                 self._publish_stage('error', 'docker compose up failed')
                 return False
+
+        # Reclaim per-volume LVs whose owning instance was deleted since the
+        # last apply, so a removed app frees its pool space instead of
+        # leaking an orphaned LV. Done AFTER docker compose up (which runs
+        # with --remove-orphans) so the deleted instance's container is gone
+        # and no longer bind-mounts the volume - otherwise umount/lvremove
+        # fail with "filesystem in use" and the LV leaks (the prod bug, and
+        # the e2e backup-lvm failure). Keyed on the *instance* being gone
+        # (uuid absent from the whole new state), NOT merely a path leaving
+        # the backup set - a volume that only un-backup-flags keeps live
+        # data and must never be reclaimed. e2e covers both directions.
+        if old_state is not None:
+            self._storage._reclaim_deleted_instance_lvs(old_state, state, backup_paths)
 
         return True
 
