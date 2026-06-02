@@ -25,7 +25,7 @@ except ImportError:
     print("[log-publisher] ERROR: paho-mqtt not installed")
     sys.exit(1)
 
-DEFAULT_UNITS = ['reefy-mqtt']
+DEFAULT_UNITS = ['reefy-control']
 MQTT_CONF_PATH = '/mnt/reefy/mqtt/mqtt.conf'
 STATE_DIR = '/mnt/reefy-data/state'
 SUBSCRIBE_TIMEOUT = 1800  # 30 min

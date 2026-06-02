@@ -3,9 +3,9 @@ Description=Reefy data-plane reconciler (Varlink)
 Documentation=https://github.com/reefyai/reefy
 # Owns the storage/container work (mount, compose, restore, backup),
 # served over a unix-socket Varlink interface to the control process
-# (reefy-mqtt). Runs in its own process so a crash/OOM/hang in that work
+# (reefy-control). Runs in its own process so a crash/OOM/hang in that work
 # cannot take down the MQTT/control path. Needs storage mounted + docker
-# (it runs docker compose). reefy-mqtt deliberately does NOT depend on
+# (it runs docker compose). reefy-control deliberately does NOT depend on
 # this unit - control must stay up even if the data plane is wedged; its
 # Varlink calls retry.
 After=reefy-storage.service reefy-app-volumes.service docker.service

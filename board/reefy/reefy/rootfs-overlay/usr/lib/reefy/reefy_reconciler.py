@@ -564,7 +564,7 @@ class MQTTReconciler:
         time.sleep(0.5)
 
         self.client.disconnect()
-        subprocess.run(['systemctl', 'restart', 'reefy-mqtt.service'])
+        subprocess.run(['systemctl', 'restart', 'reefy-control.service'])
         return "Provisioned"
 
     def _write_fresh_keyfile(self, key_part, _log=None):
@@ -1033,7 +1033,7 @@ class MQTTReconciler:
 
             if result.returncode == 0:
                 print("[mqtt] Bootstrap complete, restarting with device cert")
-                subprocess.run(['systemctl', 'restart', 'reefy-mqtt.service'])
+                subprocess.run(['systemctl', 'restart', 'reefy-control.service'])
             else:
                 log('mqtt', f'Bootstrap failed: {result.returncode}')
         except Exception as e:
@@ -1245,7 +1245,7 @@ class MQTTReconciler:
                 os.remove(path)
         log('mqtt', 'Identity reset — restarting in bootstrap mode')
         self.client.disconnect()
-        subprocess.run(['systemctl', 'restart', 'reefy-mqtt.service'])
+        subprocess.run(['systemctl', 'restart', 'reefy-control.service'])
         return "Identity reset"
 
     def _find_usb_disk(self):
@@ -3934,14 +3934,14 @@ Environment=MQTT_PORT={self.port}
 
 
 # Role entrypoints. There is no runtime role-branching here: each role
-# has its own executable in /usr/bin (reefy-mqtt-reconciler /
+# has its own executable in /usr/bin (reefy-control /
 # reefy-reconciler / reefy-mount-volumes) that imports this module and
 # calls exactly one of these. The process is unambiguously its role -
 # the file it ran IS the role - and `ps`/systemd show it directly.
 
 
 def main_control():
-    """Control plane (reefy-mqtt-reconciler): the MQTT loop. Delegates
+    """Control plane (reefy-control): the MQTT loop. Delegates
     storage/container work to the data plane over Varlink; never does it
     locally, so a crash/OOM/hang there can't take down comms."""
     try:
@@ -3987,5 +3987,5 @@ def main_boot_mount():
 if __name__ == '__main__':
     sys.stderr.write(
         'reefy_reconciler is a module; run one of the role executables: '
-        'reefy-mqtt-reconciler, reefy-reconciler, reefy-mount-volumes\n')
+        'reefy-control, reefy-reconciler, reefy-mount-volumes\n')
     sys.exit(2)

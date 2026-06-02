@@ -6,7 +6,7 @@ collects device metrics on aligned wall-clock boundaries (:00 sharp
 per minute) and publishes them to MQTT for the cloud backend to
 ingest into the time-series store.
 
-Why a separate service from reefy-mqtt (the reconciler):
+Why a separate service from reefy-control (the reconciler):
 - Single responsibility (collect + publish, nothing else)
 - Failure isolation (a metrics-collector bug can't break state apply)
 - Independently restartable

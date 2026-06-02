@@ -19,7 +19,7 @@ echo "[boot-confirm] Booted from non-default slot Boot${CURRENT} (default: Boot$
 # Wait for critical services to be active (up to 300s).
 # For each service: if it has failed, abort immediately (don't confirm the slot).
 # If not yet active, keep waiting. Only confirm when all are active.
-CRITICAL_SERVICES="reefy-storage reefy-mqtt"
+CRITICAL_SERVICES="reefy-storage reefy-control"
 WAITED=0
 while [ $WAITED -lt 300 ]; do
     ALL_OK=true

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Apply MAC-derived hostname. Fired by udev on physical NIC add + by a
 # 180s OnBootSec timer backstop, and run synchronously as part of
-# reefy-hostname.service (which reefy-mqtt depends on — so boot blocks
+# reefy-hostname.service (which reefy-control depends on — so boot blocks
 # here until a hostname is set OR until we time out). Always exits 0:
 # downstream services must still start even if we can't find a NIC —
 # they'll just register with whatever hostname we managed to set (or
@@ -57,7 +57,7 @@ done
 
 if [ -z "${NAME}" ]; then
     # No NIC and no /etc/machine-id — leave hostname as kernel default.
-    # reefy-mqtt will still register, just with "buildroot". Log loudly.
+    # reefy-control will still register, just with "buildroot". Log loudly.
     echo "[reefy] hostname: no NIC and no machine-id; leaving as $(hostname)" >&2
     exit 0
 fi

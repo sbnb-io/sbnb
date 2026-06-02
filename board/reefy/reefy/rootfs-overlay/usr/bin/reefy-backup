@@ -155,7 +155,7 @@ def gc_orphan_snapshots():
 
 
 def volume_lv_name(path):
-    """Mirror reefy-mqtt-reconciler._volume_lv_name (must produce the
+    """Mirror reefy_reconciler._volume_lv_name (must produce the
     same name for the same path so the snapshot picks the right LV)."""
     h = hashlib.sha1(path.encode()).hexdigest()[:12]
     return f'reefy_backup_{h}'

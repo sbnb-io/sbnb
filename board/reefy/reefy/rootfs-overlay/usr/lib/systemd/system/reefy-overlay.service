@@ -2,10 +2,10 @@
 Description=Apply persistent rootfs overlay from /mnt/reefy-data/overlay
 # Needs /mnt/reefy-data mounted; reefy-storage.service handles that.
 After=local-fs.target reefy-storage.service
-# Run before reefy-mqtt so any wrapper binaries the overlay drops in
-# (typically /usr/local/bin/<tool>) are in PATH when reefy-mqtt
+# Run before reefy-control so any wrapper binaries the overlay drops in
+# (typically /usr/local/bin/<tool>) are in PATH when reefy-control
 # collects hw_info via subprocess('lspci' / 'lsblk' / etc).
-Before=reefy-mqtt.service
+Before=reefy-control.service
 # No-op when no overlay configured - keeps untouched-fleet boot path
 # identical to before the unit shipped.
 ConditionPathIsDirectory=/mnt/reefy-data/overlay

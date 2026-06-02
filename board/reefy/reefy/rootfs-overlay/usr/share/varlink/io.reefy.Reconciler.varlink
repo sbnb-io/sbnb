@@ -1,4 +1,4 @@
-# Reefy data-plane reconciler interface. The control plane (reefy-mqtt)
+# Reefy data-plane reconciler interface. The control plane (reefy-control)
 # calls these over a unix-socket Varlink connection; the data plane
 # (reefy-reconciler) executes the storage/container work in its own
 # process so a crash/OOM/hang in that work cannot take down control.
