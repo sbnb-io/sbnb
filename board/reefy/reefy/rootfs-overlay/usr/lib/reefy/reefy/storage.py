@@ -233,7 +233,7 @@ class Storage:
                                capture_output=True, timeout=10)
                 subprocess.run(['umount', '/mnt/reefy-data'], capture_output=True, timeout=5)
                 result = subprocess.run(
-                    ['mount', '-o', self.REEFY_DATA_MOUNT_OPTS, lv_path, '/mnt/reefy-data'],
+                    ['mount', '-o', self._fs_mount_opts(lv_path), lv_path, '/mnt/reefy-data'],
                     capture_output=True, timeout=10)
                 if result.returncode == 0:
                     subprocess.run(['cp', '-a', '/tmp/reefy-state', '/mnt/reefy-data/state'],
@@ -299,7 +299,7 @@ class Storage:
                        capture_output=True, timeout=10)
         subprocess.run(['umount', '/mnt/reefy-data'], capture_output=True, timeout=5)
         subprocess.run(
-            ['mount', '-o', self.REEFY_DATA_MOUNT_OPTS, lv_path, '/mnt/reefy-data'],
+            ['mount', '-o', self._fs_mount_opts(lv_path), lv_path, '/mnt/reefy-data'],
             capture_output=True, timeout=10)
         subprocess.run(['cp', '-a', '/tmp/reefy-state', '/mnt/reefy-data/state'],
                        capture_output=True, timeout=10)
@@ -349,7 +349,7 @@ class Storage:
                        capture_output=True, timeout=10)
         subprocess.run(['umount', '/mnt/reefy-data'], capture_output=True, timeout=5)
         subprocess.run(
-            ['mount', '-o', self.REEFY_DATA_MOUNT_OPTS, lv_path, '/mnt/reefy-data'],
+            ['mount', '-o', self._fs_mount_opts(lv_path), lv_path, '/mnt/reefy-data'],
             capture_output=True, timeout=10)
         subprocess.run(['cp', '-a', '/tmp/reefy-state', '/mnt/reefy-data/state'],
                        capture_output=True, timeout=10)
@@ -383,7 +383,8 @@ class Storage:
             with any new PVs if present).
           - Thin pool `reefy_pool` exists, occupying essentially all
             VG free space (100%FREE).
-          - Thin LV `reefy_default` exists (ext4, mountable at
+          - Thin LV `reefy_default` exists (xfs on fresh create; legacy
+            devices keep ext4, mountable at
             /mnt/reefy-data).
 
         Legacy compat: if the VG already has the old flat `data` LV
@@ -475,13 +476,20 @@ class Storage:
             capture_output=True, text=True, timeout=15)
         if result.returncode != 0:
             raise RuntimeError(f'default LV create failed: {result.stderr}')
+        # XFS for the main data LV too (not just per-app volumes): it
+        # holds docker's overlay2 (many small layer files) and any
+        # uncapped media - the exact dynamic-inode case XFS was chosen
+        # for (reefy_default + media was the ~58 GiB inode-tax victim in
+        # the coral incident). Existing ext4 devices are never reformatted
+        # (we only mkfs on create); the mount path is fs-type-aware so
+        # both XFS (new) and ext4 (legacy) mount correctly.
         result = subprocess.run(
-            ['mkfs.ext4', '-L', 'reefy-data', default_lv_path],
+            ['mkfs.xfs', '-q', '-L', 'reefy-data', default_lv_path],
             capture_output=True, text=True, timeout=120)
         if result.returncode != 0:
-            raise RuntimeError(f'mkfs.ext4 failed: {result.stderr}')
+            raise RuntimeError(f'mkfs.xfs failed: {result.stderr}')
         if _log:
-            _log(f'Created thin LV {self.STORAGE_LV} (ext4)')
+            _log(f'Created thin LV {self.STORAGE_LV} (xfs)')
         return 'new'
 
     def _ensure_state_lv(self, _log=None):

@@ -177,9 +177,19 @@ setup_data_partition() {
                     for lv in "${STORAGE_LV}" "${LEGACY_STORAGE_LV}"; do
                         lv_path="/dev/${STORAGE_VG}/${lv}"
                         [ -e "${lv_path}" ] || continue
-                        if mount -o "${REEFY_DATA_MOUNT_OPTS}" "${lv_path}" \
+                        # fs-aware opts: a fresh reefy_default is XFS, which
+                        # rejects ext4's commit= (mount would fail); legacy
+                        # ext4 devices keep the full opts. Detect per-LV so
+                        # both layouts mount correctly across an upgrade.
+                        LV_FS=$(blkid -o value -s TYPE "${lv_path}" 2>/dev/null)
+                        if [ "${LV_FS}" = "xfs" ]; then
+                            LV_OPTS="noatime,discard"
+                        else
+                            LV_OPTS="${REEFY_DATA_MOUNT_OPTS}"
+                        fi
+                        if mount -o "${LV_OPTS}" "${lv_path}" \
                                 "${REEFY_DATA_MNT}" 2>/dev/null; then
-                            echo "[reefy] Mounted LVM LV ${lv} at ${REEFY_DATA_MNT}"
+                            echo "[reefy] Mounted LVM LV ${lv} (${LV_FS:-ext4}) at ${REEFY_DATA_MNT}"
                             mount_state_lv
                             return 0
                         fi
