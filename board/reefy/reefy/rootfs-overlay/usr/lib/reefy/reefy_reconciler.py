@@ -564,7 +564,7 @@ class MQTTReconciler:
         """Run WiFi scan and return results via command response RPC."""
         print("[mqtt] WiFi scan requested")
         try:
-            iface = self._find_wireless_iface()
+            iface = shared.find_wireless_iface()
             if not iface:
                 self._send_command_response(cmd_id, message=json.dumps({'networks': []}))
                 return
@@ -591,17 +591,6 @@ class MQTTReconciler:
             log('mqtt', f'WiFi scan error: {e}')
             self._send_command_response(cmd_id, status='error', error=str(e))
 
-    def _find_wireless_iface(self):
-        """Find the first wireless interface name."""
-        try:
-            result = subprocess.run(['iw', 'dev'], capture_output=True, text=True, timeout=5)
-            for line in result.stdout.split('\n'):
-                line = line.strip()
-                if line.startswith('Interface '):
-                    return line.split()[1]
-        except Exception:
-            pass
-        return None
 
     def _parse_iw_scan(self, output):
         """Parse iw dev scan output into structured list."""
@@ -637,7 +626,7 @@ class MQTTReconciler:
     def _handle_wifi_status(self, payload=None, cmd_id=None):
         """Get WiFi status and publish via command response."""
         try:
-            iface = self._find_wireless_iface()
+            iface = shared.find_wireless_iface()
             status = {'interface': iface, 'connected': False}
             if not iface:
                 self._send_command_response(cmd_id, status='success',
@@ -1392,25 +1381,7 @@ class MQTTReconciler:
 
     DESIRED_STATE_PATH = shared.DESIRED_STATE_PATH
 
-    @staticmethod
-    def _get_default_hostname():
-        """Get MAC-based default hostname via shared helper script."""
-        result = subprocess.run(
-            ['reefy-derive-hostname'], capture_output=True, text=True
-        )
-        return result.stdout.strip()
 
-    def _set_hostname(self, hostname):
-        """Set system hostname via hostnamectl and restart avahi for mDNS."""
-        current = subprocess.run(
-            ['hostname'], capture_output=True, text=True
-        ).stdout.strip()
-        if current == hostname:
-            return
-        subprocess.run(['hostnamectl', 'set-hostname', hostname], capture_output=True)
-        # Restart avahi so it re-announces the new hostname on the network
-        subprocess.run(['systemctl', 'restart', 'avahi-daemon'], capture_output=True)
-        log('mqtt', f'Hostname changed: {current} → {hostname}')
 
     def _apply_state(self, payload):
         """Handle apply_state command — save and apply desired state."""
@@ -1445,7 +1416,7 @@ class MQTTReconciler:
         old_state: previous desired state for diff-based cleanup (None on boot).
         Returns True on success, False on failure."""
         if not os.path.exists(self.DESIRED_STATE_PATH):
-            self._set_hostname(self._get_default_hostname())
+            shared.set_hostname(shared.get_default_hostname())
             return True
 
         # Control plane: forward the apply to the data-plane process over
@@ -1478,8 +1449,8 @@ class MQTTReconciler:
         self._storage.set_volume_caps(self._volume_caps)
 
         # Apply hostname (or revert to default if not specified)
-        hostname = state.get('hostname', '') or self._get_default_hostname()
-        self._set_hostname(hostname)
+        hostname = state.get('hostname', '') or shared.get_default_hostname()
+        shared.set_hostname(hostname)
 
         # Apply WiFi config (before compose — connectivity may be needed for image pulls)
         wifi = state.get('wifi')
@@ -1667,7 +1638,7 @@ class MQTTReconciler:
             # WiFi was configured but now removed — disconnect
             log('mqtt', f'Disconnecting WiFi (was: {old_ssid})')
             try:
-                iface = self._find_wireless_iface()
+                iface = shared.find_wireless_iface()
                 if iface:
                     subprocess.run(
                         ['systemctl', 'stop', f'wpa_supplicant@{iface}'],
@@ -2485,7 +2456,7 @@ Environment=MQTT_PORT={self.port}
         # is in flight. After compose returns we emit either 'running'
         # (clears any prior failed badge) or 'failed' (sticks with the
         # last few output lines as the error message).
-        instance_uuids = self._instance_uuids_in_compose(compose)
+        instance_uuids = shared.instance_uuids_in_compose(compose)
         for iuuid in instance_uuids:
             self._publish_health_status(iuuid, 'starting')
 
@@ -2588,29 +2559,6 @@ Environment=MQTT_PORT={self.port}
 
         return False
 
-    def _wait_for_tunnel_health(self, timeout=60, interval=2):
-        """Poll reefy-proxy at localhost:8080 until it responds or timeout."""
-        import urllib.request
-        import urllib.error
-
-        log('reconciler', f'{'Waiting for tunnel proxy health...'}')
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            try:
-                req = urllib.request.Request('http://localhost:8080/', method='HEAD')
-                urllib.request.urlopen(req, timeout=2)
-                print("[mqtt] Tunnel proxy health check passed")
-                return
-            except urllib.error.HTTPError:
-                # Any HTTP response (404, 403, etc.) means proxy is alive
-                print("[mqtt] Tunnel proxy health check passed")
-                return
-            except (urllib.error.URLError, OSError):
-                # Connection refused / timeout — proxy not ready yet
-                pass
-            time.sleep(interval)
-
-        log('mqtt', f'Tunnel proxy health check timed out after {timeout}s')
 
     def _get_state_hash(self):
         """Compute hash of the saved desired state file.
@@ -2711,14 +2659,6 @@ Environment=MQTT_PORT={self.port}
             extra['message'] = (message or '')[:500]
         self._publish_instance_event(iuuid, 'health', status, extra=extra)
 
-    def _instance_uuids_in_compose(self, compose):
-        """Extract user instance uuids from compose services, filtering
-        out infrastructure containers (cloudflared, reefy-proxy) and
-        the auxiliary -tty pairs."""
-        services = (compose or {}).get('services') or {}
-        return [k for k in services.keys()
-                if not k.endswith('-tty')
-                and k not in ('cloudflared', 'reefy-proxy')]
 
     # Log publishing handled by reefy-log-publisher (journald → MQTT)
     # All logging goes through log() helper → print() → journald
@@ -2732,7 +2672,7 @@ Environment=MQTT_PORT={self.port}
             return
         self._publish_status('online', 'Device connected')
         self._publish_state_hash()
-        self._wait_for_tunnel_health()
+        shared.wait_for_tunnel_health()
         self._publish_stage('ready', 'Device ready')
         log('reconciler', f'{'Device ready'}')
 
