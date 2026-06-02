@@ -4,11 +4,12 @@ Focus: the event-routing fix (data plane publishes via reefy-mqtt-pub,
 non-fatally) and the data-side behavior of the split methods."""
 
 import json
+import os
 import unittest
 from unittest import mock
 
 import _bootstrap  # noqa: F401  (puts the reefy package on sys.path)
-from reefy import dataplane
+from reefy import dataplane, shared
 from reefy.storage import Storage
 
 
@@ -126,6 +127,97 @@ class RunDataPlaneWiringTests(unittest.TestCase):
         self.assertTrue(served.get('served'), 'serve_forever was never reached')
         # The handler must carry the service (the bug NameError'd before this).
         self.assertIs(served['handler'].service.__class__, _FakeService)
+
+
+class ApplyPathTests(unittest.TestCase):
+    """Drive the full data-side apply path (the Varlink ApplyState entry)
+    through _apply_state_command -> _apply_state -> _apply_desired_state
+    with workers + syscalls mocked. This is the local stand-in for the
+    e2e golden_path's reconcile step: it executes the exact orchestration
+    that crashed at runtime before (mode check, class-scope, dispatch),
+    catching that whole class of never-run-code bugs in milliseconds."""
+
+    REPRESENTATIVE_STATE = {
+        'hostname': 'reefy-test',
+        'wifi': None,
+        'storage': None,
+        'network': None,
+        'user_ssh_keys': ['ssh-ed25519 AAAAC3Nz'],
+        'instances': [{'uuid': 'i1', 'name': 'app1'}],
+        'app_volumes': [{'host_path': '/mnt/reefy-data/apps/i1/data'}],
+        'backup': {'instances': [
+            {'instance_uuid': 'i1', 'paths': ['/mnt/reefy-data/apps/i1/data']}]},
+        'files': [],
+        'compose': {'services': {'i1': {'image': 'x'}, 'i1-tty': {'image': 'y'}}},
+        'volume_caps': {'/mnt/reefy-data/apps/i1/media': 90},
+    }
+
+    def _apply(self, dp):
+        """Run an ApplyState with every worker/storage/host call mocked,
+        a temp desired-state path, and return (result, mocks)."""
+        import tempfile
+        tmpdir = tempfile.mkdtemp()
+        dp.DESIRED_STATE_PATH = os.path.join(tmpdir, 'desired-state.json')
+        patches = {
+            '_apply_wifi': mock.DEFAULT, '_apply_network': mock.DEFAULT,
+            '_apply_user_ssh_keys': mock.DEFAULT, '_sync_app_users': mock.DEFAULT,
+            '_apply_backup_config': mock.DEFAULT, '_apply_files': mock.DEFAULT,
+            '_apply_storage': mock.DEFAULT,
+        }
+        with mock.patch.multiple(dp, **patches) as m, \
+                mock.patch.object(dp, '_restore_instances', return_value=set()), \
+                mock.patch.object(dp, '_apply_compose', return_value=True) as m_compose, \
+                mock.patch.object(dp._storage, 'set_volume_caps') as m_caps, \
+                mock.patch.object(dp._storage, '_prepare_app_dirs') as m_dirs, \
+                mock.patch.object(shared, 'set_hostname') as m_host, \
+                mock.patch.object(shared, 'get_default_hostname', return_value='def-host'):
+            res = dp._dp_apply_state(json.dumps(self.REPRESENTATIVE_STATE))
+        return res, {**m, 'compose': m_compose, 'caps': m_caps,
+                     'dirs': m_dirs, 'host': m_host}
+
+    def test_apply_state_succeeds_end_to_end(self):
+        res, _ = self._apply(_make_dp())
+        # Returns the Varlink success shape - no NameError/AttributeError/
+        # mode crash anywhere in the dispatch.
+        self.assertEqual(res, {'ok': True, 'error': ''})
+
+    def test_apply_dispatches_each_section(self):
+        res, m = self._apply(_make_dp())
+        self.assertEqual(res['ok'], True)
+        m['host'].assert_called_with('reefy-test')          # hostname applied
+        m['caps'].assert_called()                           # caps pushed to storage
+        m['_apply_user_ssh_keys'].assert_called_once_with(['ssh-ed25519 AAAAC3Nz'])
+        m['_sync_app_users'].assert_called_once_with([{'uuid': 'i1', 'name': 'app1'}])
+        m['dirs'].assert_called_once()                      # app dirs prepared
+        m['compose'].assert_called_once()                   # compose applied
+
+    def test_compose_failure_publishes_error_stage(self):
+        import tempfile
+        dp = _make_dp()
+        dp.DESIRED_STATE_PATH = os.path.join(tempfile.mkdtemp(), 'ds.json')
+        with mock.patch.multiple(
+                dp, _apply_wifi=mock.DEFAULT, _apply_network=mock.DEFAULT,
+                _apply_user_ssh_keys=mock.DEFAULT, _sync_app_users=mock.DEFAULT,
+                _apply_backup_config=mock.DEFAULT, _apply_files=mock.DEFAULT,
+                _apply_storage=mock.DEFAULT), \
+                mock.patch.object(dp, '_restore_instances', return_value=set()), \
+                mock.patch.object(dp, '_apply_compose', return_value=False), \
+                mock.patch.object(dp, '_publish_event') as m_emit, \
+                mock.patch.object(dp._storage, 'set_volume_caps'), \
+                mock.patch.object(dp._storage, '_prepare_app_dirs'), \
+                mock.patch.object(shared, 'set_hostname'), \
+                mock.patch.object(shared, 'get_default_hostname', return_value='d'):
+            res = dp._dp_apply_state(json.dumps(self.REPRESENTATIVE_STATE))
+        # The data plane emits a stage=error event on compose failure.
+        stages = [c.args[1].get('stage')
+                  for c in m_emit.call_args_list if c.args and c.args[0] == 'stage']
+        self.assertIn('error', stages)
+        # KNOWN GAP (deferred follow-up): _dp_apply_state still returns ok=True
+        # on an apply that returned False - only an *exception* yields not-ok -
+        # so control would publish 'ready' despite the failure. The hardening
+        # (propagate apply failure as not-ok) is the separate observability
+        # follow-up.
+        self.assertTrue(res['ok'])
 
 
 class DataSideBehaviorTests(unittest.TestCase):
