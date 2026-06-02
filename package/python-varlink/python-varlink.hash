@@ -1,4 +1,4 @@
-# sha256 from https://pypi.org/pypi/varlink/json
-sha256  4070cb2c250f459bcea88c99bb08203d65e4f41241a4f68942969f25123b0a31  varlink-31.0.0.tar.gz
+# sha256 of the GitHub tag tarball (varlink 32.x is not published to PyPI)
+sha256  d31aee370ded51bc2bf8ad375fcd8b4cf3b7587306c0e05cffb45026ea9b9c40  python-varlink-32.1.0.tar.gz
 # Locally computed
 sha256  b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1  LICENSE.txt

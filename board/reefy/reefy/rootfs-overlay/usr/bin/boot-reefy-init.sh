@@ -37,7 +37,7 @@ setup_device_credentials() {
     PASSWORD=$(cat "${PASSWORD_FILE}" 2>/dev/null) || return 0
     [ -z "${PASSWORD}" ] && return 0
 
-    # Users to configure — keep in sync with DEVICE_USERS in reefy-mqtt-reconciler
+    # Users to configure - keep in sync with DEVICE_USERS in reefy.control
     DEVICE_USERS="root reefy"
 
     # Create non-root users if not exists (every boot — rootfs is in RAM).

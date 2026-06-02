@@ -1,0 +1,5 @@
+# Python bytecode caches. Critical: rootfs-overlay/ is copied verbatim
+# into the firmware image (BR2_ROOTFS_OVERLAY), so a stray __pycache__
+# under the reefy lib would be baked onto the device.
+__pycache__/
+*.pyc

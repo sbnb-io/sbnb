@@ -1,9 +1,9 @@
 [Unit]
 Description=reefy MAC-derived hostname
-# Pulled into boot by services that need the hostname (reefy-mqtt
+# Pulled into boot by services that need the hostname (reefy-control
 # primarily) via their Wants= + After=. Runs synchronously; the
 # script inside blocks up to 120s for a physical NIC to appear, so
-# reefy-mqtt doesn't register with "buildroot" while virtio_net is
+# reefy-control doesn't register with "buildroot" while virtio_net is
 # still probing.
 
 [Service]

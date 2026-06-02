@@ -1,0 +1,48 @@
+name: reefy python unit tests
+
+# Fast, host-only checks for the reefy device-agent package. Runs on
+# ubuntu-latest (no self-hosted firmware runner): syntax, the paho
+# isolation property, and the stdlib-unittest suite. The full
+# behavioural gate is the e2e suite in reefy-service.
+on:
+  push:
+    paths:
+      - 'board/reefy/reefy/rootfs-overlay/usr/lib/reefy/**'
+      - 'board/reefy/reefy/rootfs-overlay/usr/bin/reefy-control'
+      - 'board/reefy/reefy/rootfs-overlay/usr/bin/reefy-reconciler'
+      - 'board/reefy/reefy/rootfs-overlay/usr/bin/reefy-mount-volumes'
+      - 'board/reefy/reefy/tests/**'
+      - '.github/workflows/python-tests.yml'
+  pull_request:
+    paths:
+      - 'board/reefy/reefy/rootfs-overlay/usr/lib/reefy/**'
+      - 'board/reefy/reefy/tests/**'
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: py_compile package + entry scripts
+        run: |
+          ov=board/reefy/reefy/rootfs-overlay/usr/lib/reefy
+          bin=board/reefy/reefy/rootfs-overlay/usr/bin
+          python -m py_compile \
+            "$ov/reefy/__init__.py" "$ov/reefy/shared.py" "$ov/reefy/storage.py" \
+            "$ov/reefy/dataplane.py" "$ov/reefy/control.py" \
+            "$bin/reefy-control" "$bin/reefy-reconciler" "$bin/reefy-mount-volumes"
+
+      - name: paho isolation (data-plane/boot-mount/shared import without paho)
+        # paho-mqtt is deliberately NOT installed here: storage, dataplane
+        # and shared must import cleanly so the data-plane and boot-mount
+        # processes never need it. Only reefy.control may require paho.
+        run: |
+          ov=board/reefy/reefy/rootfs-overlay/usr/lib/reefy
+          python -c "import sys; sys.path.insert(0,'$ov'); import reefy.shared, reefy.storage, reefy.dataplane; print('paho-free import OK')"
+
+      - name: unit tests
+        run: python -m unittest discover -s board/reefy/reefy/tests -v

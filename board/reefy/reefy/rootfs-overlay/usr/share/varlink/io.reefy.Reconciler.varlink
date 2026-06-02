@@ -1,0 +1,15 @@
+# Reefy data-plane reconciler interface. The control plane (reefy-control)
+# calls these over a unix-socket Varlink connection; the data plane
+# (reefy-reconciler) executes the storage/container work in its own
+# process so a crash/OOM/hang in that work cannot take down control.
+interface io.reefy.Reconciler
+
+# Save + apply desired state (mount per-app volumes, docker compose up,
+# restore). `state` is the desired-state JSON as a string.
+method ApplyState(state: string) -> (ok: bool, error: string)
+
+# Snapshot + borg-archive one instance's backup volumes.
+method BackupNow(instance_uuid: string) -> (ok: bool, message: string, error: string)
+
+# docker compose up --force-recreate one instance.
+method RestartInstance(instance_uuid: string) -> (ok: bool, error: string)

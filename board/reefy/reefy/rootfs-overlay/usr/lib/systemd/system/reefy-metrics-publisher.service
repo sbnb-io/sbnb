@@ -1,7 +1,7 @@
 [Unit]
 Description=Reefy Metrics Publisher (system + container + GPU stats → MQTT)
-After=reefy-mqtt.service docker.service
-Wants=reefy-mqtt.service
+After=reefy-control.service docker.service
+Wants=reefy-control.service
 
 [Service]
 Type=simple

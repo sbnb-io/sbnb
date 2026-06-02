@@ -55,3 +55,27 @@ DOCKER_UNIT="${TARGET_DIR}/usr/lib/systemd/system/docker.service"
 if [ -f "${DOCKER_UNIT}" ]; then
   sed -i 's/network-online.target //g' "${DOCKER_UNIT}"
 fi
+
+# Prune orphaned reefy files from the (cached, incrementally-built)
+# TARGET_DIR. Buildroot's rootfs-overlay copy is ADDITIVE: a file
+# deleted/renamed in the overlay still lingers in TARGET_DIR from prior
+# builds and ships anyway. This stranded a stale reefy-mqtt.service plus
+# the old /usr/bin/reefy-mqtt-reconciler monolith, which ran a duplicate
+# MQTT client (same client-id as reefy-control) and broke adoption.
+# Scope strictly to OUR files so we never touch buildroot/package files
+# (which would force a full, slow rebuild). NOTE: a blanket "remove any
+# reefy-* not in the overlay" is unsafe - reefy-cmds/reefy-ttyd units are
+# package-provided, not overlay-provided.
+OVERLAY_DIR="$(cd "$(dirname "$0")" && pwd)/rootfs-overlay"
+
+# /usr/lib/reefy is wholly ours: mirror it so deleted modules (e.g. the
+# old reefy_reconciler.py monolith) can't linger.
+if command -v rsync >/dev/null 2>&1 && [ -d "${OVERLAY_DIR}/usr/lib/reefy" ]; then
+  rsync -a --delete "${OVERLAY_DIR}/usr/lib/reefy/" "${TARGET_DIR}/usr/lib/reefy/"
+fi
+
+# Files this branch renamed away from (overlay no longer ships them).
+# Append future renamed/deleted reefy files here.
+rm -f "${TARGET_DIR}/usr/bin/reefy-mqtt-reconciler" \
+      "${TARGET_DIR}/usr/lib/systemd/system/reefy-mqtt.service" \
+      "${TARGET_DIR}/etc/systemd/system/multi-user.target.wants/reefy-mqtt.service"

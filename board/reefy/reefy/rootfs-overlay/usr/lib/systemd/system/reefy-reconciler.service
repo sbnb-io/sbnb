@@ -1,0 +1,32 @@
+[Unit]
+Description=Reefy data-plane reconciler (Varlink)
+Documentation=https://github.com/reefyai/reefy
+# Owns the storage/container work (mount, compose, restore, backup),
+# served over a unix-socket Varlink interface to the control process
+# (reefy-control). Runs in its own process so a crash/OOM/hang in that work
+# cannot take down the MQTT/control path. Needs storage mounted + docker
+# (it runs docker compose). reefy-control deliberately does NOT depend on
+# this unit - control must stay up even if the data plane is wedged; its
+# Varlink calls retry.
+After=reefy-storage.service reefy-app-volumes.service docker.service
+Wants=docker.service
+RequiresMountsFor=/mnt/reefy-data
+
+[Service]
+Type=simple
+# Same resource policy intent as the control reconciler: yield CPU to
+# user apps under contention; no memory cap (cryptsetup/borg children
+# auto-tune large working sets - a hard cap would kill them mid-op).
+CPUWeight=20
+Environment=PYTHONUNBUFFERED=1
+Environment=LANG=en_US.UTF-8
+Environment=LC_ALL=en_US.UTF-8
+ExecStart=/usr/bin/reefy-reconciler
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=reefy-reconciler
+
+[Install]
+WantedBy=multi-user.target

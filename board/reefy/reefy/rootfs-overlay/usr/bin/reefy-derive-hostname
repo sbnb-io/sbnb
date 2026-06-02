@@ -1,7 +1,7 @@
 #!/bin/sh
 # Output the MAC-based default hostname (reefy-<mac>).
 # Used by reefy-hostname.service (udev + timer triggered) and by
-# reefy-mqtt-reconciler to avoid divergence.
+# reefy.shared to avoid divergence.
 #
 # Only considers physical NICs (ID_BUS in {pci,usb,platform,mmc,sdio}
 # per udev). Avoids docker0, veth, tailscale, bridges. If no physical
