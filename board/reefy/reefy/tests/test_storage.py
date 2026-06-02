@@ -150,5 +150,66 @@ class MountStateLvTests(unittest.TestCase):
         self.assertEqual(cps, [], 'overwrote a non-empty state LV')
 
 
+class ReclaimDeletedInstanceLvsTests(unittest.TestCase):
+    """_reclaim_deleted_instance_lvs: lvremove a deleted instance's volume
+    LVs (the prod LV-leak guard the e2e backup-lvm scenario covers), but
+    KEEP a volume whose instance is still live (merely un-backup-flagged)."""
+
+    def setUp(self):
+        self.s = storage.Storage()
+        self.cfg = '/mnt/reefy-data/apps/i1/config'
+        self.dat = '/mnt/reefy-data/apps/i1/data'
+
+    def _reclaim(self, old_state, new_state, new_backup_paths, lv_present=True):
+        import contextlib
+        removed = []
+
+        def fake_run(cmd, **kw):
+            rc = 0 if (cmd[0] != 'lvs' or lv_present) else 5
+            if cmd[0] == 'lvremove':
+                removed.append(cmd[-1])
+            return types.SimpleNamespace(returncode=rc, stdout='', stderr='')
+
+        with mock.patch.object(self.s, '_has_thin_pool', return_value=True), \
+                mock.patch.object(self.s, '_volume_lock',
+                                  return_value=contextlib.nullcontext()), \
+                mock.patch.object(storage.subprocess, 'run', side_effect=fake_run):
+            self.s._reclaim_deleted_instance_lvs(
+                old_state, new_state, new_backup_paths)
+        return removed
+
+    def _lv(self, path):
+        return f'{self.s.STORAGE_VG}/{self.s._volume_lv_name(path)}'
+
+    def test_reclaims_deleted_instance_volumes(self):
+        old = {'backup': {'instances': [
+            {'instance_uuid': 'i1', 'paths': [self.cfg, self.dat]}]}}
+        new = {'instances': [], 'app_volumes': [],
+               'backup': {'instances': []}}
+        removed = self._reclaim(old, new, set())
+        self.assertCountEqual(removed, [self._lv(self.cfg), self._lv(self.dat)])
+
+    def test_keeps_volume_of_still_live_instance(self):
+        # config leaves the backup set but instance i1 is still live
+        # (present in app_volumes/instances) -> must NOT be reclaimed.
+        old = {'backup': {'instances': [
+            {'instance_uuid': 'i1', 'paths': [self.cfg, self.dat]}]}}
+        new = {'instances': [{'uuid': 'i1'}],
+               'app_volumes': [{'host_path': self.cfg},
+                               {'host_path': self.dat}],
+               'backup': {'instances': [
+                   {'instance_uuid': 'i1', 'paths': [self.dat]}]}}
+        removed = self._reclaim(old, new, {self.dat})
+        self.assertEqual(removed, [], 'reclaimed a still-live instance volume')
+
+    def test_noop_without_thin_pool(self):
+        old = {'backup': {'instances': [
+            {'instance_uuid': 'i1', 'paths': [self.cfg]}]}}
+        with mock.patch.object(self.s, '_has_thin_pool', return_value=False), \
+                mock.patch.object(storage.subprocess, 'run') as run:
+            self.s._reclaim_deleted_instance_lvs(old, {}, set())
+        run.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

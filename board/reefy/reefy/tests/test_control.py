@@ -28,5 +28,25 @@ class BootApplyRegressionTests(unittest.TestCase):
         self.assertNotIn('skipping offline apply', src)
 
 
+class StateOwnershipRegressionTests(unittest.TestCase):
+    def test_control_never_writes_desired_state(self):
+        # The data plane is the SOLE writer of desired-state.json: it reads
+        # the prior file as old_state for diff-based cleanup (LV reclaim,
+        # static-IP removal) before overwriting. Control writing the file
+        # first clobbered that read (old_state == new_state -> reclaim a
+        # no-op, the e2e backup-lvm failure). Control must only forward
+        # state over Varlink, never persist it.
+        src = _control_src()
+        self.assertNotIn("DESIRED_STATE_PATH, 'w'", src)
+        self.assertNotIn('Saved desired state', src)
+
+    def test_control_resyncs_via_reconcile(self):
+        # On connect, control asks the data plane to re-apply its own saved
+        # state via the Reconcile Varlink call, rather than reading
+        # desired-state.json and forwarding it.
+        src = _control_src()
+        self.assertIn("_varlink_call('Reconcile')", src)
+
+
 if __name__ == '__main__':
     unittest.main()

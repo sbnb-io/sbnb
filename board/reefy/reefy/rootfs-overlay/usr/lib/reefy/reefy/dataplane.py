@@ -523,26 +523,12 @@ class DataPlane:
         self._publish_status('online', 'Network config updated')
 
     def _boot_apply(self):
-        """Apply persisted desired state once on startup, under the apply
-        lock. The data plane owns boot reconcile (control just calls home);
-        running it under the lock means a state control forwards on connect
-        serializes behind this instead of racing it. Drains any state
-        queued while we held the lock."""
-        if not os.path.exists(self.DESIRED_STATE_PATH):
-            return
-        if not self._apply_lock.acquire(blocking=False):
-            # A forwarded apply is already running; it covers current state.
-            return
-        try:
-            self._apply_desired_state()
-            while self._pending_state is not None:
-                pending = self._pending_state
-                self._pending_state = None
-                self._apply_state(pending)
-        except Exception as e:
-            log('mqtt', f'[data-plane] initial apply failed: {e}')
-        finally:
-            self._apply_lock.release()
+        """Apply persisted desired state once on startup (thread target).
+        The data plane owns boot reconcile (control just calls home); same
+        code path as the on-reconnect Reconcile so the two never diverge.
+        Running under the apply lock means a state control forwards while
+        the data plane is still booting serializes behind this."""
+        self._dp_reconcile()
 
     def run_data_plane(self):
         """Data-plane entrypoint (reefy-reconciler): serve the Varlink
@@ -563,6 +549,9 @@ class DataPlane:
         class _Reconciler:
             def ApplyState(self, state, _more=False):
                 return recon._dp_apply_state(state)
+
+            def Reconcile(self, _more=False):
+                return recon._dp_reconcile()
 
             def BackupNow(self, instance_uuid, _more=False):
                 return recon._dp_backup_now(instance_uuid)
@@ -606,6 +595,30 @@ class DataPlane:
         except Exception as e:
             log('mqtt', f'[data-plane] ApplyState failed: {e}')
             return {'ok': False, 'error': str(e)[:500]}
+
+    def _dp_reconcile(self):
+        """Re-apply the data plane's own saved desired state (re-sync).
+        The data plane owns desired-state.json; control calls this on
+        reconnect instead of reading the file. Runs under the apply lock
+        (serializes with command applies); drains any state queued while
+        held. `applied` is False when there was no saved state - the apply
+        then just resets the hostname to its default."""
+        had_state = os.path.exists(self.DESIRED_STATE_PATH)
+        if not self._apply_lock.acquire(blocking=False):
+            # A command apply is already running; it covers current state.
+            return {'ok': True, 'applied': had_state, 'error': ''}
+        try:
+            self._apply_desired_state()  # no saved state -> resets hostname
+            while self._pending_state is not None:
+                pending = self._pending_state
+                self._pending_state = None
+                self._apply_state(pending)
+        except Exception as e:
+            log('mqtt', f'[data-plane] reconcile failed: {e}')
+            return {'ok': False, 'applied': had_state, 'error': str(e)[:500]}
+        finally:
+            self._apply_lock.release()
+        return {'ok': True, 'applied': had_state, 'error': ''}
 
     def _dp_backup_now(self, instance_uuid):
         try:

@@ -427,12 +427,21 @@ class ControlPlane:
     COMPOSE_PATH = shared.COMPOSE_PATH
 
     def _handle_device_connect(self, client):
-        """Device mode: apply saved state, run compose (subscribe done in on_connect)"""
-        if os.path.exists(self.DESIRED_STATE_PATH):
-            self._apply_and_publish('Applying desired state on connect')
-        else:
-            # No saved state (first adoption) — just publish online
+        """Device mode (subscribe already done in on_connect): ask the data
+        plane to re-apply its own saved state (re-sync). The data plane
+        owns desired-state.json - control never reads it. Publish ready
+        when state was applied; if there's none yet (first adoption, before
+        the backend's first apply_state) just go online."""
+        res = self._varlink_call('Reconcile')
+        if not res.get('ok'):
+            log('reconciler', f"reconcile on connect failed: {res.get('error')}")
             self._publish_status('online', 'Device connected')
+            return
+        self._publish_status('online', 'Device connected')
+        if res.get('applied'):
+            self._publish_state_hash()
+            shared.wait_for_tunnel_health()
+            self._publish_stage('ready', 'Device ready')
 
     def on_message(self, client, userdata, msg):
         try:
@@ -1304,48 +1313,26 @@ class ControlPlane:
 
 
     def _apply_state(self, payload):
-        """Handle apply_state command — save and apply desired state."""
+        """Handle apply_state command: forward the new desired state to the
+        data plane, which owns desired-state.json (read-old / write-new)
+        and the apply. Control must NOT write that file here - it would
+        clobber the data plane's old_state read before the data plane
+        diffs, making diff-based cleanup (LV reclaim, static-IP removal) a
+        no-op because old_state would equal new_state."""
         state = payload.get('state', {})
         if not state:
             print("[mqtt] ERROR: Empty state in apply_state")
             return
+        self._apply_and_publish('Applying desired state', state=state)
 
-        # Read old state before overwriting (for diff-based cleanup)
-        old_state = None
-        try:
-            if os.path.exists(self.DESIRED_STATE_PATH):
-                with open(self.DESIRED_STATE_PATH) as f:
-                    old_state = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            pass
-
-        # Save to persistent storage
-        try:
-            with open(self.DESIRED_STATE_PATH, 'w') as f:
-                json.dump(state, f)
-            log('mqtt', f'Saved desired state: {state}')
-        except OSError as e:
-            log('mqtt', f'ERROR: Failed to save desired state: {e}')
-            return
-
-        self._apply_and_publish('Applying desired state', old_state=old_state)
-
-    def _apply_desired_state(self, old_state=None):
-        """Load saved desired state and forward it to the data plane.
-        If no desired state exists, reset hostname to MAC-based default.
-        Returns True on success, False on failure."""
-        if not os.path.exists(self.DESIRED_STATE_PATH):
-            shared.set_hostname(shared.get_default_hostname())
-            return True
-        # Forward the apply to the data-plane process over Varlink (it
-        # owns mount/compose/restore, isolated). _apply_and_publish wraps
-        # this call here in control and publishes the applying/ready stages.
-        try:
-            with open(self.DESIRED_STATE_PATH) as f:
-                state_str = f.read()
-        except OSError:
-            return True
-        res = self._varlink_call('ApplyState', state=state_str)
+    def _apply_desired_state(self, state):
+        """Forward an MQTT command apply to the data plane (it owns
+        mount/compose/restore and persists desired-state.json, reading the
+        prior file as old_state for diff-based cleanup - reclaim, static-IP
+        removal). Control never touches that file. For a re-sync of the
+        saved state (on connect/boot) use Reconcile, not this. Returns True
+        on success, False on failure."""
+        res = self._varlink_call('ApplyState', state=json.dumps(state))
         if not res.get('ok'):
             log('reconciler', f"apply failed: {res.get('error')}")
         return bool(res.get('ok'))
@@ -1541,12 +1528,13 @@ class ControlPlane:
     # Log publishing handled by reefy-log-publisher (journald → MQTT)
     # All logging goes through log() helper → print() → journald
 
-    def _apply_and_publish(self, label='Applying desired state', old_state=None):
+    def _apply_and_publish(self, label='Applying desired state', state=None):
         """Unified apply: publish stages, apply state, publish ready.
-        Used by offline apply, on-connect apply, and MQTT command apply."""
+        on-connect apply passes state=None (re-apply the saved file);
+        an MQTT command apply passes the new desired state to forward."""
         self._publish_stage('applying', label)
         log('reconciler', f'{label}')
-        if not self._apply_desired_state(old_state=old_state):
+        if not self._apply_desired_state(state=state):
             return
         self._publish_status('online', 'Device connected')
         self._publish_state_hash()
