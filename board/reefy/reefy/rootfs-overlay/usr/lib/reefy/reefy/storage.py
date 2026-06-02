@@ -229,21 +229,7 @@ class Storage:
             if lv_path:
                 if _log:
                     _log('Mounting existing internal storage...')
-                subprocess.run(['cp', '-a', '/mnt/reefy-data/state', '/tmp/reefy-state'],
-                               capture_output=True, timeout=10)
-                subprocess.run(['umount', '/mnt/reefy-data'], capture_output=True, timeout=5)
-                result = subprocess.run(
-                    ['mount', '-o', self._fs_mount_opts(lv_path), lv_path, '/mnt/reefy-data'],
-                    capture_output=True, timeout=10)
-                if result.returncode == 0:
-                    subprocess.run(['cp', '-a', '/tmp/reefy-state', '/mnt/reefy-data/state'],
-                                   capture_output=True, timeout=10)
-                    subprocess.run(['rm', '-rf', '/tmp/reefy-state'], capture_output=True, timeout=5)
-                    os.makedirs('/mnt/reefy-data/state/lan', exist_ok=True)
-                    os.makedirs('/mnt/reefy-data/apps', exist_ok=True)
-                    os.makedirs('/mnt/reefy-data/docker', exist_ok=True)
-                    if _log:
-                        _log('Mounted existing internal storage as /mnt/reefy-data')
+                if self._finalize_data_mount(lv_path, _log, 'existing internal'):
                     return
 
         # Try setting up new internal drives if specified in storage config
@@ -294,21 +280,8 @@ class Storage:
             print("[mqtt] ERROR: No reefy LV after USB LVM setup")
             return
 
-        # Migrate state from tmpfs, mount persistent
-        subprocess.run(['cp', '-a', '/mnt/reefy-data/state', '/tmp/reefy-state'],
-                       capture_output=True, timeout=10)
-        subprocess.run(['umount', '/mnt/reefy-data'], capture_output=True, timeout=5)
-        subprocess.run(
-            ['mount', '-o', self._fs_mount_opts(lv_path), lv_path, '/mnt/reefy-data'],
-            capture_output=True, timeout=10)
-        subprocess.run(['cp', '-a', '/tmp/reefy-state', '/mnt/reefy-data/state'],
-                       capture_output=True, timeout=10)
-        subprocess.run(['rm', '-rf', '/tmp/reefy-state'], capture_output=True, timeout=5)
-        os.makedirs('/mnt/reefy-data/state/lan', exist_ok=True)
-        os.makedirs('/mnt/reefy-data/apps', exist_ok=True)
-
-        if _log:
-            _log('Persistent storage ready (USB, LVM thin)')
+        # Migrate state from tmpfs, mount persistent (+ state LV + dirs).
+        self._finalize_data_mount(lv_path, _log, 'USB, LVM thin')
         print("[mqtt] Persistent storage created on USB (LVM thin)")
 
     def _setup_internal_persistent(self, storage_config, key_part, _log=None):
@@ -344,23 +317,9 @@ class Storage:
                 _log('No reefy_default or legacy LV after LVM setup')
             return
 
-        # Migrate state from tmpfs, mount as /mnt/reefy-data
-        subprocess.run(['cp', '-a', '/mnt/reefy-data/state', '/tmp/reefy-state'],
-                       capture_output=True, timeout=10)
-        subprocess.run(['umount', '/mnt/reefy-data'], capture_output=True, timeout=5)
-        subprocess.run(
-            ['mount', '-o', self._fs_mount_opts(lv_path), lv_path, '/mnt/reefy-data'],
-            capture_output=True, timeout=10)
-        subprocess.run(['cp', '-a', '/tmp/reefy-state', '/mnt/reefy-data/state'],
-                       capture_output=True, timeout=10)
-        subprocess.run(['rm', '-rf', '/tmp/reefy-state'], capture_output=True, timeout=5)
-        os.makedirs('/mnt/reefy-data/state/lan', exist_ok=True)
-        os.makedirs('/mnt/reefy-data/apps', exist_ok=True)
-        os.makedirs('/mnt/reefy-data/docker', exist_ok=True)
-
+        # Migrate state from tmpfs, mount persistent (+ state LV + dirs).
         dev_list = ', '.join(devices)
-        if _log:
-            _log(f'Persistent storage ready (internal: {dev_list})')
+        self._finalize_data_mount(lv_path, _log, f'internal: {dev_list}')
         print(f"[mqtt] Persistent storage created on internal drives: {dev_list}")
 
     def _find_usb_disk(self):
@@ -532,6 +491,75 @@ class Storage:
             return
         if _log:
             _log(f'Created thick state LV {self.STATE_LV} ({size_mib} MiB)')
+
+    def _mount_state_lv(self, _log=None):
+        """Mount the thick state LV at /mnt/reefy-data/state (Python port
+        of boot-reefy-storage.sh's mount_state_lv). The redesign provisions
+        in-place with no reboot, so the boot script won't mount the freshly
+        created state LV until the next boot - mount it here so control
+        state lands on the thick LV immediately. Seeds the empty LV from
+        any state already on reefy_default; fs-aware opts; no-op if absent
+        (legacy device) or already mounted (idempotent)."""
+        slv = f'/dev/{self.STORAGE_VG}/{self.STATE_LV}'
+        if not os.path.exists(slv):
+            return
+        sdir = os.path.join(shared.REEFY_DATA_MNT, 'state')
+        if subprocess.run(['mountpoint', '-q', sdir],
+                          capture_output=True).returncode == 0:
+            return
+        os.makedirs(sdir, exist_ok=True)
+        opts = self._fs_mount_opts(slv)
+        # Seed: if the LV is empty but reefy_default's state dir already
+        # has content, copy it into the LV before mounting over it.
+        tmp = tempfile.mkdtemp()
+        try:
+            if subprocess.run(['mount', '-o', opts, slv, tmp],
+                              capture_output=True).returncode == 0:
+                try:
+                    if (not os.listdir(tmp) and os.path.isdir(sdir)
+                            and os.listdir(sdir)):
+                        subprocess.run(['cp', '-a', f'{sdir}/.', f'{tmp}/'],
+                                       capture_output=True, timeout=60)
+                finally:
+                    subprocess.run(['umount', tmp], capture_output=True, timeout=10)
+        finally:
+            try:
+                os.rmdir(tmp)
+            except OSError:
+                pass
+        r = subprocess.run(['mount', '-o', opts, slv, sdir],
+                           capture_output=True, text=True, timeout=10)
+        if _log:
+            _log(f'Mounted {self.STATE_LV} at {sdir}' if r.returncode == 0
+                 else f'state LV mount failed: {r.stderr}')
+
+    def _finalize_data_mount(self, lv_path, _log=None, label=''):
+        """Common provision tail once the reefy_default LV exists: preserve
+        the current (tmpfs/bootstrap) state, mount reefy_default (fs-aware),
+        restore the state, mount the thick state LV, and create the standard
+        data dirs. Shared by every provision path so the on-disk layout is
+        identical and the state LV is mounted at provision (in-place
+        provision never reboots). Returns True if reefy_default mounted."""
+        subprocess.run(['cp', '-a', '/mnt/reefy-data/state', '/tmp/reefy-state'],
+                       capture_output=True, timeout=10)
+        subprocess.run(['umount', '/mnt/reefy-data'], capture_output=True, timeout=5)
+        r = subprocess.run(
+            ['mount', '-o', self._fs_mount_opts(lv_path), lv_path,
+             '/mnt/reefy-data'], capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            if _log:
+                _log(f'reefy_default mount failed: {r.stderr}')
+            return False
+        subprocess.run(['cp', '-a', '/tmp/reefy-state', '/mnt/reefy-data/state'],
+                       capture_output=True, timeout=10)
+        subprocess.run(['rm', '-rf', '/tmp/reefy-state'], capture_output=True, timeout=5)
+        self._mount_state_lv(_log)
+        os.makedirs('/mnt/reefy-data/state/lan', exist_ok=True)
+        os.makedirs('/mnt/reefy-data/apps', exist_ok=True)
+        os.makedirs('/mnt/reefy-data/docker', exist_ok=True)
+        if _log and label:
+            _log(f'Persistent storage ready ({label})')
+        return True
 
     def _active_reefy_lv_path(self):
         """Return the path to mount as /mnt/reefy-data: reefy_default
