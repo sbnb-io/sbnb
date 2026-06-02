@@ -40,6 +40,36 @@ part_dev() {
     esac
 }
 
+# Mount the thick state LV (reefy_state) at /mnt/reefy-data/state, if it
+# exists (new layout). Guarantees control-plane state has space even when
+# the app thin pool is full. No-op on legacy devices (state stays on
+# reefy_default). Seeds a freshly-created (empty) LV from any existing
+# state on reefy_default before mounting, so we never shadow it. Run
+# after reefy_default is mounted at /mnt/reefy-data, before any service
+# reads state. XFS opts (noatime,discard) - no ext4 commit=.
+mount_state_lv() {
+    SLV="/dev/reefy/reefy_state"
+    [ -e "${SLV}" ] || return 0
+    SDIR="${REEFY_DATA_MNT}/state"
+    mountpoint -q "${SDIR}" 2>/dev/null && return 0
+    mkdir -p "${SDIR}"
+    # Seed: if the LV is empty but reefy_default already has state
+    # (fresh provision wrote bootstrap state there), copy it into the LV
+    # first so mounting doesn't hide it.
+    TMP=$(mktemp -d)
+    if mount -o noatime,discard "${SLV}" "${TMP}" 2>/dev/null; then
+        if [ -z "$(ls -A "${TMP}" 2>/dev/null)" ] && \
+           [ -n "$(ls -A "${SDIR}" 2>/dev/null)" ]; then
+            cp -a "${SDIR}/." "${TMP}/" 2>/dev/null || true
+        fi
+        umount "${TMP}" 2>/dev/null || true
+    fi
+    rmdir "${TMP}" 2>/dev/null || true
+    if mount -o noatime,discard "${SLV}" "${SDIR}" 2>/dev/null; then
+        echo "[reefy] Mounted reefy_state at ${SDIR}"
+    fi
+}
+
 # Hostname-setting moved out of boot-reefy-storage.sh — it used to run
 # here before virtio_net had finished probing, causing ~25% of QEMU
 # boots to land with a random hostname (see 2026-04 investigation).
@@ -150,6 +180,7 @@ setup_data_partition() {
                         if mount -o "${REEFY_DATA_MOUNT_OPTS}" "${lv_path}" \
                                 "${REEFY_DATA_MNT}" 2>/dev/null; then
                             echo "[reefy] Mounted LVM LV ${lv} at ${REEFY_DATA_MNT}"
+                            mount_state_lv
                             return 0
                         fi
                     done
@@ -237,6 +268,8 @@ setup_internal_storage() {
     mkdir -p "${REEFY_DATA_MNT}/state/lan"
     mkdir -p "${REEFY_DATA_MNT}/apps"
     mkdir -p "${REEFY_DATA_MNT}/docker"
+
+    mount_state_lv
 
     echo "[reefy] Mounted internal drive as ${REEFY_DATA_MNT}"
 }

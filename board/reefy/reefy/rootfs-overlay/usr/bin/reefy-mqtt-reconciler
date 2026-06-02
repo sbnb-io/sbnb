@@ -7,9 +7,12 @@ Credentials are provided by user on USB flash or injected by console.
 """
 
 import base64
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -61,6 +64,11 @@ class MQTTReconciler:
         self._apply_lock = threading.Lock()
         self._pending_state = None  # queued apply_state payload when lock is held
         self._subscribe_confirmed = threading.Event()
+        # path -> fair-share cap (% of pool) for contained volumes. Set
+        # from desired-state on each apply / boot-mount; consumed by
+        # _ensure_volume_lv to size the thin LV's virtualsize so one
+        # volume (e.g. Frigate media) can't consume the whole pool.
+        self._volume_caps = {}
 
     def wait_for_config(self):
         """Block until MQTT configuration becomes available."""
@@ -1750,6 +1758,10 @@ class MQTTReconciler:
             log('mqtt', f'ERROR: Failed to read desired state: {e}')
             return False
 
+        # Fair-share volume caps (path -> % of pool) consumed by
+        # _ensure_volume_lv when it creates per-volume LVs.
+        self._volume_caps = state.get('volume_caps') or {}
+
         # Apply hostname (or revert to default if not specified)
         hostname = state.get('hostname', '') or self._get_default_hostname()
         self._set_hostname(hostname)
@@ -1797,6 +1809,16 @@ class MQTTReconciler:
         app_volumes = state.get('app_volumes', [])
         if app_volumes:
             self._prepare_app_dirs(app_volumes, backup_paths=backup_paths)
+
+        # Reclaim per-volume LVs whose owning instance was deleted since
+        # the last apply, so a removed app frees its pool space instead of
+        # leaking an orphaned LV. Keyed on the *instance* being gone (uuid
+        # from the path absent from the whole new state), NOT merely on a
+        # path leaving the backup set - a volume that only un-backup-flags
+        # keeps live data and must never be reclaimed. e2e covers both
+        # directions.
+        if old_state is not None:
+            self._reclaim_deleted_instance_lvs(old_state, state, backup_paths)
 
         # Apply backup config (SSH keys, config, systemd timer)
         if backup:
@@ -2022,6 +2044,13 @@ class MQTTReconciler:
     STORAGE_VG = 'reefy'
     STORAGE_LV = 'reefy_default'
     STORAGE_POOL = 'reefy_pool'
+    # Thick LV (real blocks, OUTSIDE the thin pool) holding
+    # /mnt/reefy-data/state. Guarantees control-plane state always has
+    # space even when the app pool hits 100% - so comms/identity survive
+    # a full disk instead of going read-only with everything else.
+    # Created only on fresh provision (the pool takes 100%FREE, so an
+    # existing device has no room and keeps state on reefy_default).
+    STATE_LV = 'reefy_state'
     # Legacy LV name used by pre-thin-pool installs — keep mounting it
     # for backward compat; those devices don't get the snapshot-backed
     # backup path until they factory-reset into the new layout.
@@ -2094,6 +2123,10 @@ class MQTTReconciler:
                 _log(f'Using legacy {self.LEGACY_STORAGE_LV} LV (no thin pool)')
             return 'legacy'
 
+        # Thick state LV BEFORE the pool: the pool grabs 100%FREE, so
+        # the guaranteed-space state LV must be carved out first.
+        self._ensure_state_lv(_log)
+
         # Fresh VG or upgrade from empty VG — create thin pool + default LV.
         pool_path = f'{self.STORAGE_VG}/{self.STORAGE_POOL}'
         pool_exists = subprocess.run(
@@ -2141,6 +2174,47 @@ class MQTTReconciler:
             _log(f'Created thin LV {self.STORAGE_LV} (ext4)')
         return 'new'
 
+    def _ensure_state_lv(self, _log=None):
+        """Create the thick state LV (reefy_state), sized
+        min(4 GiB, 10% of VG), floored at 256 MiB. Real blocks outside
+        the thin pool so /mnt/reefy-data/state is never starved by a full
+        app pool. Idempotent; must run BEFORE the pool's 100%FREE.
+        State's footprint is tiny+bounded, so a fixed-but-generous size
+        is correct (unlike unbounded app data); growable later via
+        lvextend + xfs_growfs if a disk is added."""
+        lv_path = f'/dev/{self.STORAGE_VG}/{self.STATE_LV}'
+        if os.path.exists(lv_path):
+            return
+        vg_raw = subprocess.run(
+            ['vgs', '--noheadings', '--nosuffix', '--units', 'b',
+             '-o', 'vg_size', self.STORAGE_VG],
+            capture_output=True, text=True, timeout=10).stdout.strip()
+        try:
+            vg_bytes = int(float(vg_raw))
+        except (ValueError, TypeError):
+            vg_bytes = 0
+        gib = 1024 ** 3
+        size = min(4 * gib, vg_bytes // 10) if vg_bytes else gib
+        size = max(size, 256 * 1024 * 1024)  # floor for tiny media
+        size_mib = size // (1024 * 1024)
+        r = subprocess.run(
+            ['lvcreate', '-L', f'{size_mib}M', '-n', self.STATE_LV,
+             self.STORAGE_VG],
+            capture_output=True, text=True, timeout=15)
+        if r.returncode != 0:
+            if _log:
+                _log(f'state LV create failed: {r.stderr}')
+            return
+        r = subprocess.run(
+            ['mkfs.xfs', '-q', lv_path],
+            capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            if _log:
+                _log(f'state LV mkfs.xfs failed: {r.stderr}')
+            return
+        if _log:
+            _log(f'Created thick state LV {self.STATE_LV} ({size_mib} MiB)')
+
     def _active_reefy_lv_path(self):
         """Return the path to mount as /mnt/reefy-data: reefy_default
         if present, else legacy `data`, else None."""
@@ -2167,6 +2241,36 @@ class MQTTReconciler:
         h = hashlib.sha1(path.encode()).hexdigest()[:12]
         return f'reefy_backup_{h}'
 
+    @contextlib.contextmanager
+    def _volume_lock(self):
+        """Serialize per-app volume create/mount across processes. Both
+        the reefy-app-volumes boot oneshot (`--boot-mount`) and the
+        running reconciler call _ensure_volume_lv on the same paths;
+        without a lock they can race the findmnt-then-mount window and
+        double-mount. flock on a /run lockfile (tmpfs, auto-cleared each
+        boot)."""
+        os.makedirs('/run/reefy', exist_ok=True)
+        lock = open('/run/reefy/volume-mount.lock', 'w')
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            lock.close()
+
+    def _fs_mount_opts(self, dev):
+        """Mount options for an LV, by detected filesystem. ext4 wants
+        `commit=60`; XFS *rejects* it (mount fails), so XFS must not get
+        it. Both keep noatime + discard (the FS half of the TRIM
+        passthrough chain). Unknown/blank type -> ext4 opts, since our
+        existing per-app LVs are ext4."""
+        fstype = subprocess.run(
+            ['blkid', '-o', 'value', '-s', 'TYPE', dev],
+            capture_output=True, text=True, timeout=5).stdout.strip()
+        if fstype == 'xfs':
+            return 'noatime,discard'
+        return self.REEFY_DATA_MOUNT_OPTS
+
     def _ensure_volume_lv(self, path):
         """Provision + mount a per-volume thin LV at `path` if not
         already in place. No-op if:
@@ -2174,58 +2278,179 @@ class MQTTReconciler:
           - the path is already a mount point (idempotent), OR
           - the path already exists with files on the default LV
             (legacy install — leave as plain dir to avoid hiding data).
+
+        Concurrency-safe + idempotent: the boot oneshot and the running
+        reconciler may both call this; the flock serializes them and the
+        mountpoint re-check inside the lock makes a lost race a no-op.
         """
         if not self._has_thin_pool():
             return  # legacy storage; backups are disabled anyway
 
-        # Already a mount point? Idempotent — nothing to do.
-        r = subprocess.run(
-            ['findmnt', '-n', '-o', 'SOURCE', path],
-            capture_output=True, text=True, timeout=5)
-        if r.returncode == 0 and r.stdout.strip():
-            return
-
-        # Existing dir with files on the default LV → legacy install,
-        # don't mount over the data. (Migration path: factory-reset.)
-        if os.path.isdir(path) and os.listdir(path):
-            log('mqtt', f'Legacy data at {path}, skipping per-volume LV mount')
-            return
-
-        lv_name = self._volume_lv_name(path)
-        lv_path = f'/dev/{self.STORAGE_VG}/{lv_name}'
-
-        if not os.path.exists(lv_path):
-            pool_size = subprocess.run(
-                ['lvs', '--noheadings', '--nosuffix', '--units', 'b',
-                 '-o', 'lv_size', f'{self.STORAGE_VG}/{self.STORAGE_POOL}'],
-                capture_output=True, text=True, timeout=10).stdout.strip()
+        with self._volume_lock():
+            # Re-check INSIDE the lock: another process may have mounted
+            # it while we waited on the flock.
             r = subprocess.run(
-                ['lvcreate', '--thin', '--virtualsize', f'{pool_size}B',
-                 '-n', lv_name, f'{self.STORAGE_VG}/{self.STORAGE_POOL}'],
-                capture_output=True, text=True, timeout=15)
-            if r.returncode != 0:
-                log('mqtt', f'per-volume LV create failed for {path}: {r.stderr}')
+                ['findmnt', '-n', '-o', 'SOURCE', path],
+                capture_output=True, text=True, timeout=5)
+            if r.returncode == 0 and r.stdout.strip():
                 return
+
+            # Existing dir with files on the default LV → legacy install,
+            # don't mount over the data. (Migration path: factory-reset.)
+            if os.path.isdir(path) and os.listdir(path):
+                log('mqtt', f'Legacy data at {path}, skipping per-volume LV mount')
+                return
+
+            lv_name = self._volume_lv_name(path)
+            lv_path = f'/dev/{self.STORAGE_VG}/{lv_name}'
+
+            if not os.path.exists(lv_path):
+                pool_size = subprocess.run(
+                    ['lvs', '--noheadings', '--nosuffix', '--units', 'b',
+                     '-o', 'lv_size', f'{self.STORAGE_VG}/{self.STORAGE_POOL}'],
+                    capture_output=True, text=True, timeout=10).stdout.strip()
+                # Fair-share containment: a capped volume's thin LV gets a
+                # virtualsize of pct% of the pool. A thin LV can't map more
+                # physical blocks than its virtualsize, so this guarantees a
+                # (100-pct)% pool margin and ENOSPC lands only on this
+                # volume - no quota machinery needed. Uncapped -> full pool.
+                vsize = pool_size
+                cap_pct = self._volume_caps.get(path)
+                if cap_pct:
+                    try:
+                        vsize = str(int(int(pool_size) * float(cap_pct) / 100))
+                    except (ValueError, TypeError):
+                        vsize = pool_size
+                r = subprocess.run(
+                    ['lvcreate', '--thin', '--virtualsize', f'{vsize}B',
+                     '-n', lv_name, f'{self.STORAGE_VG}/{self.STORAGE_POOL}'],
+                    capture_output=True, text=True, timeout=15)
+                if r.returncode != 0:
+                    log('mqtt', f'per-volume LV create failed for {path}: {r.stderr}')
+                    return
+                # XFS for new volumes: dynamic inode allocation -> no
+                # ~58 GiB upfront inode-table tax that ext4 paid on these
+                # full-pool-size LVs. (No -L: the LV name exceeds XFS's
+                # 12-char label limit; the dm path identifies it anyway.)
+                # Existing ext4 LVs are untouched - we only mkfs on create.
+                r = subprocess.run(
+                    ['mkfs.xfs', '-q', lv_path],
+                    capture_output=True, text=True, timeout=60)
+                if r.returncode != 0:
+                    log('mqtt', f'mkfs.xfs failed on {lv_path}: {r.stderr}')
+                    return
+                log('mqtt', f'Created per-volume LV {lv_name} (xfs) for {path}')
+
+            os.makedirs(path, mode=0o755, exist_ok=True)
+            # mount can stall on thin-pool metadata ops when the pool's
+            # under load (Frigate-class write pressure, restore, big
+            # docker pull). 60s gives the kernel enough headroom; the
+            # whole state-apply retries on failure anyway.
             r = subprocess.run(
-                ['mkfs.ext4', '-q', '-L', lv_name, lv_path],
+                ['mount', '-o', self._fs_mount_opts(lv_path), lv_path, path],
                 capture_output=True, text=True, timeout=60)
             if r.returncode != 0:
-                log('mqtt', f'mkfs.ext4 failed on {lv_path}: {r.stderr}')
+                log('mqtt', f'mount {lv_path} -> {path} failed: {r.stderr}')
                 return
-            log('mqtt', f'Created per-volume LV {lv_name} for {path}')
+            log('mqtt', f'Mounted {lv_name} at {path}')
 
-        os.makedirs(path, mode=0o755, exist_ok=True)
-        # mount can stall on thin-pool metadata ops when the pool's
-        # under load (Frigate-class write pressure, restore, big
-        # docker pull). 60s gives the kernel enough headroom; the
-        # whole state-apply retries on failure anyway.
-        r = subprocess.run(
-            ['mount', '-o', self.REEFY_DATA_MOUNT_OPTS, lv_path, path],
-            capture_output=True, text=True, timeout=60)
-        if r.returncode != 0:
-            log('mqtt', f'mount {lv_path} -> {path} failed: {r.stderr}')
+    def boot_mount(self):
+        """Mount all per-app volumes from persisted desired-state, before
+        docker starts. Run by reefy-app-volumes.service (oneshot,
+        Before=docker.service) so containers never bind-mount an empty
+        pre-mount directory (the boot mount-race that shadowed Frigate's
+        config). No MQTT, no network: reads the cached desired-state.json
+        and reuses the shared flock'd mount primitive. Idempotent - the
+        running reconciler re-applies the same paths for runtime
+        add/remove."""
+        if not os.path.exists(self.DESIRED_STATE_PATH):
+            log('mqtt', '[boot-mount] no desired-state.json; nothing to mount')
             return
-        log('mqtt', f'Mounted {lv_name} at {path}')
+        try:
+            with open(self.DESIRED_STATE_PATH) as f:
+                state = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            log('mqtt', f'[boot-mount] cannot read desired-state: {e}')
+            return
+        self._volume_caps = state.get('volume_caps') or {}
+        backup = state.get('backup') or {}
+        # Mount backup-flagged paths AND fair-share-capped paths (e.g.
+        # Frigate media) - both get a per-volume LV that must be mounted
+        # before docker.
+        paths = list(self._volume_caps.keys())
+        for inst in backup.get('instances', []):
+            paths.extend(inst.get('paths', []))
+        seen = set()
+        for p in paths:
+            if not p or p in seen:
+                continue
+            seen.add(p)
+            try:
+                self._ensure_volume_lv(p)
+            except Exception as e:
+                log('mqtt', f'[boot-mount] {p} failed: {e}')
+        log('mqtt', f'[boot-mount] processed {len(seen)} volume(s) before docker')
+
+    def _reclaim_deleted_instance_lvs(self, old_state, new_state,
+                                       new_backup_paths):
+        """lvremove per-volume LVs whose owning app instance is gone from
+        desired-state, so a deleted app frees its pool space instead of
+        leaking an orphaned LV.
+
+        Conservative by design (this deletes data): derive the set of
+        'live' instance uuids from EVERY apps/<uuid>/ path anywhere in the
+        new state (backup paths + app_volumes + instances, scanned
+        recursively, schema-agnostic). Only reclaim a removed backup path
+        whose uuid is in NONE of them - i.e. the whole instance is gone.
+        A volume that merely un-backup-flags keeps its uuid live elsewhere
+        in the state, so it is never reclaimed."""
+        if not self._has_thin_pool():
+            return
+        old_paths = set()
+        for inst in (old_state.get('backup') or {}).get('instances', []):
+            old_paths.update(inst.get('paths', []))
+        removed = old_paths - new_backup_paths
+        if not removed:
+            return
+
+        def _collect_uuids(obj, acc):
+            if isinstance(obj, str):
+                m = re.search(r'/apps/([^/]+)/', obj)
+                if m:
+                    acc.add(m.group(1))
+            elif isinstance(obj, dict):
+                for v in obj.values():
+                    _collect_uuids(v, acc)
+            elif isinstance(obj, (list, tuple, set)):
+                for v in obj:
+                    _collect_uuids(v, acc)
+
+        live = set()
+        for p in new_backup_paths:
+            _collect_uuids(p, live)
+        _collect_uuids(new_state.get('app_volumes', []), live)
+        _collect_uuids(new_state.get('instances', []), live)
+
+        with self._volume_lock():
+            for path in removed:
+                m = re.search(r'/apps/([^/]+)/', path)
+                uuid = m.group(1) if m else None
+                if not uuid or uuid in live:
+                    continue  # instance still present (or unparseable) - keep
+                lv_name = self._volume_lv_name(path)
+                if subprocess.run(
+                        ['lvs', f'{self.STORAGE_VG}/{lv_name}'],
+                        capture_output=True).returncode != 0:
+                    continue  # LV already gone
+                subprocess.run(['umount', path],
+                               capture_output=True, text=True, timeout=30)
+                r = subprocess.run(
+                    ['lvremove', '-f', f'{self.STORAGE_VG}/{lv_name}'],
+                    capture_output=True, text=True, timeout=30)
+                if r.returncode == 0:
+                    log('mqtt', f'Reclaimed LV {lv_name} (instance {uuid} deleted)')
+                else:
+                    log('mqtt', f'lvremove {lv_name} failed: {r.stderr}')
 
     # Dev/e2e ESP-injected key path. boot-reefy-init.sh copies this
     # file into the reefy user's authorized_keys on every boot so e2e
@@ -2787,8 +3012,11 @@ class MQTTReconciler:
             uid = vol.get('uid', 0)
             if not path:
                 continue
-            # Per-volume thin LV provisioning (only for backup paths).
-            if path in backup_paths:
+            # Per-volume thin LV: for backup paths (so reefy-backup can
+            # snapshot them) AND for fair-share-capped paths (so a cap
+            # can be enforced via the LV's virtualsize - e.g. Frigate
+            # media, which isn't backed up but must not eat the pool).
+            if path in backup_paths or path in self._volume_caps:
                 self._ensure_volume_lv(path)
             if not os.path.exists(path):
                 os.makedirs(path, mode=0o755, exist_ok=True)
@@ -3565,6 +3793,18 @@ Environment=MQTT_PORT={self.port}
 
 
 if __name__ == '__main__':
+    # Pre-docker boot mount pass (reefy-app-volumes.service oneshot):
+    # mount per-app volumes from persisted desired-state, then exit. No
+    # MQTT, no config wait - just the shared mount primitive so docker
+    # (ordered After=reefy-app-volumes) starts with volumes already in
+    # place. __init__ is light (no network), safe to instantiate here.
+    if '--boot-mount' in sys.argv:
+        try:
+            MQTTReconciler().boot_mount()
+        except Exception as e:
+            log('mqtt', f'[boot-mount] fatal: {e}')
+        sys.exit(0)
+
     try:
         reconciler = MQTTReconciler()
         reconciler.wait_for_config()

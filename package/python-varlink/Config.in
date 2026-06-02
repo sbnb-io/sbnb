@@ -1,0 +1,8 @@
+config BR2_PACKAGE_PYTHON_VARLINK
+	bool "python-varlink"
+	help
+	  Pure-Python implementation of the Varlink protocol (client +
+	  server, unix-socket transport). Used by the reefy control plane
+	  and reconciler for local request/response IPC.
+
+	  https://github.com/varlink/python
