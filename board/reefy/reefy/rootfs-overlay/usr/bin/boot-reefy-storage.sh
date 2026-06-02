@@ -22,7 +22,7 @@ LUKS_KEY_SIZE=44
 # the TRIM passthrough chain (LUKS half is --allow-discards); without
 # it, deleted blocks aren't communicated to the drive at unlink time,
 # causing FTL write amplification under high-churn workloads. Kept
-# identical in reefy_reconciler.REEFY_DATA_MOUNT_OPTS - change
+# identical in reefy.shared.REEFY_DATA_MOUNT_OPTS - change
 # both if you change one.
 REEFY_DATA_MOUNT_OPTS="noatime,commit=60,discard"
 
@@ -30,7 +30,7 @@ REEFY_DATA_MOUNT_OPTS="noatime,commit=60,discard"
 # number. Kernel inserts a 'p' separator when the disk name ends in
 # a digit (NVMe: nvme0n1 -> nvme0n1p1, mmcblk: mmcblk0 -> mmcblk0p1).
 # USB-boot (sda) skips the separator. Same helper as reefy-efi +
-# reefy_reconciler::_part_dev.
+# reefy.shared::_part_dev.
 part_dev() {
     DISKARG="$1"
     PARTNUM="$2"

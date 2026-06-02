@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Control-plane executable: the MQTT loop. Imports the shared
-reconciler module and runs only the control entrypoint - this file
-IS the control role, no flags, no role-branching."""
+"""Control-plane executable: the MQTT loop. Runs only the control
+entrypoint - this file IS the control role, no flags, no role-branching."""
 
 import sys
 
 sys.path.insert(0, '/usr/lib/reefy')
 
-from reefy_reconciler import main_control
+from reefy.control import main_control
 
 main_control()

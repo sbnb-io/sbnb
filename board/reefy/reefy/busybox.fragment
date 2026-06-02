@@ -6,6 +6,6 @@ CONFIG_FEATURE_STAT_FORMAT=y
 # Enable `adduser USER GROUP` (add existing user to existing group).
 # Default busybox config compiles adduser without this; without it,
 # `adduser foo docker` silently re-runs the create-user path and
-# membership is never updated. Needed by reefy_reconciler to add
+# membership is never updated. Needed by reefy.dataplane to add
 # per-app SSH users to the docker group.
 CONFIG_FEATURE_ADDUSER_TO_GROUP=y
