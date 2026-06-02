@@ -2,6 +2,7 @@
 boot-mount roles. Dependency-free (stdlib only) so the data-plane and
 boot-mount processes can import it without paho-mqtt installed."""
 
+import os
 import subprocess
 import time
 
@@ -34,6 +35,12 @@ LEGACY_STORAGE_LV = 'data'
 # default + per-volume LVs since they live on the same drive with the
 # same wear semantics.
 REEFY_DATA_MOUNT_OPTS = 'noatime,commit=60,discard'
+
+# Control <-> data-plane Varlink IPC. Control (MQTT) calls these over a
+# unix socket; the data-plane process executes the storage/container
+# work, isolated so a crash/OOM/hang there can't take down control.
+VARLINK_ADDRESS = 'unix:/run/reefy/reconciler.sock'
+VARLINK_INTERFACE_DIR = '/usr/share/varlink'
 
 
 def _part_dev(disk, partnum):
@@ -122,4 +129,38 @@ def find_wireless_iface():
                 return line.split()[1]
     except Exception:
         pass
+    return None
+
+
+# --- MQTT identity (for processes that need it without control's setup) ---
+
+def load_mqtt_config():
+    """Parse mqtt.conf (state dir first, then USB) into a dict, with env
+    overrides. Lets a process learn the broker/prefix without running the
+    control plane's full setup (used by the data plane for backup config)."""
+    config = {}
+    config_file = '/mnt/reefy-data/state/mqtt.conf'
+    if not os.path.exists(config_file):
+        config_file = '/mnt/reefy/mqtt/mqtt.conf'
+    if os.path.exists(config_file):
+        with open(config_file) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    config[key.strip()] = value.strip()
+    for key in ['MQTT_BROKER', 'MQTT_PORT', 'MQTT_TRANSPORT', 'MQTT_WS_PATH',
+                'MQTT_CA_CERT', 'MQTT_CLIENT_CERT', 'MQTT_CLIENT_KEY',
+                'MQTT_DEVICE_CERT', 'MQTT_DEVICE_KEY']:
+        if key in os.environ:
+            config[key] = os.environ[key]
+    return config
+
+
+def read_device_uuid():
+    """Read the persisted device UUID, or None if unprovisioned."""
+    uuid_file = '/mnt/reefy-data/state/device-uuid'
+    if os.path.exists(uuid_file):
+        with open(uuid_file) as f:
+            return f.read().strip()
     return None
