@@ -29,6 +29,18 @@ class ImportIsolationTests(unittest.TestCase):
         self.assertNotIn('_is_data_plane', src)
         self.assertNotIn('_varlink_call', src)
 
+    def test_reclaim_runs_after_compose_up(self):
+        # lvremove of a deleted instance's volume must happen AFTER docker
+        # compose up --remove-orphans tears down its container; before it,
+        # the volume is still bind-mounted and lvremove fails "filesystem
+        # in use", leaking the LV (the e2e backup-lvm failure / prod bug).
+        src = open(dataplane.__file__).read()
+        self.assertLess(
+            src.index('_apply_compose(compose)'),
+            src.index('_reclaim_deleted_instance_lvs('),
+            'reclaim must run after compose up (container teardown), '
+            'else lvremove fails "filesystem in use"')
+
 
 class EventPublishingTests(unittest.TestCase):
     def setUp(self):
@@ -232,6 +244,80 @@ class DataSideBehaviorTests(unittest.TestCase):
         # No mqtt.conf on a dev box -> safe defaults, no crash on construct.
         self.assertEqual(self.dp.port, 443)
         self.assertEqual(self.dp.topic_prefix, 'reefy')
+
+
+class ReconcileTests(unittest.TestCase):
+    """_dp_reconcile: re-apply the data plane's own saved state (re-sync).
+    Control calls this on connect instead of reading desired-state.json
+    (the data plane is the sole reader+writer); _boot_apply uses the same
+    path at startup. Runs under the apply lock and reports `applied`."""
+
+    def setUp(self):
+        self.dp = _make_dp()
+
+    def test_reports_applied_when_state_exists(self):
+        with mock.patch.object(dataplane.os.path, 'exists', return_value=True), \
+                mock.patch.object(self.dp, '_apply_desired_state') as ad:
+            res = self.dp._dp_reconcile()
+        self.assertEqual(res, {'ok': True, 'applied': True, 'error': ''})
+        ad.assert_called_once()
+        self.assertTrue(self.dp._apply_lock.acquire(blocking=False),
+                        'apply lock not released after reconcile')
+
+    def test_reports_not_applied_when_no_state(self):
+        # No saved state -> applied False, but _apply_desired_state still
+        # runs (it resets the hostname to the MAC-based default).
+        with mock.patch.object(dataplane.os.path, 'exists', return_value=False), \
+                mock.patch.object(self.dp, '_apply_desired_state') as ad:
+            res = self.dp._dp_reconcile()
+        self.assertEqual(res, {'ok': True, 'applied': False, 'error': ''})
+        ad.assert_called_once()
+
+    def test_skips_apply_when_lock_held(self):
+        # A command apply already holds the lock -> reconcile must not run
+        # _apply_desired_state concurrently (it would race the same work).
+        self.dp._apply_lock.acquire()
+        try:
+            with mock.patch.object(dataplane.os.path, 'exists',
+                                   return_value=True), \
+                    mock.patch.object(self.dp, '_apply_desired_state') as ad:
+                res = self.dp._dp_reconcile()
+            ad.assert_not_called()
+            self.assertEqual(res, {'ok': True, 'applied': True, 'error': ''})
+        finally:
+            self.dp._apply_lock.release()
+
+    def test_drains_state_queued_during_reconcile(self):
+        # State control forwarded while reconcile held the lock must be
+        # applied after, not dropped.
+        forwarded = {'forwarded': True}
+
+        def queue_during(*a, **k):
+            self.dp._pending_state = forwarded
+
+        with mock.patch.object(dataplane.os.path, 'exists', return_value=True), \
+                mock.patch.object(self.dp, '_apply_desired_state',
+                                  side_effect=queue_during), \
+                mock.patch.object(self.dp, '_apply_state') as as_:
+            res = self.dp._dp_reconcile()
+        as_.assert_called_once_with(forwarded)
+        self.assertIsNone(self.dp._pending_state)
+        self.assertTrue(res['ok'])
+
+    def test_failure_returns_error_and_releases_lock(self):
+        with mock.patch.object(dataplane.os.path, 'exists', return_value=True), \
+                mock.patch.object(self.dp, '_apply_desired_state',
+                                  side_effect=RuntimeError('boom')):
+            res = self.dp._dp_reconcile()
+        self.assertFalse(res['ok'])
+        self.assertIn('boom', res['error'])
+        self.assertTrue(self.dp._apply_lock.acquire(blocking=False),
+                        'apply lock not released after a failed reconcile')
+
+    def test_boot_apply_delegates_to_reconcile(self):
+        with mock.patch.object(self.dp, '_dp_reconcile') as rec:
+            self.dp._boot_apply()
+        rec.assert_called_once_with()
 
 
 if __name__ == '__main__':

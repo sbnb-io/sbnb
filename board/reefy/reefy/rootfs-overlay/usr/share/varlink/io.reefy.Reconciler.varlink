@@ -8,6 +8,12 @@ interface io.reefy.Reconciler
 # restore). `state` is the desired-state JSON as a string.
 method ApplyState(state: string) -> (ok: bool, error: string)
 
+# Re-apply the data plane's own saved desired state (re-sync on control
+# reconnect). The data plane owns desired-state.json - control calls this
+# instead of reading the file. `applied` is false when there is no saved
+# state yet (the apply just reset the hostname to its default).
+method Reconcile() -> (ok: bool, applied: bool, error: string)
+
 # Snapshot + borg-archive one instance's backup volumes.
 method BackupNow(instance_uuid: string) -> (ok: bool, message: string, error: string)
 

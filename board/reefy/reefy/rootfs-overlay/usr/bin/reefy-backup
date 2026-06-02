@@ -205,8 +205,18 @@ def snapshot_volume(path, instance_uuid, ts):
         raise RuntimeError(f'lvcreate snapshot failed: {r.stderr}')
 
     os.makedirs(snap_mnt, mode=0o755, exist_ok=True)
+    snap_dev = f'/dev/{STORAGE_VG}/{snap_name}'
+    # XFS refuses to mount a snapshot that carries the origin's UUID
+    # (duplicate-UUID), and can't run log recovery on a read-only
+    # device - so XFS snapshots need nouuid + norecovery. ext4 mounts
+    # read-only with just `ro`. (Per-app volumes are XFS since the
+    # storage redesign; older devices may still be ext4.)
+    fstype = subprocess.run(
+        ['blkid', '-o', 'value', '-s', 'TYPE', snap_dev],
+        capture_output=True, text=True, timeout=5).stdout.strip()
+    mnt_opts = 'ro,nouuid,norecovery' if fstype == 'xfs' else 'ro'
     r = subprocess.run(
-        ['mount', '-o', 'ro', f'/dev/{STORAGE_VG}/{snap_name}', snap_mnt],
+        ['mount', '-o', mnt_opts, snap_dev, snap_mnt],
         capture_output=True, text=True, timeout=10)
     if r.returncode != 0:
         # Best-effort release before raising.

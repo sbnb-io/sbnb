@@ -305,16 +305,6 @@ class DataPlane:
         if app_volumes:
             self._storage._prepare_app_dirs(app_volumes, backup_paths=backup_paths)
 
-        # Reclaim per-volume LVs whose owning instance was deleted since
-        # the last apply, so a removed app frees its pool space instead of
-        # leaking an orphaned LV. Keyed on the *instance* being gone (uuid
-        # from the path absent from the whole new state), NOT merely on a
-        # path leaving the backup set - a volume that only un-backup-flags
-        # keeps live data and must never be reclaimed. e2e covers both
-        # directions.
-        if old_state is not None:
-            self._storage._reclaim_deleted_instance_lvs(old_state, state, backup_paths)
-
         # Apply backup config (SSH keys, config, systemd timer)
         if backup:
             self._apply_backup_config(backup)
@@ -350,6 +340,19 @@ class DataPlane:
             if not self._apply_compose(compose):
                 self._publish_stage('error', 'docker compose up failed')
                 return False
+
+        # Reclaim per-volume LVs whose owning instance was deleted since the
+        # last apply, so a removed app frees its pool space instead of
+        # leaking an orphaned LV. Done AFTER docker compose up (which runs
+        # with --remove-orphans) so the deleted instance's container is gone
+        # and no longer bind-mounts the volume - otherwise umount/lvremove
+        # fail with "filesystem in use" and the LV leaks (the prod bug, and
+        # the e2e backup-lvm failure). Keyed on the *instance* being gone
+        # (uuid absent from the whole new state), NOT merely a path leaving
+        # the backup set - a volume that only un-backup-flags keeps live
+        # data and must never be reclaimed. e2e covers both directions.
+        if old_state is not None:
+            self._storage._reclaim_deleted_instance_lvs(old_state, state, backup_paths)
 
         return True
 
@@ -522,21 +525,22 @@ class DataPlane:
         # Re-publish status with updated ip_addr so dashboard reflects changes
         self._publish_status('online', 'Network config updated')
 
+    def _boot_apply(self):
+        """Apply persisted desired state once on startup (thread target).
+        The data plane owns boot reconcile (control just calls home); same
+        code path as the on-reconnect Reconcile so the two never diverge.
+        Running under the apply lock means a state control forwards while
+        the data plane is still booting serializes behind this."""
+        self._dp_reconcile()
+
     def run_data_plane(self):
-        """Data-plane entrypoint (reefy-reconciler): apply persisted desired
-        state once, then serve the Varlink interface forever. No MQTT -
+        """Data-plane entrypoint (reefy-reconciler): serve the Varlink
+        interface and apply persisted desired state on startup. No MQTT -
         the control process owns that. Storage/container work runs here,
         isolated so a crash/OOM/hang can't take down control. Each Varlink
         call is handled in its own thread (ThreadingServer)."""
         import varlink
         os.makedirs('/run/reefy', exist_ok=True)
-        # The data plane owns reconcile: apply saved state on startup.
-        # Control forwards later changes over Varlink.
-        try:
-            if os.path.exists(self.DESIRED_STATE_PATH):
-                self._apply_desired_state()
-        except Exception as e:
-            log('mqtt', f'[data-plane] initial apply failed: {e}')
 
         service = varlink.Service(
             vendor='Reefy', product='reconciler', version='1',
@@ -548,6 +552,9 @@ class DataPlane:
         class _Reconciler:
             def ApplyState(self, state, _more=False):
                 return recon._dp_apply_state(state)
+
+            def Reconcile(self, _more=False):
+                return recon._dp_reconcile()
 
             def BackupNow(self, instance_uuid, _more=False):
                 return recon._dp_backup_now(instance_uuid)
@@ -571,6 +578,15 @@ class DataPlane:
         except OSError:
             pass
 
+        # Apply saved state on startup in the BACKGROUND so the Varlink
+        # socket binds immediately below. Control starts ~4s earlier (to
+        # call home) and forwards state on connect; previously the socket
+        # only opened after this boot apply finished its docker compose up,
+        # so control's forward raced a missing socket ("data plane
+        # unreachable"). _boot_apply holds the apply lock, so a forwarded
+        # apply serializes behind it rather than running concurrently.
+        threading.Thread(target=self._boot_apply, daemon=True).start()
+
         log('mqtt', f'[data-plane] serving Varlink at {self.VARLINK_ADDRESS}')
         with varlink.ThreadingServer(self.VARLINK_ADDRESS, _Handler) as server:
             server.serve_forever()
@@ -582,6 +598,30 @@ class DataPlane:
         except Exception as e:
             log('mqtt', f'[data-plane] ApplyState failed: {e}')
             return {'ok': False, 'error': str(e)[:500]}
+
+    def _dp_reconcile(self):
+        """Re-apply the data plane's own saved desired state (re-sync).
+        The data plane owns desired-state.json; control calls this on
+        reconnect instead of reading the file. Runs under the apply lock
+        (serializes with command applies); drains any state queued while
+        held. `applied` is False when there was no saved state - the apply
+        then just resets the hostname to its default."""
+        had_state = os.path.exists(self.DESIRED_STATE_PATH)
+        if not self._apply_lock.acquire(blocking=False):
+            # A command apply is already running; it covers current state.
+            return {'ok': True, 'applied': had_state, 'error': ''}
+        try:
+            self._apply_desired_state()  # no saved state -> resets hostname
+            while self._pending_state is not None:
+                pending = self._pending_state
+                self._pending_state = None
+                self._apply_state(pending)
+        except Exception as e:
+            log('mqtt', f'[data-plane] reconcile failed: {e}')
+            return {'ok': False, 'applied': had_state, 'error': str(e)[:500]}
+        finally:
+            self._apply_lock.release()
+        return {'ok': True, 'applied': had_state, 'error': ''}
 
     def _dp_backup_now(self, instance_uuid):
         try:
