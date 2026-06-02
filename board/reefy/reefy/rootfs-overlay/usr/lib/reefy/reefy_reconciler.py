@@ -25,6 +25,9 @@ import ssl
 import uuid as uuid_mod
 from io import BytesIO
 
+# Shared, dependency-free helpers (no paho) used across roles.
+from reefy.shared import _part_dev, log
+
 # Check if paho-mqtt is available
 try:
     import paho.mqtt.client as mqtt
@@ -32,25 +35,6 @@ except ImportError:
     print("[mqtt] ERROR: paho-mqtt not installed")
     print("[mqtt] Add BR2_PACKAGE_PYTHON_PAHO_MQTT=y to defconfig")
     sys.exit(1)
-
-
-def _part_dev(disk, partnum):
-    """Build the kernel partition device path for a given disk + part
-    number. The kernel inserts a 'p' separator when the disk name ends
-    in a digit (NVMe: nvme0n1 -> nvme0n1p1; mmcblk: mmcblk0 -> mmcblk0p1)
-    and omits it otherwise (SATA/USB: sda -> sda1).
-
-    Historically this code ran only on USB-boot devices (sda) so the
-    naive f'{disk}{n}' worked. Booting Reefy on NVMe (EC2, mini-PC with
-    M.2 boot) needs the 'p'."""
-    if disk and disk[-1].isdigit():
-        return f'{disk}p{partnum}'
-    return f'{disk}{partnum}'
-
-
-def log(source, msg):
-    """Log a message to stdout (captured by journald → reefy-log-publisher → MQTT)."""
-    print(f"[{source}] {msg}")
 
 
 class MQTTReconciler:
