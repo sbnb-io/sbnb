@@ -402,20 +402,24 @@ class Storage:
         pool_exists = subprocess.run(
             ['lvs', pool_path], capture_output=True).returncode == 0
         if not pool_exists:
-            # chunksize 4M + -Zn (no zero-on-allocate). Chunk-size
-            # matrix on Patriot M.2 P300 NVMe showed +5-12% across
-            # seq write / seq read / rand-read IOPS vs the default
-            # 64K-with-zeroing. -Zn is safe under LUKS - the entire
-            # pool is encrypted, so "leaked" deallocated chunks are
-            # encrypted noise without the passphrase. Bigger
-            # advantage expected under multi-writer contention (32x
-            # fewer dm-thin metadata ops per write). Affects
-            # newly-provisioned devices only; existing pools keep
-            # their 64K chunks (chunk size is set at pool creation
-            # and can't change in place).
+            # chunksize 512K + -Zn (no zero-on-allocate). A dm-thin
+            # chunk returns to the pool only when the whole chunk is
+            # discarded, so chunk size IS the reclaim granularity.
+            # Under fragmented small-file deletes (NVR clips), 512K
+            # reclaims ~10x more freed space than 4M (73% vs 7% of
+            # deleted bytes, XFS, measured). Throughput, IOPS and CPU
+            # are flat across chunk sizes on this LUKS+thin+NVMe stack:
+            # LUKS encryption dominates CPU and the device dominates
+            # bandwidth, so the large-chunk "fewer metadata ops"
+            # advantage never surfaces. See
+            # docs/storage-chunk-size-study.md. -Zn is safe under LUKS:
+            # the entire pool is encrypted, so deallocated chunks are
+            # encrypted noise without the passphrase. Affects
+            # newly-provisioned devices only; existing pools keep their
+            # chunk size (set at pool creation, immutable in place).
             result = subprocess.run(
                 ['lvcreate', '--type', 'thin-pool', '-l', '100%FREE',
-                 '--chunksize', '4M', '-Zn',
+                 '--chunksize', '512K', '-Zn',
                  '-n', self.STORAGE_POOL, self.STORAGE_VG],
                 capture_output=True, text=True, timeout=30)
             if result.returncode != 0:

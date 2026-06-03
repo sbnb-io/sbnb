@@ -199,6 +199,10 @@ When an internal drive is configured, `/mnt/reefy-data` is the internal drive (m
 | `/mnt/reefy-data` (USB) | f2fs | Flash-friendly, log-structured; converts random writes to sequential; `noatime` |
 | `/mnt/reefy-data` (internal) | ext4 | Standard for internal drives; `noatime,commit=60` for batched journal writes |
 
+For the thin-pool chunk size and the XFS-vs-ext4 trade-offs (inode tax,
+reclaim granularity, throughput, CPU) behind the storage redesign, see
+[storage-chunk-size-study.md](storage-chunk-size-study.md).
+
 ## Security Properties
 
 | Property | Status |
