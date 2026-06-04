@@ -25,13 +25,9 @@ setup_device_credentials() {
         echo "[reefy] Generated device password"
     fi
 
-    # Dev-mode: print the password to kmsg/serial console if the kernel cmdline
-    # requests it. Opt-in via `reefy.dev_shell=1` — production builds default to
-    # `quiet` without this flag, so the password is never exposed.
-    if grep -q 'reefy.dev_shell=1' /proc/cmdline 2>/dev/null; then
-        DEV_PASSWORD=$(cat "${PASSWORD_FILE}" 2>/dev/null)
-        echo "[reefy] DEV: root/reefy password=${DEV_PASSWORD}" > /dev/kmsg
-    fi
+    # Dev-mode device password is surfaced on the console (/etc/issue)
+    # and the boot log (kmsg) by /usr/bin/reefy-banner, gated on the same
+    # reefy.dev_shell=1 cmdline flag - production (no flag) never shows it.
 
     # Read password
     PASSWORD=$(cat "${PASSWORD_FILE}" 2>/dev/null) || return 0
@@ -70,26 +66,10 @@ setup_device_credentials() {
     fi
 }
 
-# Display ASCII banner and hostname/interface IP summary
-display_banner() {
-    {
-        echo " ____            __       "
-        echo "|  _ \ ___  ___ / _|_   _ "
-        echo "| |_) / _ \/ _ \ |_| | | |"
-        echo "|  _ <  __/  __/  _| |_| |"
-        echo "|_| \_\___|\___|_|  \__, |"
-        echo "                    |___/ "
-        echo ""
-        echo "  Welcome to Reefy!"
-        echo "  Version:" $(. /etc/os-release; echo ${IMAGE_VERSION})
-        echo ""
-        echo "Hostname: $(hostname)"
-        echo "Active slot: $(reefy-efi status 2>/dev/null | awk '/^Active:/ {print $2}')"
-        echo "Interface IPs:"
-        ip -o -4 addr list | awk '{print $2, $4}'
-    } > /dev/kmsg
-}
-
 # Main execution
 setup_device_credentials
-display_banner
+# Render the device-state banner to /etc/issue (console login screen)
+# and /dev/kmsg. Generation lives in /usr/bin/reefy-banner so
+# reefy-banner.path can re-render it when device state changes (e.g. the
+# bootstrap UUID, which the control plane generates after this runs).
+reefy-banner

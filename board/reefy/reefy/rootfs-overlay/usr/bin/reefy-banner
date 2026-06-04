@@ -1,0 +1,71 @@
+#!/bin/sh
+# Render the Reefy device-state banner to the console login screen and
+# the boot log.
+#
+# The banner used to go only to /dev/kmsg, which production (quiet) boot
+# suppresses on the console - so the login screen showed nothing useful.
+# This writes it to /etc/issue, which agetty prints right above the
+# `login:` prompt regardless of boot-log verbosity, AND to /dev/kmsg for
+# the boot log. Run at boot by boot-reefy-init and refreshed by
+# reefy-banner.timer so the console reflects current identity / adoption
+# status / addresses (e.g. the bootstrap UUID, which is generated after
+# this script first runs).
+set -u
+
+PASSWORD_FILE=/mnt/reefy-data/state/device_password
+ADOPTED_UUID=/mnt/reefy-data/state/device-uuid
+BOOTSTRAP_UUID=/tmp/bootstrap-uuid
+
+# Identity + adoption status: an adopted device has a persistent
+# device-uuid; otherwise it is a bootstrap device whose UUID is
+# regenerated each boot once the control plane connects.
+if [ -f "$ADOPTED_UUID" ]; then
+    uuid=$(cat "$ADOPTED_UUID" 2>/dev/null)
+    status="adopted"
+elif [ -f "$BOOTSTRAP_UUID" ]; then
+    uuid=$(cat "$BOOTSTRAP_UUID" 2>/dev/null)
+    status="bootstrap (awaiting adoption)"
+else
+    uuid="(initializing)"
+    status="bootstrap (starting)"
+fi
+
+ctrl=$(systemctl is-active reefy-control 2>/dev/null || echo unknown)
+ver=$(. /etc/os-release 2>/dev/null; printf '%s' "${IMAGE_VERSION:-?}")
+slot=$(reefy-efi status 2>/dev/null | awk '/^Active:/ {print $2}')
+
+render() {
+    cat <<'ART'
+ ____            __
+|  _ \ ___  ___ / _|_   _
+| |_) / _ \/ _ \ |_| | | |
+|  _ <  __/  __/  _| |_| |
+|_| \_\___|\___|_|  \__, |
+                    |___/
+ART
+    echo ""
+    echo "  Welcome to Reefy!   Version: ${ver}   Slot: ${slot:-?}"
+    echo ""
+    echo "  Hostname : $(hostname)"
+    echo "  Identity : ${uuid}"
+    echo "  Status   : ${status}"
+    echo "  Control  : ${ctrl}"
+    echo "  Addresses:"
+    ip -o -4 addr list 2>/dev/null | awk '{printf "    %s %s\n", $2, $4}'
+    # Dev-only: surface the device password on the console when the
+    # operator opted in via the kernel cmdline. Gated identically to the
+    # existing kmsg path - production (no flag) never shows it.
+    if grep -q 'reefy.dev_shell=1' /proc/cmdline 2>/dev/null; then
+        pw=$(cat "$PASSWORD_FILE" 2>/dev/null)
+        [ -n "$pw" ] && echo "  DEV login: root / reefy   password: ${pw}"
+    fi
+    echo ""
+}
+
+out=$(render)
+# Boot log: raw (kmsg does no escape processing).
+printf '%s\n' "$out" > /dev/kmsg 2>/dev/null || true
+# Console login screen: agetty interprets backslash escapes in
+# /etc/issue, so double every backslash (agetty renders \\ as one \) to
+# keep the ASCII art intact.
+printf '%s\n' "$out" | sed 's/\\/\\\\/g' > /etc/issue 2>/dev/null || true

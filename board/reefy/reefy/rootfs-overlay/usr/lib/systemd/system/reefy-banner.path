@@ -1,0 +1,14 @@
+[Unit]
+Description=Refresh the Reefy console banner on device-state changes
+
+[Path]
+# Event-driven (no polling): re-render the banner only when identity /
+# adoption state actually changes - the bootstrap UUID (written by the
+# control plane shortly after boot) and the adopted device UUID (written
+# on adoption). boot-reefy-init renders the initial static banner; this
+# catches the transitions. Triggers reefy-banner.service (matching name).
+PathChanged=/tmp/bootstrap-uuid
+PathChanged=/mnt/reefy-data/state/device-uuid
+
+[Install]
+WantedBy=multi-user.target

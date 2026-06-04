@@ -1,0 +1,9 @@
+[Unit]
+Description=Render the Reefy console banner (/etc/issue + kmsg)
+# boot-reefy-init renders the banner once at boot; this oneshot is what
+# reefy-banner.timer triggers to refresh it as device state changes.
+After=reefy-init.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/reefy-banner
