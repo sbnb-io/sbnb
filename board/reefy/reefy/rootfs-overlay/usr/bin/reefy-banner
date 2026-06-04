@@ -39,14 +39,25 @@ ctrl=$(systemctl is-active reefy-control 2>/dev/null || true)
 ver=$(. /etc/os-release 2>/dev/null; printf '%s' "${IMAGE_VERSION:-?}")
 slot=$(reefy-efi status 2>/dev/null | awk '/^Active:/ {print $2}')
 
+# Horizontal rule that frames the banner so it stands apart from the
+# surrounding kernel boot messages on the console.
+RULE="============================================================"
+
 render() {
+    echo ""
+    echo "$RULE"
+    echo ""
+    # ASCII wordmark with a branching-coral sprig to its right. @C@ / @R@
+    # are colour markers (coral-on / reset) substituted per output
+    # surface below - the kmsg path strips them, /etc/issue turns them
+    # into real escapes.
     cat <<'ART'
- ____            __
-|  _ \ ___  ___ / _|_   _
-| |_) / _ \/ _ \ |_| | | |
-|  _ <  __/  __/  _| |_| |
-|_| \_\___|\___|_|  \__, |
-                    |___/
+ ____            __          @C@\ / \ /@R@
+|  _ \ ___  ___ / _|_   _     @C@Y   Y@R@
+| |_) / _ \/ _ \ |_| | | |    @C@|   |@R@
+|  _ <  __/  __/  _| |_| |     @C@\ /@R@
+|_| \_\___|\___|_|  \__, |      @C@Y@R@
+                    |___/       @C@|@R@
 ART
     echo ""
     echo "  Welcome to Reefy!   Version: ${ver}   Slot: ${slot:-?}"
@@ -65,12 +76,30 @@ ART
         [ -n "$pw" ] && echo "  DEV login: root / reefy   password: ${pw}"
     fi
     echo ""
+    echo "$RULE"
+    echo ""
 }
 
 out=$(render)
-# Boot log: raw (kmsg does no escape processing).
-printf '%s\n' "$out" > /dev/kmsg 2>/dev/null || true
-# Console login screen: agetty interprets backslash escapes in
-# /etc/issue, so double every backslash (agetty renders \\ as one \) to
-# keep the ASCII art intact.
-printf '%s\n' "$out" | sed 's/\\/\\\\/g' > /etc/issue 2>/dev/null || true
+
+# Boot log: strip the @C@/@R@ colour markers - kmsg/dmesg stay plain
+# text (escape codes there would just litter `dmesg` output).
+printf '%s\n' "$out" | sed 's/@C@//g; s/@R@//g' > /dev/kmsg 2>/dev/null || true
+
+# Console login screen. Two transforms, in order:
+#   1. agetty interprets backslash escapes in /etc/issue, so double every
+#      backslash (agetty renders \\ as one \) to keep the ASCII art intact.
+#   2. Turn @C@/@R@ into real SGR escapes so the coral sprig renders red,
+#      and prepend a one-time OSC palette remap so slot 9 becomes the exact
+#      Reefy coral #FF4040. The Linux console caps SGR at 16 colours
+#      (truecolor is mapped down), so a palette remap is the only way to hit
+#      an exact RGB on a physical monitor. These are Linux-console-only
+#      codes; /etc/issue never reaches SSH (sshd sets no Banner), so they
+#      cannot corrupt a remote terminal.
+c_on=$(printf '\033[91m')
+c_off=$(printf '\033[0m')
+palette=$(printf '\033]P9FF4040')
+{
+    printf '%s' "$palette"
+    printf '%s\n' "$out" | sed 's/\\/\\\\/g' | sed "s/@C@/$c_on/g; s/@R@/$c_off/g"
+} > /etc/issue 2>/dev/null || true
