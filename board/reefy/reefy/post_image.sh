@@ -16,8 +16,12 @@ set -euxo pipefail
 # reefy.dev_shell=1) get appended below.
 COMMON_CMDLINE="console=tty0 console=ttyS0,115200 panic=10 intel_iommu=on module_blacklist=nouveau,nvidiafb,snd_hda_intel,r8169"
 
+# prod: `quiet` for a silent boot - kernel log messages stay off the
+#   monitor; the device-state banner still shows at the login prompt via
+#   /etc/issue (agetty), which `quiet` does not affect. dev: verbose (no
+#   quiet) for full boot logs on console/serial, plus reefy.dev_shell=1.
 declare -A FLAVORS=(
-    [prod]="${COMMON_CMDLINE}"
+    [prod]="${COMMON_CMDLINE} quiet"
     [dev]="${COMMON_CMDLINE} reefy.dev_shell=1"
 )
 
