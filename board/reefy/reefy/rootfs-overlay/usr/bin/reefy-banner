@@ -6,10 +6,10 @@
 # suppresses on the console - so the login screen showed nothing useful.
 # This writes it to /etc/issue, which agetty prints right above the
 # `login:` prompt regardless of boot-log verbosity, AND to /dev/kmsg for
-# the boot log. Run at boot by boot-reefy-init and refreshed by
-# reefy-banner.timer so the console reflects current identity / adoption
-# status / addresses (e.g. the bootstrap UUID, which is generated after
-# this script first runs).
+# the boot log. Run at boot by boot-reefy-init and re-run by
+# reefy-banner.path when device state changes, so the console reflects
+# current identity / adoption status / addresses (e.g. the bootstrap
+# UUID, which is generated after this script first runs).
 set -u
 
 PASSWORD_FILE=/mnt/reefy-data/state/device_password
@@ -30,7 +30,12 @@ else
     status="bootstrap (starting)"
 fi
 
-ctrl=$(systemctl is-active reefy-control 2>/dev/null || echo unknown)
+# is-active prints the state word (active/inactive/activating/failed)
+# even on a non-zero exit, so capture stdout directly - using
+# `|| echo unknown` would append a spurious second line. Fall back to
+# "unknown" only when there is no output (e.g. systemctl missing).
+ctrl=$(systemctl is-active reefy-control 2>/dev/null || true)
+[ -n "$ctrl" ] || ctrl=unknown
 ver=$(. /etc/os-release 2>/dev/null; printf '%s' "${IMAGE_VERSION:-?}")
 slot=$(reefy-efi status 2>/dev/null | awk '/^Active:/ {print $2}')
 
