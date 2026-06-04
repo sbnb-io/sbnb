@@ -231,6 +231,61 @@ class ApplyPathTests(unittest.TestCase):
         # follow-up.
         self.assertTrue(res['ok'])
 
+    def _apply_custom(self, dp, state):
+        """Run _dp_apply_state on a caller-supplied state with the same
+        worker/host mocks as _apply, plus a _publish_event spy. Returns
+        (result, compose_mock, emit_mock)."""
+        import tempfile
+        dp.DESIRED_STATE_PATH = os.path.join(tempfile.mkdtemp(), 'ds.json')
+        with mock.patch.multiple(
+                dp, _apply_wifi=mock.DEFAULT, _apply_network=mock.DEFAULT,
+                _apply_user_ssh_keys=mock.DEFAULT, _sync_app_users=mock.DEFAULT,
+                _apply_backup_config=mock.DEFAULT, _apply_files=mock.DEFAULT,
+                _apply_storage=mock.DEFAULT), \
+                mock.patch.object(dp, '_restore_instances', return_value=set()), \
+                mock.patch.object(dp, '_apply_compose', return_value=True) as m_compose, \
+                mock.patch.object(dp, '_publish_event') as m_emit, \
+                mock.patch.object(dp._storage, 'set_volume_caps'), \
+                mock.patch.object(dp._storage, '_prepare_app_dirs'), \
+                mock.patch.object(shared, 'set_hostname'), \
+                mock.patch.object(shared, 'get_default_hostname', return_value='d'):
+            res = dp._dp_apply_state(json.dumps(state))
+        return res, m_compose, m_emit
+
+    def test_inconsistent_state_refuses_apply(self):
+        """A registered instance missing from compose services (the
+        backend catalog-gap bug) must NEVER reach `docker compose up
+        --remove-orphans` - that would delete the still-running
+        container. The apply aborts with an error stage first."""
+        state = {
+            'hostname': 'reefy-test', 'wifi': None, 'storage': None,
+            'network': None, 'user_ssh_keys': [], 'app_volumes': [],
+            'backup': {}, 'files': [],
+            'instances': [{'instance_uuid': 'i1', 'instance_name': 'qr',
+                           'app_slug': 'qr-access', 'uid': 0}],
+            # compose has only infra, NO service keyed 'i1'
+            'compose': {'services': {'reefy-proxy': {'image': 'p'}}},
+        }
+        _, m_compose, m_emit = self._apply_custom(_make_dp(), state)
+        m_compose.assert_not_called()
+        stages = [c.args[1].get('stage') for c in m_emit.call_args_list
+                  if c.args and c.args[0] == 'stage']
+        self.assertIn('error', stages)
+
+    def test_consistent_state_reaches_compose(self):
+        """Counterpart: every registered instance has its service, so the
+        apply proceeds to _apply_compose (no false-positive refusal)."""
+        state = {
+            'hostname': 'reefy-test', 'wifi': None, 'storage': None,
+            'network': None, 'user_ssh_keys': [], 'app_volumes': [],
+            'backup': {}, 'files': [],
+            'instances': [{'instance_uuid': 'i1', 'instance_name': 'qr',
+                           'app_slug': 'qr-access', 'uid': 0}],
+            'compose': {'services': {'i1': {'image': 'x'}}},
+        }
+        _, m_compose, _ = self._apply_custom(_make_dp(), state)
+        m_compose.assert_called_once()
+
 
 class DataSideBehaviorTests(unittest.TestCase):
     def setUp(self):

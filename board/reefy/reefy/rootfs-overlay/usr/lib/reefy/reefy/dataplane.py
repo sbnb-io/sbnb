@@ -337,6 +337,38 @@ class DataPlane:
                     tty_svc = f'{iuuid}-tty'
                     if tty_svc in compose['services']:
                         del compose['services'][tty_svc]
+
+            # Defense-in-depth: refuse an internally-inconsistent state.
+            # Every registered instance must have a matching compose
+            # service. A gap (e.g. a backend catalog miss that dropped an
+            # app from `services` but left it in `instances`) would, under
+            # `docker compose up --remove-orphans` below, DELETE that
+            # instance's running container - the cross-visitor data-loss
+            # bug we hit. Abort instead so the container survives until a
+            # correct state arrives. failed_restores are excluded: those
+            # were intentionally dropped from services just above. A
+            # genuine uninstall removes the instance from BOTH lists, so
+            # this never blocks normal app deletion.
+            services = compose.get('services', {})
+            orphaned = [
+                i for i in state.get('instances', [])
+                if i.get('instance_uuid')
+                and i['instance_uuid'] not in services
+                and i['instance_uuid'] not in failed_restores
+            ]
+            if orphaned:
+                names = ', '.join(
+                    f"{i.get('instance_name', '?')}"
+                    f"({(i.get('instance_uuid') or '?')[:8]})"
+                    for i in orphaned)
+                msg = (f'inconsistent desired-state: {len(orphaned)} '
+                       f'registered instance(s) missing from compose '
+                       f'services [{names}] - refusing apply (would '
+                       f'--remove-orphans delete them)')
+                log('mqtt', f'ERROR: {msg}')
+                self._publish_stage('error', msg)
+                return False
+
             if not self._apply_compose(compose):
                 self._publish_stage('error', 'docker compose up failed')
                 return False
