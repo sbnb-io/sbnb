@@ -535,6 +535,14 @@ class ControlPlane:
         _log_prov('Device certificate saved, restarting in device mode')
         log('mqtt', f'Device certificate saved to {state_dir}')
 
+        # Refresh the console banner so it reflects the adopted identity
+        # immediately. The reefy-banner.path watch can miss device-uuid
+        # appearing on the freshly-mounted state volume (the inotify watch
+        # predates the mount), so trigger the render deterministically from
+        # the code that just wrote it - otherwise the console keeps showing
+        # "bootstrap (awaiting adoption)" until the next reboot.
+        subprocess.run(['reefy-banner'], capture_output=True, timeout=10)
+
         topic = f"{self.topic_prefix}/devices/{uuid}/stage"
         self.client.publish(topic, json.dumps({
             "stage": "adopting",
