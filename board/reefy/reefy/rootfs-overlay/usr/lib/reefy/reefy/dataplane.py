@@ -43,12 +43,11 @@ class DataPlane:
     BACKUP_DIR = '/mnt/reefy-data/state/backup'
     BACKUP_CONFIG_PATH = '/mnt/reefy-data/state/backup/config.json'
     BACKUP_SERVICE = 'reefy-backup'
-    # Sticky terminal-failure guard: signature of the last compose that
-    # failed in a non-recoverable way, so the reconcile loop doesn't
-    # re-pull a doomed (multi-GB) image on every event. Cleared on a
-    # changed compose or a successful apply.
-    _failed_compose_sig = None
-    _failed_compose_reason = ''
+    # Sticky terminal-failure guard: persisted signature of the last
+    # compose that failed non-recoverably, so neither the reconcile loop
+    # nor a reconciler restart / reboot re-pulls a doomed (multi-GB) image
+    # again. Cleared on a changed compose or a successful apply.
+    _FAILED_SIG_PATH = '/mnt/reefy-data/state/.failed-compose-sig'
     _DEV_INJECTED_KEY_PATH = '/mnt/reefy/reefy/dev/authorized_keys'
     _FILES_ALLOWED_ROOTS = (
         '/mnt/reefy-data/apps/',
@@ -1284,13 +1283,14 @@ Environment=MQTT_PORT={self.port}
         # desired-state (free space / fix the image / uninstall the app ->
         # different sig -> retried).
         sig = self._compose_sig(compose)
-        if sig == self._failed_compose_sig:
+        failed_sig, failed_reason = self._read_failed_sig()
+        if sig == failed_sig:
             log('mqtt', 'compose unchanged since terminal failure '
-                f'({self._failed_compose_reason}); skipping re-pull until '
-                'desired-state changes')
+                f'({failed_reason}); skipping re-pull until desired-state '
+                'changes')
             for iuuid in instance_uuids:
                 self._publish_health_status(
-                    iuuid, 'failed', message=self._failed_compose_reason)
+                    iuuid, 'failed', message=failed_reason)
             return False
 
         # Per-instance health: announce 'starting' upfront so the dashboard
@@ -1319,7 +1319,7 @@ Environment=MQTT_PORT={self.port}
                 proc.wait(timeout=120)
                 if proc.returncode == 0:
                     log('mqtt', 'docker compose up OK')
-                    self._failed_compose_sig = None  # success clears the guard
+                    self._clear_failed_sig()  # success clears the guard
                     for iuuid in instance_uuids:
                         self._publish_health_status(iuuid, 'running')
                     return True
@@ -1364,8 +1364,7 @@ Environment=MQTT_PORT={self.port}
         # loop won't re-pull this unchanged compose, and publish a failed
         # badge with the reason + last output lines.
         log('mqtt', f'docker compose up failed: {reason}')
-        self._failed_compose_sig = sig
-        self._failed_compose_reason = reason
+        self._write_failed_sig(sig, reason)
         tail = '\n'.join(last_output.splitlines()[-5:]) if last_output else reason
         for iuuid in instance_uuids:
             self._publish_health_status(iuuid, 'failed', message=tail)
@@ -1376,6 +1375,31 @@ Environment=MQTT_PORT={self.port}
         """Stable signature of a compose dict, for the sticky-failure guard."""
         return hashlib.sha256(
             json.dumps(compose, sort_keys=True).encode()).hexdigest()
+
+    def _read_failed_sig(self):
+        """(sig, reason) of the last terminal compose failure, or (None, '')."""
+        try:
+            with open(self._FAILED_SIG_PATH) as f:
+                sig, _, reason = f.read().partition('\n')
+            return (sig.strip() or None), reason.strip()
+        except Exception:
+            return None, ''
+
+    def _write_failed_sig(self, sig, reason):
+        try:
+            os.makedirs(os.path.dirname(self._FAILED_SIG_PATH), exist_ok=True)
+            with open(self._FAILED_SIG_PATH, 'w') as f:
+                f.write(f'{sig}\n{reason}')
+        except Exception as e:
+            log('mqtt', f'failed to persist sticky-failure sig: {e}')
+
+    def _clear_failed_sig(self):
+        try:
+            os.remove(self._FAILED_SIG_PATH)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            log('mqtt', f'failed to clear sticky-failure sig: {e}')
 
     @staticmethod
     def _classify_compose_failure(output):

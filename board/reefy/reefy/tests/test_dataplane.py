@@ -294,9 +294,21 @@ class ComposeRetryPolicyTests(unittest.TestCase):
 
     GOOD = {'services': {'i1': {'image': 'ghcr.io/x/app:1'}}}
 
+    def _mkdp(self):
+        """A DataPlane whose compose + sticky-sig paths live in a fresh
+        temp dir, so the disk-backed sticky guard persists across _run
+        calls on the same dp (as it would across a real restart)."""
+        import tempfile
+        dp = _make_dp()
+        d = tempfile.mkdtemp()
+        dp.COMPOSE_PATH = os.path.join(d, 'docker-compose.json')
+        dp._FAILED_SIG_PATH = os.path.join(d, '.failed-compose-sig')
+        return dp
+
     def _run(self, dp, compose, output, rc):
         """Run _apply_compose with `docker compose up` mocked to emit
-        `output` + exit `rc` on EVERY attempt. Returns
+        `output` + exit `rc` on EVERY attempt (real file I/O for the
+        compose + sticky-sig files). Returns
         (result, n_compose_up_calls, prune_mock, health_mock)."""
         import io
         n = {'c': 0}
@@ -313,10 +325,7 @@ class ComposeRetryPolicyTests(unittest.TestCase):
                 mock.patch.object(dp, '_publish_health_status') as m_health, \
                 mock.patch.object(dataplane.time, 'sleep'), \
                 mock.patch.object(dataplane.shared, 'instance_uuids_in_compose',
-                                  return_value=['i1']), \
-                mock.patch.object(dataplane.os, 'makedirs'), \
-                mock.patch.object(dataplane.os.path, 'exists', return_value=False), \
-                mock.patch('builtins.open', mock.mock_open()):
+                                  return_value=['i1']):
             res = dp._apply_compose(compose)
         return res, n['c'], m_prune, m_health
 
@@ -326,18 +335,21 @@ class ComposeRetryPolicyTests(unittest.TestCase):
                 if len(c.args) >= 2 and c.args[1] == 'failed']
 
     def test_no_space_fails_fast_after_one_prune(self):
+        dp = self._mkdp()
         res, n, m_prune, m_health = self._run(
-            _make_dp(), self.GOOD,
+            dp, self.GOOD,
             'failed to register layer: ...: no space left on device', 1)
         self.assertFalse(res)
         self.assertEqual(n, 2, 'no_space: try, prune, retry once, then give up')
         m_prune.assert_called_once()
         self.assertTrue(any('space' in m.lower() or 'disk' in m.lower()
                             for m in self._failed_msgs(m_health)))
+        self.assertTrue(os.path.exists(dp._FAILED_SIG_PATH),
+                        'terminal failure must persist the sticky sig')
 
     def test_image_missing_fails_after_one_attempt(self):
         res, n, m_prune, _ = self._run(
-            _make_dp(), self.GOOD,
+            self._mkdp(), self.GOOD,
             'app:badtag: manifest unknown: manifest unknown', 1)
         self.assertFalse(res)
         self.assertEqual(n, 1, 'image_missing is non-retryable')
@@ -345,17 +357,17 @@ class ComposeRetryPolicyTests(unittest.TestCase):
 
     def test_transient_keeps_full_retry_budget(self):
         res, n, _, _ = self._run(
-            _make_dp(), self.GOOD, 'dial tcp: i/o timeout', 1)
+            self._mkdp(), self.GOOD, 'dial tcp: i/o timeout', 1)
         self.assertFalse(res)
         self.assertEqual(n, 5, 'transient errors keep retrying')
 
     def test_sticky_skips_repull_until_state_changes(self):
-        dp = _make_dp()
+        dp = self._mkdp()
         res1, n1, _, _ = self._run(dp, self.GOOD, 'no space left on device', 1)
         self.assertFalse(res1)
         self.assertEqual(n1, 2)
-        self.assertIsNotNone(dp._failed_compose_sig)
-        # same compose again -> skipped entirely, no pull
+        self.assertTrue(os.path.exists(dp._FAILED_SIG_PATH))
+        # same compose again -> skipped entirely (reads the persisted sig)
         res2, n2, _, m_health2 = self._run(dp, self.GOOD, 'unused', 0)
         self.assertFalse(res2)
         self.assertEqual(n2, 0, 'unchanged failed compose must not re-pull')
@@ -366,12 +378,14 @@ class ComposeRetryPolicyTests(unittest.TestCase):
         self.assertGreaterEqual(n3, 1, 'changed compose must be retried')
 
     def test_success_clears_sticky_guard(self):
-        dp = _make_dp()
-        dp._failed_compose_sig = 'stale-sig-from-another-compose'
+        dp = self._mkdp()
+        with open(dp._FAILED_SIG_PATH, 'w') as f:
+            f.write('stale-sig-from-another-compose\nold reason')
         res, n, _, _ = self._run(dp, self.GOOD, 'Started i1', 0)
         self.assertTrue(res)
         self.assertEqual(n, 1)
-        self.assertIsNone(dp._failed_compose_sig, 'success clears the guard')
+        self.assertFalse(os.path.exists(dp._FAILED_SIG_PATH),
+                         'success clears the persisted sticky sig')
 
 
 class DataSideBehaviorTests(unittest.TestCase):
