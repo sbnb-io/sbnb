@@ -287,6 +287,93 @@ class ApplyPathTests(unittest.TestCase):
         m_compose.assert_called_once()
 
 
+class ComposeRetryPolicyTests(unittest.TestCase):
+    """_apply_compose: fail-fast on deterministic failures (a) + sticky
+    terminal-failure guard so the reconcile loop stops re-pulling an
+    unchanged, already-failed compose (b)."""
+
+    GOOD = {'services': {'i1': {'image': 'ghcr.io/x/app:1'}}}
+
+    def _run(self, dp, compose, output, rc):
+        """Run _apply_compose with `docker compose up` mocked to emit
+        `output` + exit `rc` on EVERY attempt. Returns
+        (result, n_compose_up_calls, prune_mock, health_mock)."""
+        import io
+        n = {'c': 0}
+
+        def fake_popen(cmd, **kw):
+            n['c'] += 1
+            m = mock.MagicMock()
+            m.stdout = io.StringIO(output + '\n')
+            m.returncode = rc
+            return m
+
+        with mock.patch.object(dataplane.subprocess, 'Popen', side_effect=fake_popen), \
+                mock.patch.object(dp, '_prune_docker') as m_prune, \
+                mock.patch.object(dp, '_publish_health_status') as m_health, \
+                mock.patch.object(dataplane.time, 'sleep'), \
+                mock.patch.object(dataplane.shared, 'instance_uuids_in_compose',
+                                  return_value=['i1']), \
+                mock.patch.object(dataplane.os, 'makedirs'), \
+                mock.patch.object(dataplane.os.path, 'exists', return_value=False), \
+                mock.patch('builtins.open', mock.mock_open()):
+            res = dp._apply_compose(compose)
+        return res, n['c'], m_prune, m_health
+
+    @staticmethod
+    def _failed_msgs(m_health):
+        return [c.kwargs.get('message', '') for c in m_health.call_args_list
+                if len(c.args) >= 2 and c.args[1] == 'failed']
+
+    def test_no_space_fails_fast_after_one_prune(self):
+        res, n, m_prune, m_health = self._run(
+            _make_dp(), self.GOOD,
+            'failed to register layer: ...: no space left on device', 1)
+        self.assertFalse(res)
+        self.assertEqual(n, 2, 'no_space: try, prune, retry once, then give up')
+        m_prune.assert_called_once()
+        self.assertTrue(any('space' in m.lower() or 'disk' in m.lower()
+                            for m in self._failed_msgs(m_health)))
+
+    def test_image_missing_fails_after_one_attempt(self):
+        res, n, m_prune, _ = self._run(
+            _make_dp(), self.GOOD,
+            'app:badtag: manifest unknown: manifest unknown', 1)
+        self.assertFalse(res)
+        self.assertEqual(n, 1, 'image_missing is non-retryable')
+        m_prune.assert_not_called()
+
+    def test_transient_keeps_full_retry_budget(self):
+        res, n, _, _ = self._run(
+            _make_dp(), self.GOOD, 'dial tcp: i/o timeout', 1)
+        self.assertFalse(res)
+        self.assertEqual(n, 5, 'transient errors keep retrying')
+
+    def test_sticky_skips_repull_until_state_changes(self):
+        dp = _make_dp()
+        res1, n1, _, _ = self._run(dp, self.GOOD, 'no space left on device', 1)
+        self.assertFalse(res1)
+        self.assertEqual(n1, 2)
+        self.assertIsNotNone(dp._failed_compose_sig)
+        # same compose again -> skipped entirely, no pull
+        res2, n2, _, m_health2 = self._run(dp, self.GOOD, 'unused', 0)
+        self.assertFalse(res2)
+        self.assertEqual(n2, 0, 'unchanged failed compose must not re-pull')
+        self.assertTrue(self._failed_msgs(m_health2), 'still surfaces failed')
+        # a CHANGED compose is re-attempted
+        other = {'services': {'i1': {'image': 'ghcr.io/x/app:2'}}}
+        res3, n3, _, _ = self._run(dp, other, 'no space left on device', 1)
+        self.assertGreaterEqual(n3, 1, 'changed compose must be retried')
+
+    def test_success_clears_sticky_guard(self):
+        dp = _make_dp()
+        dp._failed_compose_sig = 'stale-sig-from-another-compose'
+        res, n, _, _ = self._run(dp, self.GOOD, 'Started i1', 0)
+        self.assertTrue(res)
+        self.assertEqual(n, 1)
+        self.assertIsNone(dp._failed_compose_sig, 'success clears the guard')
+
+
 class DataSideBehaviorTests(unittest.TestCase):
     def setUp(self):
         self.dp = _make_dp()

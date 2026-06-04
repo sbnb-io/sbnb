@@ -43,6 +43,12 @@ class DataPlane:
     BACKUP_DIR = '/mnt/reefy-data/state/backup'
     BACKUP_CONFIG_PATH = '/mnt/reefy-data/state/backup/config.json'
     BACKUP_SERVICE = 'reefy-backup'
+    # Sticky terminal-failure guard: signature of the last compose that
+    # failed in a non-recoverable way, so the reconcile loop doesn't
+    # re-pull a doomed (multi-GB) image on every event. Cleared on a
+    # changed compose or a successful apply.
+    _failed_compose_sig = None
+    _failed_compose_reason = ''
     _DEV_INJECTED_KEY_PATH = '/mnt/reefy/reefy/dev/authorized_keys'
     _FILES_ALLOWED_ROOTS = (
         '/mnt/reefy-data/apps/',
@@ -1270,17 +1276,37 @@ Environment=MQTT_PORT={self.port}
         # (clears any prior failed badge) or 'failed' (sticks with the
         # last few output lines as the error message).
         instance_uuids = shared.instance_uuids_in_compose(compose)
+
+        # (b) Sticky terminal failure: if this exact compose already
+        # failed non-recoverably, don't re-pull it - the outer reconcile
+        # loop would otherwise restart the (often multi-GB) doomed pull on
+        # every event. Re-surface the failure and wait for a CHANGED
+        # desired-state (free space / fix the image / uninstall the app ->
+        # different sig -> retried).
+        sig = self._compose_sig(compose)
+        if sig == self._failed_compose_sig:
+            log('mqtt', 'compose unchanged since terminal failure '
+                f'({self._failed_compose_reason}); skipping re-pull until '
+                'desired-state changes')
+            for iuuid in instance_uuids:
+                self._publish_health_status(
+                    iuuid, 'failed', message=self._failed_compose_reason)
+            return False
+
+        # Per-instance health: announce 'starting' upfront so the dashboard
+        # shows a spinner badge while compose is in flight.
         for iuuid in instance_uuids:
             self._publish_health_status(iuuid, 'starting')
 
         max_retries = 5
         backoff = 10
-        recovered = False
+        pruned = False
         last_output = ''
+        reason = 'docker compose up failed'
         for attempt in range(1, max_retries + 1):
             output_lines = []
             try:
-                log('reconciler', f'{f'docker compose up (attempt {attempt}/{max_retries})'}')
+                log('reconciler', f'docker compose up (attempt {attempt}/{max_retries})')
                 proc = subprocess.Popen(
                     ['docker', 'compose', '-f', self.COMPOSE_PATH, 'up', '-d', '--pull', 'missing', '--remove-orphans'],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -1292,85 +1318,117 @@ Environment=MQTT_PORT={self.port}
                     output_lines.append(line)
                 proc.wait(timeout=120)
                 if proc.returncode == 0:
-                    log('mqtt', f'docker compose up OK')
+                    log('mqtt', 'docker compose up OK')
+                    self._failed_compose_sig = None  # success clears the guard
                     for iuuid in instance_uuids:
                         self._publish_health_status(iuuid, 'running')
                     return True
-                else:
-                    msg = f'docker compose up failed (attempt {attempt}/{max_retries})'
-                    log('mqtt', f'{msg}')
+                log('mqtt', f'docker compose up failed (attempt {attempt}/{max_retries})')
             except subprocess.TimeoutExpired:
                 proc.kill()
-                msg = f'docker compose up timed out (attempt {attempt}/{max_retries})'
-                log('mqtt', f'{msg}')
+                output_lines.append('docker compose up timed out')
+                log('mqtt', f'docker compose up timed out (attempt {attempt}/{max_retries})')
             except Exception as e:
-                msg = f'docker compose up error (attempt {attempt}/{max_retries}): {e}'
-                log('mqtt', f'{msg}')
+                output_lines.append(f'error: {e}')
+                log('mqtt', f'docker compose up error (attempt {attempt}/{max_retries}): {e}')
 
             last_output = '\n'.join(output_lines)
+            cls = self._classify_compose_failure(last_output)
+            reason = self._failure_reason(cls, last_output)
 
-            # Attempt recovery once based on error type
-            if not recovered:
-                recovery = self._diagnose_compose_failure(last_output)
-                if recovery:
-                    recovered = True
-                    continue  # skip backoff delay, recovery already took time
+            # (a) Fail-fast on deterministic, non-retryable failures so we
+            # don't burn the full 5x re-pull budget (each a full image
+            # pull) on an error that will never self-heal.
+            if cls == 'image_missing':
+                log('mqtt', f'non-retryable: {reason}; giving up')
+                break
+            if cls == 'no_space':
+                if pruned:
+                    log('mqtt', f'non-retryable: {reason} (prune did not help); giving up')
+                    break
+                pruned = True
+                self._prune_docker(volumes=False)  # reclaim junk, then ONE retry
+                continue
+            if cls == 'storage_corruption' and not pruned:
+                pruned = True
+                self._prune_docker(volumes=True)   # broken overlay layers
+                continue
 
+            # transient (or recovery already attempted): backoff + retry
             if attempt < max_retries:
                 delay = backoff * (2 ** (attempt - 1))
                 log('mqtt', f'Retrying in {delay}s...')
                 time.sleep(delay)
 
-        log('mqtt', f'docker compose up failed after {max_retries} attempts')
-        # Take the last ~5 lines of compose output as the failure
-        # message - usually contains the actual error from docker.
-        tail = '\n'.join(last_output.splitlines()[-5:]) if last_output else ''
+        # Terminal failure: record a sticky signature so the reconcile
+        # loop won't re-pull this unchanged compose, and publish a failed
+        # badge with the reason + last output lines.
+        log('mqtt', f'docker compose up failed: {reason}')
+        self._failed_compose_sig = sig
+        self._failed_compose_reason = reason
+        tail = '\n'.join(last_output.splitlines()[-5:]) if last_output else reason
         for iuuid in instance_uuids:
             self._publish_health_status(iuuid, 'failed', message=tail)
         return False
 
-    def _diagnose_compose_failure(self, output):
-        """Analyze compose failure output and attempt automated recovery.
-        Returns True if a recovery action was taken."""
-        # Storage/layer corruption: overlay2 broken symlinks, missing layers
-        storage_errors = [
+    @staticmethod
+    def _compose_sig(compose):
+        """Stable signature of a compose dict, for the sticky-failure guard."""
+        return hashlib.sha256(
+            json.dumps(compose, sort_keys=True).encode()).hexdigest()
+
+    @staticmethod
+    def _classify_compose_failure(output):
+        """Bucket `docker compose up` output into a retry policy class.
+
+        Order matters: `no_space` is checked FIRST because the kernel's
+        "no space left on device" often rides on a "failed to register
+        layer: ..." line, which would otherwise look like recoverable
+        storage corruption."""
+        o = (output or '').lower()
+        if 'no space left on device' in o:
+            return 'no_space'              # deterministic until space is freed
+        image_missing = [
+            'manifest unknown',
+            'not found: manifest',
+            'pull access denied',
+            'repository does not exist',
+            'requested access to the resource is denied',
+            'manifest for ',                # "...not found: manifest unknown"
+        ]
+        if any(s in o for s in image_missing):
+            return 'image_missing'         # bad ref; retrying never helps
+        storage_corruption = [
             'failed to register layer',
-            'no such file or directory',
             'layer does not exist',
             'error creating overlay mount',
-            'invalid argument',
             'failed to mount overlay',
         ]
-        if any(err in output.lower() for err in storage_errors):
-            print("[mqtt] Docker storage corruption detected — running docker system prune")
-            try:
-                result = subprocess.run(
-                    ['docker', 'system', 'prune', '-a', '-f', '--volumes'],
-                    capture_output=True, text=True, timeout=120
-                )
-                for line in result.stdout.strip().split('\n'):
-                    if line.strip():
-                        log('mqtt', f'prune: {line}')
-                return True
-            except Exception as e:
-                log('mqtt', f'Docker prune failed: {e}')
-                return False
+        if any(s in o for s in storage_corruption):
+            return 'storage_corruption'    # prune may repair broken layers
+        return 'transient'                 # network/5xx/timeout -> keep retrying
 
-        # Disk space issues
-        if 'no space left on device' in output.lower():
-            print("[mqtt] Disk full — running docker system prune")
-            try:
-                subprocess.run(
-                    ['docker', 'system', 'prune', '-a', '-f'],
-                    capture_output=True, text=True, timeout=120
-                )
-                log('reconciler', f'{'Docker prune complete'}')
-                return True
-            except Exception as e:
-                log('reconciler', f'{f'Docker prune failed: {e}'}')
-                return False
+    @staticmethod
+    def _failure_reason(cls, output):
+        return {
+            'no_space': 'out of disk space',
+            'image_missing': 'image not found or access denied',
+            'storage_corruption': 'docker storage error',
+        }.get(cls, 'docker compose up failed')
 
-        return False
+    def _prune_docker(self, volumes=False):
+        """Reclaim docker space; `volumes=True` also drops anonymous
+        volumes (only for broken-layer recovery, never routine no-space)."""
+        cmd = ['docker', 'system', 'prune', '-a', '-f']
+        if volumes:
+            cmd.append('--volumes')
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            for line in (result.stdout or '').strip().split('\n'):
+                if line.strip():
+                    log('mqtt', f'prune: {line}')
+        except Exception as e:
+            log('mqtt', f'Docker prune failed: {e}')
 
 
 def main_data_plane():
