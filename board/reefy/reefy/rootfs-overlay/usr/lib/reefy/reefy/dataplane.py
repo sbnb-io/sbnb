@@ -1347,7 +1347,12 @@ Environment=MQTT_PORT={self.port}
                     log('mqtt', f'non-retryable: {reason} (prune did not help); giving up')
                     break
                 pruned = True
-                self._prune_docker(volumes=False)  # reclaim junk, then ONE retry
+                # Prune once; only retry if it actually freed space - a
+                # retry after a 0B prune is just another full doomed pull.
+                if not self._prune_docker(volumes=False):
+                    log('mqtt', f'non-retryable: {reason} (prune reclaimed nothing); giving up')
+                    break
+                log('mqtt', 'prune reclaimed space; retrying compose up once')
                 continue
             if cls == 'storage_corruption' and not pruned:
                 pruned = True
@@ -1442,17 +1447,24 @@ Environment=MQTT_PORT={self.port}
 
     def _prune_docker(self, volumes=False):
         """Reclaim docker space; `volumes=True` also drops anonymous
-        volumes (only for broken-layer recovery, never routine no-space)."""
+        volumes (only for broken-layer recovery, never routine no-space).
+        Returns True if prune actually reclaimed space - retrying a
+        no_space pull is pointless when prune freed nothing."""
         cmd = ['docker', 'system', 'prune', '-a', '-f']
         if volumes:
             cmd.append('--volumes')
+        reclaimed_any = False
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             for line in (result.stdout or '').strip().split('\n'):
                 if line.strip():
                     log('mqtt', f'prune: {line}')
+                if 'Total reclaimed space:' in line:
+                    amount = line.split(':', 1)[1].strip()
+                    reclaimed_any = amount not in ('0B', '0 B', '0')
         except Exception as e:
             log('mqtt', f'Docker prune failed: {e}')
+        return reclaimed_any
 
 
 def main_data_plane():

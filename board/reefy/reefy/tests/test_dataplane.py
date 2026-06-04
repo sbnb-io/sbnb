@@ -305,10 +305,11 @@ class ComposeRetryPolicyTests(unittest.TestCase):
         dp._FAILED_SIG_PATH = os.path.join(d, '.failed-compose-sig')
         return dp
 
-    def _run(self, dp, compose, output, rc):
+    def _run(self, dp, compose, output, rc, prune_reclaims=True):
         """Run _apply_compose with `docker compose up` mocked to emit
         `output` + exit `rc` on EVERY attempt (real file I/O for the
-        compose + sticky-sig files). Returns
+        compose + sticky-sig files). `prune_reclaims` is the mocked
+        _prune_docker return (did prune free space?). Returns
         (result, n_compose_up_calls, prune_mock, health_mock)."""
         import io
         n = {'c': 0}
@@ -321,7 +322,7 @@ class ComposeRetryPolicyTests(unittest.TestCase):
             return m
 
         with mock.patch.object(dataplane.subprocess, 'Popen', side_effect=fake_popen), \
-                mock.patch.object(dp, '_prune_docker') as m_prune, \
+                mock.patch.object(dp, '_prune_docker', return_value=prune_reclaims) as m_prune, \
                 mock.patch.object(dp, '_publish_health_status') as m_health, \
                 mock.patch.object(dataplane.time, 'sleep'), \
                 mock.patch.object(dataplane.shared, 'instance_uuids_in_compose',
@@ -334,18 +335,27 @@ class ComposeRetryPolicyTests(unittest.TestCase):
         return [c.kwargs.get('message', '') for c in m_health.call_args_list
                 if len(c.args) >= 2 and c.args[1] == 'failed']
 
-    def test_no_space_fails_fast_after_one_prune(self):
+    def test_no_space_prune_freed_nothing_gives_up(self):
         dp = self._mkdp()
         res, n, m_prune, m_health = self._run(
             dp, self.GOOD,
-            'failed to register layer: ...: no space left on device', 1)
+            'failed to register layer: ...: no space left on device', 1,
+            prune_reclaims=False)
         self.assertFalse(res)
-        self.assertEqual(n, 2, 'no_space: try, prune, retry once, then give up')
+        self.assertEqual(n, 1, 'prune freed nothing -> give up after 1 attempt')
         m_prune.assert_called_once()
         self.assertTrue(any('space' in m.lower() or 'disk' in m.lower()
                             for m in self._failed_msgs(m_health)))
         self.assertTrue(os.path.exists(dp._FAILED_SIG_PATH),
                         'terminal failure must persist the sticky sig')
+
+    def test_no_space_prune_freed_space_retries_once(self):
+        dp = self._mkdp()
+        res, n, m_prune, _ = self._run(
+            dp, self.GOOD, 'no space left on device', 1, prune_reclaims=True)
+        self.assertFalse(res)
+        self.assertEqual(n, 2, 'prune freed space -> one retry, then give up')
+        m_prune.assert_called_once()
 
     def test_image_missing_fails_after_one_attempt(self):
         res, n, m_prune, _ = self._run(
