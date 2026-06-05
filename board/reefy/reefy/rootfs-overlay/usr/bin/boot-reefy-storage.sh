@@ -271,10 +271,21 @@ setup_internal_storage() {
     done
     [ -z "${lv_path}" ] && return 0
 
-    # Mount internal drive as /mnt/reefy-data
+    # Mount internal drive as /mnt/reefy-data. fs-aware opts: a fresh
+    # reefy_default is XFS, which REJECTS ext4's commit= ("xfs: Unknown
+    # parameter 'commit'" -> mount fails -> device falls back to bootstrap
+    # and loses its identity on reboot). Legacy ext4 devices keep the full
+    # opts. mount_data() (USB p4 path) already does this; the internal-
+    # drive path must too. Detect per-LV so both layouts remount.
     echo "[reefy] Internal drive found, mounting ${lv_path} as ${REEFY_DATA_MNT}..."
     mkdir -p "${REEFY_DATA_MNT}"
-    mount -o "${REEFY_DATA_MOUNT_OPTS}" "${lv_path}" "${REEFY_DATA_MNT}" || {
+    LV_FS=$(blkid -o value -s TYPE "${lv_path}" 2>/dev/null)
+    if [ "${LV_FS}" = "xfs" ]; then
+        INTERNAL_OPTS="noatime,discard"
+    else
+        INTERNAL_OPTS="${REEFY_DATA_MOUNT_OPTS}"
+    fi
+    mount -o "${INTERNAL_OPTS}" "${lv_path}" "${REEFY_DATA_MNT}" || {
         echo "[reefy] WARNING: Internal drive mount failed"
         return 0
     }
