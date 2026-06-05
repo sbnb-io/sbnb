@@ -81,6 +81,12 @@ def set_hostname(hostname):
     # Restart avahi so it re-announces the new hostname on the network
     subprocess.run(['systemctl', 'restart', 'avahi-daemon'], capture_output=True)
     log('mqtt', f'Hostname changed: {current} -> {hostname}')
+    # Refresh the console banner so its `Hostname:` line reflects the new
+    # name right away. The adoption-time banner regen (on device-uuid
+    # write) runs before this rename, so without this nudge the banner
+    # keeps the bootstrap hostname until the next identity event. reefy-
+    # banner also `agetty --reload`s, so the physical console repaints.
+    subprocess.run(['reefy-banner'], capture_output=True, timeout=10)
 
 
 def wait_for_tunnel_health(timeout=60, interval=2):

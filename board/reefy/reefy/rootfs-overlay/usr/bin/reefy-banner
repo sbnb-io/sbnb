@@ -103,3 +103,12 @@ palette=$(printf '\033]P9FF4040')
     printf '%s' "$palette"
     printf '%s\n' "$out" | sed 's/\\/\\\\/g' | sed "s/@C@/$c_on/g; s/@R@/$c_off/g"
 } > /etc/issue 2>/dev/null || true
+
+# Repaint the physical console now. agetty reads /etc/issue only when it
+# (re)prints the login prompt and never re-reads it on its own, so a
+# banner refreshed after boot - e.g. on adoption, when status flips
+# bootstrap -> adopted - would stay frozen on-screen until the next login
+# attempt. `agetty --reload` (touches /run/agetty.reload) tells running
+# agetty instances to reprint the issue + prompt. Non-disruptive: it does
+# not affect an active login session, only the idle prompt.
+agetty --reload 2>/dev/null || true
