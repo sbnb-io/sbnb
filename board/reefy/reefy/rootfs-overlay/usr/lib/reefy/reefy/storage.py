@@ -125,12 +125,19 @@ class Storage:
                 continue
 
             # --allow-discards lets dm-crypt pass TRIM down to the
-            # drive; --persistent stores the flag in the LUKS header
-            # so subsequent opens (boot-reefy-storage.sh) inherit it.
+            # drive; --persistent stores the flags in the LUKS header
+            # so subsequent opens (boot-reefy-storage.sh) inherit them.
             # Required for dm-thin discard_passdown and FTL recovery.
+            # --perf-submit_from_crypt_cpus drops dm-crypt's single
+            # post-encryption write-submission thread (the serialization
+            # point); it recovers ~+38% concurrent random write through
+            # the full stack with no read/seq cost (see
+            # docs/storage-chunk-size-study.md). Persisted, so every
+            # later open inherits it too.
             result = subprocess.run(
                 ['cryptsetup', 'luksOpen', target, mapper_name,
-                 '--allow-discards', '--persistent',
+                 '--allow-discards', '--perf-submit_from_crypt_cpus',
+                 '--persistent',
                  '--key-file', key_part, '--keyfile-size', '44'],
                 capture_output=True, timeout=120)
             if result.returncode != 0:
@@ -213,6 +220,7 @@ class Storage:
                 continue
             result = subprocess.run(
                 ['cryptsetup', 'luksOpen', dev, luks_name,
+                 '--perf-submit_from_crypt_cpus',
                  '--key-file', key_part, '--keyfile-size', '44'],
                 capture_output=True, timeout=120)
             if result.returncode == 0:
@@ -857,6 +865,7 @@ class Storage:
 
             result = subprocess.run(
                 ['cryptsetup', 'luksOpen', target, luks_name,
+                 '--perf-submit_from_crypt_cpus',
                  '--key-file', key_part, '--keyfile-size', str(luks_key_size)],
                 capture_output=True, text=True, timeout=120
             )

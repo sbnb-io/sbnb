@@ -914,6 +914,7 @@ class DataPlane:
                         f'LUKS format failed on {target}: {r.stderr}')
             r = subprocess.run(
                 ['cryptsetup', 'luksOpen', target, luks_name,
+                 '--perf-submit_from_crypt_cpus',
                  '--key-file', key_part, '--keyfile-size', str(luks_key_size)],
                 capture_output=True, text=True, timeout=120)
             if r.returncode != 0:

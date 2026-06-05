@@ -163,8 +163,13 @@ setup_data_partition() {
     # If LUKS partition exists, try to open and mount
     if [ -b "${DATA_PART}" ]; then
         if cryptsetup isLuks "${DATA_PART}" 2>/dev/null; then
+            # --perf-submit_from_crypt_cpus drops dm-crypt's single
+            # write-submission thread (recovers concurrent random write;
+            # see docs/storage-chunk-size-study.md). --persistent stores
+            # it in the header, so existing devices pick it up on this
+            # first boot after the update and keep it thereafter.
             if cryptsetup luksOpen "${DATA_PART}" "${LUKS_NAME}" \
-                --allow-discards --persistent \
+                --allow-discards --perf-submit_from_crypt_cpus --persistent \
                 --key-file "${KEY_PART}" --keyfile-size "${LUKS_KEY_SIZE}" 2>/dev/null; then
                 FS_TYPE=$(blkid -o value -s TYPE "/dev/mapper/${LUKS_NAME}" 2>/dev/null)
                 if [ "${FS_TYPE}" = "LVM2_member" ]; then
@@ -248,7 +253,7 @@ setup_internal_storage() {
         luks_name="reefy-$(basename ${dev})"
         [ -e "/dev/mapper/${luks_name}" ] && continue
         cryptsetup luksOpen "${dev}" "${luks_name}" \
-            --allow-discards --persistent \
+            --allow-discards --perf-submit_from_crypt_cpus --persistent \
             --key-file "${KEY_PART}" --keyfile-size "${LUKS_KEY_SIZE}" 2>/dev/null || continue
         echo "[reefy] Opened LUKS on ${dev}"
     done
