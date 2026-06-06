@@ -1406,21 +1406,44 @@ class ControlPlane:
 
     # --- Control <-> data-plane Varlink IPC ---
 
-    def _varlink_call(self, method, retries=3, **kwargs):
+    def _varlink_call(self, method, retries=3, startup_grace_s=30, **kwargs):
         """Control-side: invoke a data-plane Varlink method over the unix
         socket. Returns the result dict, or {'ok': False, 'error': ...}
         on failure. Retries briefly so a just-restarting data plane
         doesn't fail the command outright. Runs in the command thread, so
-        a slow data op never blocks the MQTT loop."""
+        a slow data op never blocks the MQTT loop.
+
+        Boot race: reefy-control and reefy-reconciler start in parallel,
+        and control connects to MQTT (firing reconcile-on-connect) a few
+        seconds before the reconciler binds the Varlink socket. That
+        window showed up as a spurious 'data plane unreachable: [Errno 2]
+        No such file or directory' on every boot. Treat "socket not there
+        / not accepting yet" (ENOENT / connection refused) as a transient
+        startup condition and keep retrying up to startup_grace_s - long
+        enough to outlast the reconciler's startup - instead of burning
+        the short `retries` budget. Other errors keep the short budget so
+        a genuine data-plane fault still surfaces quickly."""
         import varlink
         last = 'unknown error'
-        for _ in range(max(1, retries)):
+        start = time.monotonic()
+        attempt = 0
+        while True:
+            attempt += 1
             try:
                 with varlink.Client.new_with_address(self.VARLINK_ADDRESS) as c, \
                         c.open('io.reefy.Reconciler') as con:
                     return getattr(con, method)(**kwargs)
             except Exception as e:
                 last = str(e)
+                not_ready = (
+                    isinstance(e, (FileNotFoundError, ConnectionError))
+                    or 'No such file' in last
+                    or 'refused' in last.lower())
+                if not_ready and (time.monotonic() - start) < startup_grace_s:
+                    time.sleep(2)
+                    continue
+                if attempt >= max(1, retries):
+                    break
                 time.sleep(2)
         return {'ok': False, 'error': f'data plane unreachable: {last}'}
 

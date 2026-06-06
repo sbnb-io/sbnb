@@ -48,5 +48,24 @@ class StateOwnershipRegressionTests(unittest.TestCase):
         self.assertIn("_varlink_call('Reconcile')", src)
 
 
+class VarlinkStartupRaceTests(unittest.TestCase):
+    def test_varlink_call_waits_out_reconciler_startup(self):
+        # reefy-control and reefy-reconciler start in parallel; control
+        # connects to MQTT and fires reconcile-on-connect a few seconds
+        # before the reconciler binds /run/reefy/reconciler.sock. The old
+        # _varlink_call burned its short retry budget (3x2s) before the
+        # socket existed and logged a spurious "data plane unreachable:
+        # [Errno 2] No such file or directory" on every boot. The fix
+        # treats "socket not ready yet" (ENOENT / connection refused) as a
+        # transient startup condition and keeps retrying for a grace
+        # window that outlasts the reconciler's startup. Source-level
+        # (control imports paho at module top, so it can't be executed
+        # here) - guards the grace + not-ready detection from regressing.
+        src = _control_src()
+        self.assertIn('startup_grace_s', src)
+        self.assertIn('FileNotFoundError', src)
+        self.assertIn('not_ready', src)
+
+
 if __name__ == '__main__':
     unittest.main()
