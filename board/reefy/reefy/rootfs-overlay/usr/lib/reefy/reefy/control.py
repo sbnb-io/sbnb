@@ -379,6 +379,28 @@ class ControlPlane:
                     hw[name] = result.stdout
             except Exception:
                 pass
+        # Platform identity from the kernel's DMI/SMBIOS export. Plain
+        # sysfs reads (no dmidecode call); control runs as root so all
+        # fields are readable. Combined into one block so it lands as a
+        # single hardware-report section and parses server-side like the
+        # other raw blobs. Boards that don't populate a field just omit
+        # it (the file reads empty/absent).
+        dmi = []
+        for fname, label in (
+                ('sys_vendor', 'System vendor'), ('product_name', 'Product'),
+                ('board_vendor', 'Board vendor'), ('board_name', 'Board'),
+                ('board_version', 'Board version'),
+                ('bios_vendor', 'BIOS vendor'), ('bios_version', 'BIOS version'),
+                ('bios_date', 'BIOS date'), ('chassis_type', 'Chassis type')):
+            try:
+                with open(f'/sys/class/dmi/id/{fname}') as f:
+                    val = f.read().strip()
+                if val:
+                    dmi.append(f'{label}: {val}')
+            except OSError:
+                pass
+        if dmi:
+            hw['dmi_id'] = '\n'.join(dmi)
         # Thin-pool fill percentage. Backend renders an alarm badge
         # at >=80% so the user can free space before backups start
         # failing. None when this device has no thin pool (legacy
