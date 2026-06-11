@@ -77,6 +77,15 @@ class EventPublishingTests(unittest.TestCase):
         self.assertEqual(payload['action'], 'health')
         self.assertEqual(payload['status'], 'failed')
         self.assertEqual(payload['message'], 'oops')
+        self.assertNotIn('image', payload, 'no image key unless reported')
+
+    def test_health_status_payload_with_image(self):
+        with mock.patch.object(self.dp, '_publish_event') as pe:
+            self.dp._publish_health_status('inst1', 'running',
+                                           image='ghcr.io/x/app:1')
+        _, payload = pe.call_args[0]
+        self.assertEqual(payload['status'], 'running')
+        self.assertEqual(payload['image'], 'ghcr.io/x/app:1')
 
     def test_send_command_response_is_noop(self):
         # cmd_id is always None over Varlink; must be a no-op (no client).
@@ -396,6 +405,16 @@ class ComposeRetryPolicyTests(unittest.TestCase):
         self.assertEqual(n, 1)
         self.assertFalse(os.path.exists(dp._FAILED_SIG_PATH),
                          'success clears the persisted sticky sig')
+
+    def test_success_reports_running_image(self):
+        dp = self._mkdp()
+        res, _, _, m_health = self._run(dp, self.GOOD, 'Started i1', 0)
+        self.assertTrue(res)
+        running = [c for c in m_health.call_args_list
+                   if c.args[1] == 'running']
+        self.assertEqual(len(running), 1)
+        self.assertEqual(running[0].kwargs.get('image'), 'ghcr.io/x/app:1',
+                         "running event must carry the instance's image")
 
 
 class DataSideBehaviorTests(unittest.TestCase):

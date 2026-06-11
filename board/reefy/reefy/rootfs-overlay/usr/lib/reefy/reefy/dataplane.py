@@ -100,10 +100,14 @@ class DataPlane:
             extra['error'] = (error or '')[:500]
         self._publish_instance_event(iuuid, 'restore', status, extra=extra)
 
-    def _publish_health_status(self, iuuid, status, message=None):
+    def _publish_health_status(self, iuuid, status, message=None, image=None):
         extra = {}
         if message:
             extra['message'] = (message or '')[:500]
+        if image:
+            # Running image, reported on 'running' so the server can show
+            # the version actually on the device (vs the desired one).
+            extra['image'] = image
         self._publish_instance_event(iuuid, 'health', status, extra=extra)
 
     def _send_command_response(self, cmd_id, status=None, message=None, error=None):
@@ -1321,8 +1325,11 @@ Environment=MQTT_PORT={self.port}
                 if proc.returncode == 0:
                     log('mqtt', 'docker compose up OK')
                     self._clear_failed_sig()  # success clears the guard
+                    services = compose.get('services', {})
                     for iuuid in instance_uuids:
-                        self._publish_health_status(iuuid, 'running')
+                        self._publish_health_status(
+                            iuuid, 'running',
+                            image=services.get(iuuid, {}).get('image'))
                     return True
                 log('mqtt', f'docker compose up failed (attempt {attempt}/{max_retries})')
             except subprocess.TimeoutExpired:
