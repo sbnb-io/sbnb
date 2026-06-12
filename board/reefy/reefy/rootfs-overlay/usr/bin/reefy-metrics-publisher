@@ -372,7 +372,10 @@ def collect_gpu() -> list[dict]:
 def collect_storage() -> list[dict]:
     """Disk usage via statvfs + LVM thin-pool fill (if applicable)."""
     samples = []
-    for mount in ('/', '/mnt/reefy-data'):
+    # Data disk only. '/' is the immutable RAM-backed rootfs - a flat
+    # ~3% line that never moves and only invites "what is this?"
+    # questions on the dashboard.
+    for mount in ('/mnt/reefy-data',):
         try:
             st = os.statvfs(mount)
             total = st.f_blocks * st.f_frsize
