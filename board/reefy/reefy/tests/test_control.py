@@ -69,3 +69,29 @@ class VarlinkStartupRaceTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ControlPublishEventTests(unittest.TestCase):
+    """The sidecar publish path (io.reefy.Control.PublishEvent) lets
+    reefy-app-api publish through control's persistent MQTT connection
+    without holding the device key. These guard its safety properties."""
+
+    def test_suffix_is_allowlisted(self):
+        src = _control_src()
+        self.assertIn("CONTROL_PUBLISH_ALLOWED = ('notify',)", src)
+        self.assertIn('suffix not in self.CONTROL_PUBLISH_ALLOWED', src)
+
+    def test_publish_requires_connected_client_and_valid_json(self):
+        src = _control_src()
+        self.assertIn('def _ctl_publish_event', src)
+        self.assertIn('self.client.is_connected()', src)
+        self.assertIn('json.loads(payload)', src)
+
+    def test_serves_dedicated_sidecar_socket_not_reconciler(self):
+        # Must be its OWN socket dir so a sidecar that mounts it can't
+        # also reach the reconciler socket in /run/reefy.
+        src = _control_src()
+        self.assertIn(
+            "CONTROL_VARLINK_ADDRESS = 'unix:/run/reefy-sidecar/control.sock'",
+            src)
+        self.assertIn("io.reefy.Control", src)

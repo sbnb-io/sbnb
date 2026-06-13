@@ -1,0 +1,8 @@
+# Reefy control-plane sidecar interface. Device-side sidecars (e.g.
+# reefy-app-api) call PublishEvent to emit a cloud MQTT event through
+# reefy-control's single persistent connection, so the device mTLS key
+# never enters those containers. `suffix` is allowlisted (currently:
+# notify); `payload` is the event JSON as a string.
+interface io.reefy.Control
+
+method PublishEvent(suffix: string, payload: string) -> (ok: bool, error: string)

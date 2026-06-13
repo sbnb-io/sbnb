@@ -51,6 +51,17 @@ class ControlPlane:
     VARLINK_ADDRESS = 'unix:/run/reefy/reconciler.sock'
     VARLINK_INTERFACE_DIR = '/usr/share/varlink'
 
+    # Control SERVES this interface to device-side sidecars (reefy-app-api)
+    # so they can publish a cloud MQTT event through control's single
+    # persistent connection - keeping the device mTLS key out of those
+    # containers. Lives in its own dir (NOT /run/reefy, which holds the
+    # reconciler socket) so the dir mounted into a sidecar exposes only
+    # this socket, never the reconciler's.
+    CONTROL_VARLINK_ADDRESS = 'unix:/run/reefy-sidecar/control.sock'
+    # Topic suffixes a sidecar may publish through control. Allowlisted so
+    # a compromised sidecar can't forge status/health/command-response/etc.
+    CONTROL_PUBLISH_ALLOWED = ('notify',)
+
     def __init__(self):
         self.config = {}
         self.client = None
@@ -1501,6 +1512,81 @@ class ControlPlane:
         if state_hash:
             log('mqtt', f'Published state_hash: {state_hash}')
 
+    def _start_control_varlink(self):
+        """Spawn the io.reefy.Control Varlink server (device mode only) so
+        sidecars can publish through control's persistent MQTT client.
+        Daemon thread; control's main thread owns the paho loop and
+        paho publish() is thread-safe under loop_forever()."""
+        if self.mode != 'device':
+            return
+        threading.Thread(target=self._serve_control_varlink, daemon=True,
+                         name='control-varlink').start()
+
+    def _serve_control_varlink(self):
+        import varlink
+        service = varlink.Service(
+            vendor='Reefy', product='control', version='1',
+            url='io.reefy.Control',
+            interface_dir=self.VARLINK_INTERFACE_DIR)
+        ctl = self
+
+        @service.interface('io.reefy.Control')
+        class _Control:
+            def PublishEvent(self, suffix, payload, _more=False):
+                return ctl._ctl_publish_event(suffix, payload)
+
+        # Bind the service after class definition (a class body can't see
+        # this function's local `service`) - same idiom as the reconciler.
+        class _Handler(varlink.RequestHandler):
+            pass
+        _Handler.service = service
+
+        sock_path = self.CONTROL_VARLINK_ADDRESS.split(':', 1)[1]
+        try:
+            os.makedirs(os.path.dirname(sock_path), exist_ok=True)
+            if os.path.exists(sock_path):
+                os.unlink(sock_path)
+        except OSError:
+            pass
+
+        log('mqtt', f'serving Control Varlink at {self.CONTROL_VARLINK_ADDRESS}')
+        try:
+            with varlink.ThreadingServer(
+                    self.CONTROL_VARLINK_ADDRESS, _Handler) as server:
+                # Let the mounting sidecar (its own uid) connect.
+                try:
+                    os.chmod(sock_path, 0o660)
+                except OSError:
+                    pass
+                server.serve_forever()
+        except Exception as e:
+            log('mqtt', f'Control Varlink server died: {e}')
+
+    def _ctl_publish_event(self, suffix, payload):
+        """Publish a sidecar event to the cloud via control's persistent
+        MQTT client. `suffix` is allowlisted; `payload` is a JSON string.
+        Returns the Varlink reply dict (ok/error)."""
+        try:
+            if suffix not in self.CONTROL_PUBLISH_ALLOWED:
+                return {'ok': False, 'error': f'suffix not allowed: {suffix}'}
+            if self.mode != 'device' or not self.device_uuid:
+                return {'ok': False, 'error': 'not in device mode'}
+            if not self.client or not self.client.is_connected():
+                return {'ok': False, 'error': 'mqtt not connected'}
+            try:
+                json.loads(payload)
+            except (TypeError, ValueError) as e:
+                return {'ok': False, 'error': f'invalid json payload: {e}'}
+            topic = f"{self.topic_prefix}/devices/{self.device_uuid}/{suffix}"
+            info = self.client.publish(topic, payload, qos=1)
+            info.wait_for_publish(timeout=10)
+            if not info.is_published():
+                return {'ok': False, 'error': 'publish not acked'}
+            log('mqtt', f'sidecar publish -> {suffix}')
+            return {'ok': True, 'error': ''}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
     def _publish_status(self, status, message=''):
         """Publish device connectivity status. Includes hw_info on 'online' (boot)."""
         if self.mode != 'device':
@@ -1718,6 +1804,11 @@ class ControlPlane:
         # inside the reconnect loop below, which leaked one daemon per
         # iteration (thousands over days).
         self._start_connection_watchdog()
+
+        # Serve the Control Varlink interface so device-side sidecars
+        # (reefy-app-api) can publish cloud events through this single
+        # persistent MQTT connection - device mTLS key never leaves here.
+        self._start_control_varlink()
 
         # Reconnect loop: if loop_forever() exits (paho bug #894: broken sockpair
         # after network disruption), recreate the client and reconnect.
