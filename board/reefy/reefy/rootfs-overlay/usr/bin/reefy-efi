@@ -230,12 +230,27 @@ cmd_update() {
     echo "  Target:   ${INACTIVE_DEV}"
     echo "  Source:    ${EFI_FILE}"
 
+    # Defensively clear any stale mount of the inactive slot left behind
+    # by a previously-interrupted update. The PRIMARY self-heal: a hard
+    # death (SIGKILL, OOM, power loss) skips the EXIT trap below, leaving
+    # INACTIVE_DEV mounted; the next mkfs.vfat would then fail with
+    # "device busy" and EVERY future update would be stuck. Running this
+    # at the start of each update recovers regardless of how the prior
+    # one died.
+    for mp in $(awk -v d="${INACTIVE_DEV}" '$1==d {print $2}' /proc/mounts); do
+        echo "Clearing stale mount of ${INACTIVE_DEV} at ${mp}"
+        umount "${mp}" 2>/dev/null || umount -l "${mp}" 2>/dev/null || true
+    done
+
     # Format inactive ESP (fixes vfat corruption)
     echo "Formatting ${INACTIVE_DEV}..."
     mkfs.vfat -F 32 -n "${INACTIVE_LABEL}" "${INACTIVE_DEV}"
 
-    # Write firmware to inactive slot
+    # Write firmware to inactive slot. The EXIT trap releases the temp
+    # mount if a later step fails under `set -e` (the belt; the pre-mkfs
+    # sweep above is the suspenders for hard deaths that skip traps).
     INACTIVE_MNT=$(mktemp -d)
+    trap 'umount "${INACTIVE_MNT}" 2>/dev/null || umount -l "${INACTIVE_MNT}" 2>/dev/null; rmdir "${INACTIVE_MNT}" 2>/dev/null' EXIT
     mount "${INACTIVE_DEV}" "${INACTIVE_MNT}"
     cp -a "${REEFY_MNT}/mqtt" "${INACTIVE_MNT}/" 2>/dev/null || true
     # /reefy/ is the namespace for per-device state that must survive
