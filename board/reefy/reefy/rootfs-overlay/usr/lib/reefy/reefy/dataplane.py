@@ -28,6 +28,29 @@ from reefy.shared import _part_dev, log
 from reefy.storage import Storage
 
 
+def _drop_absent_devices(compose, exists=os.path.exists):
+    """Remove device-passthrough entries whose /dev node is absent on this
+    host, in place. Docker hard-fails the container start on a missing
+    --device, so this makes any declared device optional: an app can ask
+    for e.g. /dev/dri (iGPU accel) and it's simply omitted where it does
+    not exist. CDI refs (e.g. nvidia.com/gpu=all) and any non-/dev entry
+    are kept untouched. Returns the list of (service, /dev path) skipped."""
+    skipped = []
+    for sname, svc in (compose.get('services') or {}).items():
+        devs = svc.get('devices')
+        if not devs:
+            continue
+        kept = []
+        for d in devs:
+            host = d.split(':', 1)[0]
+            if host.startswith('/dev/') and not exists(host):
+                skipped.append((sname, host))
+                continue
+            kept.append(d)
+        svc['devices'] = kept
+    return skipped
+
+
 class DataPlane:
     # Shared constants (single source in reefy.shared).
     DESIRED_STATE_PATH = shared.DESIRED_STATE_PATH
@@ -346,6 +369,14 @@ class DataPlane:
                     tty_svc = f'{iuuid}-tty'
                     if tty_svc in compose['services']:
                         del compose['services'][tty_svc]
+
+            # Make device passthrough optional: drop any /dev node that is
+            # absent on this host so it degrades to omission instead of
+            # hard-failing the container start (docker errors on a missing
+            # --device). Lets an app ask for e.g. /dev/dri (iGPU accel) and
+            # fall back to its CPU path where there's no GPU.
+            for _sname, _host in _drop_absent_devices(compose):
+                log('mqtt', f'{_sname}: skipping absent device {_host}')
 
             # Defense-in-depth: refuse an internally-inconsistent state.
             # Every registered instance must have a matching compose

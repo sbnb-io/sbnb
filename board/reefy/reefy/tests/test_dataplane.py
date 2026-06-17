@@ -505,5 +505,54 @@ class ReconcileTests(unittest.TestCase):
         rec.assert_called_once_with()
 
 
+class DropAbsentDevicesTests(unittest.TestCase):
+    """_drop_absent_devices makes /dev passthrough optional: absent /dev
+    nodes are dropped (degrade to omission) while CDI refs and present
+    devices pass through."""
+
+    @staticmethod
+    def _exists(present):
+        return lambda p: p in present
+
+    def test_present_dev_kept(self):
+        compose = {'services': {'a': {'devices': ['/dev/dri']}}}
+        skipped = dataplane._drop_absent_devices(
+            compose, exists=self._exists({'/dev/dri'}))
+        self.assertEqual(compose['services']['a']['devices'], ['/dev/dri'])
+        self.assertEqual(skipped, [])
+
+    def test_absent_dev_dropped(self):
+        compose = {'services': {'a': {'devices': ['/dev/dri']}}}
+        skipped = dataplane._drop_absent_devices(
+            compose, exists=self._exists(set()))
+        self.assertEqual(compose['services']['a']['devices'], [])
+        self.assertEqual(skipped, [('a', '/dev/dri')])
+
+    def test_cdi_and_nondev_kept_even_if_missing(self):
+        compose = {'services': {'a': {'devices': ['nvidia.com/gpu=all']}}}
+        skipped = dataplane._drop_absent_devices(
+            compose, exists=self._exists(set()))
+        self.assertEqual(compose['services']['a']['devices'],
+                         ['nvidia.com/gpu=all'])
+        self.assertEqual(skipped, [])
+
+    def test_mixed_list(self):
+        compose = {'services': {'a': {'devices': [
+            'nvidia.com/gpu=all',          # CDI -> keep
+            '/dev/dri:/dev/dri:rwm',       # present -> keep (host path parsed)
+            '/dev/kvm',                    # absent -> drop
+        ]}}}
+        skipped = dataplane._drop_absent_devices(
+            compose, exists=self._exists({'/dev/dri'}))
+        self.assertEqual(compose['services']['a']['devices'],
+                         ['nvidia.com/gpu=all', '/dev/dri:/dev/dri:rwm'])
+        self.assertEqual(skipped, [('a', '/dev/kvm')])
+
+    def test_service_without_devices_untouched(self):
+        compose = {'services': {'a': {'image': 'x'}}}
+        self.assertEqual(dataplane._drop_absent_devices(compose), [])
+        self.assertNotIn('devices', compose['services']['a'])
+
+
 if __name__ == '__main__':
     unittest.main()
