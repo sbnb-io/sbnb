@@ -95,3 +95,16 @@ class ControlPublishEventTests(unittest.TestCase):
             "CONTROL_VARLINK_ADDRESS = 'unix:/run/reefy-sidecar/control.sock'",
             src)
         self.assertIn("io.reefy.Control", src)
+
+
+class FirmwareUpdateExitCodeTests(unittest.TestCase):
+    def test_reefy_update_exit_code_is_logged_and_named(self):
+        # A spurious non-zero exit from reefy-update (e.g. an errexit-unsafe
+        # cleanup trap firing after a successful write) once masqueraded as
+        # an mkfs failure because only stderr was surfaced - reefy-update
+        # writes harmless warnings (mkfs.fat's "codepage 850" fallback
+        # notice) to stderr. The real exit code is the source of truth and
+        # must be logged on every run + named in the error message.
+        src = _control_src()
+        self.assertIn('[reefy-update] exit code', src)
+        self.assertIn('reefy-update failed (exit', src)

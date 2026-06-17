@@ -1,7 +1,5 @@
 #!/bin/sh
-# Disable inherited set -e/pipefail — we handle errors explicitly
-set +e +o pipefail 2>/dev/null
-# reefy-efi — Unified EFI boot entry and firmware management
+# reefy-efi - Unified EFI boot entry and firmware management
 #
 # Commands:
 #   reefy-efi fix                    Verify/fix EFI entries + boot order
@@ -13,8 +11,15 @@ set +e +o pipefail 2>/dev/null
 # - Remove duplicate/stale EFI entries
 # - Recreate missing entries with correct PARTUUIDs
 # - Fix boot order (reefy entries first)
-
+#
+# Run under errexit: an unhandled failure aborts the operation instead of
+# limping on in a half-applied state. pipefail is cleared (in case a
+# parent shell enabled it) - several commands pipe into grep/awk where a
+# no-match is normal, not an error. Cleanup traps must stay errexit-safe
+# (see cmd_update's EXIT trap) so a failing cleanup can't poison the exit
+# code after a successful operation.
 set -e
+set +o pipefail 2>/dev/null
 
 REEFY_MNT="/mnt/reefy"
 
@@ -249,8 +254,17 @@ cmd_update() {
     # Write firmware to inactive slot. The EXIT trap releases the temp
     # mount if a later step fails under `set -e` (the belt; the pre-mkfs
     # sweep above is the suspenders for hard deaths that skip traps).
+    #
+    # The trap body MUST be errexit-safe (wrapped in `{ ...; } || true`):
+    # on the SUCCESS path the mount is already released below, so the
+    # trap's umount/umount-l both fail and the `||` list returns
+    # non-zero. With `set -e` active (see top of file) that would make
+    # reefy-efi exit non-zero AFTER a fully successful update - the
+    # control plane reads any non-zero as a failed OTA and skips the
+    # reboot, so the device silently never updates. `|| true` keeps the
+    # cleanup best-effort without poisoning the exit status.
     INACTIVE_MNT=$(mktemp -d)
-    trap 'umount "${INACTIVE_MNT}" 2>/dev/null || umount -l "${INACTIVE_MNT}" 2>/dev/null; rmdir "${INACTIVE_MNT}" 2>/dev/null' EXIT
+    trap '{ umount "${INACTIVE_MNT}" 2>/dev/null || umount -l "${INACTIVE_MNT}" 2>/dev/null; rmdir "${INACTIVE_MNT}" 2>/dev/null; } || true' EXIT
     mount "${INACTIVE_DEV}" "${INACTIVE_MNT}"
     cp -a "${REEFY_MNT}/mqtt" "${INACTIVE_MNT}/" 2>/dev/null || true
     # /reefy/ is the namespace for per-device state that must survive

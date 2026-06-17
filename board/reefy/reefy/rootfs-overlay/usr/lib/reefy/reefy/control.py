@@ -1315,8 +1315,15 @@ class ControlPlane:
             for line in (result.stdout or '').strip().split('\n'):
                 if line.strip():
                     log('mqtt', f'[reefy-update] {line}')
+            # Always surface the real exit code. reefy-update writes
+            # harmless warnings to stderr (e.g. mkfs.fat's "codepage 850"
+            # fallback notice), so reporting only stderr made a spurious
+            # non-zero exit look like an mkfs failure. The exit code is
+            # the source of truth.
+            log('mqtt', f'[reefy-update] exit code {result.returncode}')
             if result.returncode != 0:
-                msg = f'reefy-update failed: {result.stderr.strip()}'
+                msg = (f'reefy-update failed (exit {result.returncode}): '
+                       f'{result.stderr.strip()}')
                 self._publish_stage('error', msg)
                 log('mqtt', f'{msg}')
                 return
