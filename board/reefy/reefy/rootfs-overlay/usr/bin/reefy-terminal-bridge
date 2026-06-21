@@ -48,8 +48,11 @@ STATE_DIR = '/mnt/reefy-data/state'
 IDLE_TIMEOUT = 86400  # 24h
 
 # Multi-session state: session_id -> {master_fd, child_pid, subscribers,
-# last_activity, container, name, cols, rows}. cols/rows are stored on
-# every subscribe/resize so when the PTY is respawned (after idle kill,
+# legacy_subscribers, last_activity, container, name, cols, rows}.
+# subscribers maps browser client_id -> present. Reconnects from the same
+# tab are idempotent, and MQTT Last Will sends unsubscribe if the browser
+# connection disappears without beforeunload firing. cols/rows are stored
+# on every subscribe/resize so when the PTY is respawned (after idle kill,
 # tmux crash, etc.) we can restore dims instead of defaulting to 80x24.
 _sessions = {}
 _lock = threading.Lock()
@@ -180,7 +183,8 @@ def get_session(session_id):
         _sessions[session_id] = {
             'master_fd': None,
             'child_pid': None,
-            'subscribers': 0,
+            'subscribers': {},
+            'legacy_subscribers': 0,
             'last_activity': 0.0,
             'container': None,
             'name': None,
@@ -188,6 +192,46 @@ def get_session(session_id):
             'rows': 0,
         }
     return _sessions[session_id]
+
+
+def subscriber_count(s):
+    return len(s.get('subscribers') or {}) + int(s.get('legacy_subscribers') or 0)
+
+
+def subscribe_session(session_id, data, now=None):
+    """Record a browser terminal subscriber and return current count.
+
+    New terminal pages send client_id, making subscribe idempotent across
+    MQTT reconnects from the same tab. Legacy pages without client_id keep
+    the old increment/decrement behavior.
+    """
+    if now is None:
+        now = time.time()
+    client_id = data.get('client_id')
+    with _lock:
+        s = get_session(session_id)
+        if client_id:
+            s['subscribers'][str(client_id)] = True
+        else:
+            s['legacy_subscribers'] += 1
+        s['last_activity'] = now
+        if data.get('container'):
+            s['container'] = data['container']
+        if data.get('name'):
+            s['name'] = data['name']
+        return subscriber_count(s)
+
+
+def unsubscribe_session(session_id, data):
+    """Remove a browser terminal subscriber and return current count."""
+    client_id = data.get('client_id')
+    with _lock:
+        s = get_session(session_id)
+        if client_id:
+            s['subscribers'].pop(str(client_id), None)
+        else:
+            s['legacy_subscribers'] = max(0, s['legacy_subscribers'] - 1)
+        return subscriber_count(s)
 
 
 def kill_session(session_id):
@@ -370,17 +414,9 @@ def main():
                 return
             action = data.get('action')
             if action == 'subscribe':
-                with _lock:
-                    s = get_session(session_id)
-                    s['subscribers'] += 1
-                    s['last_activity'] = time.time()
-                    # Store container/name from first subscribe (for spawn)
-                    if data.get('container'):
-                        s['container'] = data['container']
-                    if data.get('name'):
-                        s['name'] = data['name']
+                subs = subscribe_session(session_id, data)
                 target = data.get('container', 'host')
-                print(f"[terminal-bridge] Terminal opened session={session_id} target={target} (subscribers={s['subscribers']})")
+                print(f"[terminal-bridge] Terminal opened session={session_id} target={target} (subscribers={subs})")
                 ensure_session_pty(session_id)
                 # Apply initial size from subscriber (avoids tmux rendering at default 80x24)
                 cols = data.get('cols', 0)
@@ -393,10 +429,7 @@ def main():
                     if s and s['child_pid']:
                         os.kill(s['child_pid'], signal.SIGWINCH)
             elif action == 'unsubscribe':
-                with _lock:
-                    s = get_session(session_id)
-                    s['subscribers'] = max(0, s['subscribers'] - 1)
-                    subs = s['subscribers']
+                subs = unsubscribe_session(session_id, data)
                 print(f"[terminal-bridge] Terminal closed session={session_id} (subscribers={subs})")
                 if subs == 0:
                     kill_session(session_id)
@@ -475,7 +508,7 @@ def main():
             with _lock:
                 expired = []
                 for sid, s in _sessions.items():
-                    if s['subscribers'] > 0 and s['last_activity'] > 0:
+                    if subscriber_count(s) > 0 and s['last_activity'] > 0:
                         if now - s['last_activity'] > IDLE_TIMEOUT:
                             expired.append(sid)
             for sid in expired:
@@ -483,7 +516,8 @@ def main():
                 with _lock:
                     s = _sessions.get(sid)
                     if s:
-                        s['subscribers'] = 0
+                        s['subscribers'].clear()
+                        s['legacy_subscribers'] = 0
                 kill_session(sid)
 
     except KeyboardInterrupt:
