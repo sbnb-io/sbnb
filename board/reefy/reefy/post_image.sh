@@ -23,6 +23,7 @@ COMMON_CMDLINE="console=tty0 console=ttyS0,115200 panic=10 intel_iommu=on module
 declare -A FLAVORS=(
     [prod]="${COMMON_CMDLINE} quiet"
     [dev]="${COMMON_CMDLINE} reefy.dev_shell=1"
+    [debug-shell]="${COMMON_CMDLINE} systemd.show_status=1 systemd.log_level=debug systemd.log_target=console udev.log_level=debug loglevel=7 reefy.dev_shell=1 reefy.initramfs_shell=1"
 )
 
 pushd ${BINARIES_DIR}
