@@ -124,6 +124,8 @@ def log_throttled(key: str, msg: str, every_s: float = 300.0):
 # State for delta calculations between cycles.
 _prev_cpu: list[int] | None = None
 _prev_net: dict[str, tuple[int, int]] = {}
+_prev_xe_gt_idle: dict[str, tuple[int, float]] = {}
+_prev_xe_energy: dict[str, tuple[float, float]] = {}
 
 
 def _read_proc_stat() -> list[int] | None:
@@ -319,7 +321,7 @@ def _parse_mem(s: str) -> float | None:
 
 
 def collect_gpu() -> list[dict]:
-    """nvidia-smi → util / VRAM / temp. Empty if no GPU.
+    """GPU metrics for NVIDIA and Intel xe. Empty if no GPU.
 
     Labels emitted on every sample so multi-GPU devices can be told
     apart in the dashboard:
@@ -328,13 +330,32 @@ def collect_gpu() -> list[dict]:
       pci  : PCI bus id ("00000000:01:00.0") - stable per slot
       uuid : nvml GPU UUID ("GPU-abc...") - stable per physical card
     """
+    samples = _collect_nvidia_gpu()
+    next_gpu_idx = _next_gpu_index(samples)
+    samples.extend(_collect_intel_xe_gpu(next_gpu_idx))
+    return samples
+
+
+def _next_gpu_index(samples: list[dict]) -> int:
+    max_idx = -1
+    for sample in samples:
+        labels = sample.get('labels') or {}
+        try:
+            max_idx = max(max_idx, int(labels.get('gpu', -1)))
+        except (TypeError, ValueError):
+            pass
+    return max_idx + 1
+
+
+def _collect_nvidia_gpu() -> list[dict]:
+    """nvidia-smi → util / VRAM / temp / power."""
     if not shutil.which('nvidia-smi'):
         return []
     try:
         r = subprocess.run(
             ['nvidia-smi',
              '--query-gpu=index,name,pci.bus_id,uuid,utilization.gpu,'
-             'memory.used,memory.total,temperature.gpu',
+             'memory.used,memory.total,temperature.gpu,power.draw',
              '--format=csv,noheader,nounits'],
             capture_output=True, text=True, timeout=2)
         if r.returncode != 0:
@@ -345,10 +366,16 @@ def collect_gpu() -> list[dict]:
     samples = []
     for line in r.stdout.strip().splitlines():
         parts = [p.strip() for p in line.split(',')]
-        if len(parts) != 8:
+        if len(parts) != 9:
             continue
-        idx, name, pci, uuid_str, util, used_mb, total_mb, temp = parts
-        labels = {'gpu': idx, 'name': name, 'pci': pci, 'uuid': uuid_str}
+        idx, name, pci, uuid_str, util, used_mb, total_mb, temp, watts = parts
+        labels = {
+            'gpu': idx,
+            'name': name,
+            'pci': pci,
+            'uuid': uuid_str,
+            'driver': 'nvidia',
+        }
         try:
             used_bytes = float(used_mb) * 1024 * 1024
             total_bytes = float(total_mb) * 1024 * 1024
@@ -364,8 +391,324 @@ def collect_gpu() -> list[dict]:
                                 'value': used_bytes / total_bytes * 100})
             samples.append({'name': 'reefy_gpu_temp_celsius',
                             'labels': labels, 'value': float(temp)})
+            try:
+                samples.append({'name': 'reefy_gpu_power_watts',
+                                'labels': labels, 'value': float(watts)})
+            except ValueError:
+                pass
         except ValueError:
             continue
+    return samples
+
+
+def _read_float(path: str) -> float | None:
+    try:
+        with open(path) as f:
+            return float(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _read_int(path: str) -> int | None:
+    v = _read_float(path)
+    return int(v) if v is not None else None
+
+
+def _path_exists(path: str) -> bool:
+    try:
+        return os.path.exists(path)
+    except OSError:
+        return False
+
+
+def _driver_name(card_path: str) -> str | None:
+    try:
+        return os.path.basename(os.readlink(os.path.join(card_path, 'device', 'driver')))
+    except OSError:
+        return None
+
+
+def _pci_id(card_path: str) -> str:
+    try:
+        return os.path.basename(os.path.realpath(os.path.join(card_path, 'device')))
+    except OSError:
+        return ''
+
+
+def _intel_gpu_name(card_path: str) -> str:
+    vendor = ''
+    device = ''
+    try:
+        with open(os.path.join(card_path, 'device', 'vendor')) as f:
+            vendor = f.read().strip()
+        with open(os.path.join(card_path, 'device', 'device')) as f:
+            device = f.read().strip()
+    except OSError:
+        pass
+    if vendor == '0x8086' and device:
+        return f'Intel GPU {device}'
+    return 'Intel GPU'
+
+
+def _collect_xe_gt_util(card_path: str, labels: dict[str, str]) -> list[dict]:
+    global _prev_xe_gt_idle
+    samples = []
+    device_path = os.path.join(card_path, 'device')
+    now = time.time()
+    util_values = []
+    try:
+        tiles = sorted(p for p in os.listdir(device_path)
+                       if p.startswith('tile')
+                       and os.path.isdir(os.path.join(device_path, p)))
+    except OSError:
+        return samples
+
+    for tile in tiles:
+        tile_path = os.path.join(device_path, tile)
+        try:
+            gts = sorted(p for p in os.listdir(tile_path)
+                         if p.startswith('gt')
+                         and os.path.isdir(os.path.join(tile_path, p)))
+        except OSError:
+            continue
+        for gt in gts:
+            idle_path = os.path.join(tile_path, gt, 'gtidle', 'idle_residency_ms')
+            idle = _read_int(idle_path)
+            if idle is None:
+                continue
+            key = f'{card_path}:{tile}:{gt}'
+            prev = _prev_xe_gt_idle.get(key)
+            if prev:
+                prev_idle, prev_ts = prev
+                dt_ms = max(0.0, (now - prev_ts) * 1000.0)
+                didle = max(0, idle - prev_idle)
+                if dt_ms > 0:
+                    util = max(0.0, min(100.0, 100.0 * (1.0 - didle / dt_ms)))
+                    util_values.append(util)
+                    gt_labels = dict(labels)
+                    gt_labels['gt'] = f'{tile}/{gt}'
+                    samples.append({'name': 'reefy_gpu_engine_util_pct',
+                                    'labels': gt_labels,
+                                    'value': util})
+            _prev_xe_gt_idle[key] = (idle, now)
+
+    if util_values:
+        samples.append({'name': 'reefy_gpu_util_pct',
+                        'labels': labels,
+                        'value': max(util_values)})
+    return samples
+
+
+def _collect_xe_freqs(card_path: str, labels: dict[str, str]) -> list[dict]:
+    samples = []
+    device_path = os.path.join(card_path, 'device')
+    try:
+        tiles = sorted(p for p in os.listdir(device_path)
+                       if p.startswith('tile')
+                       and os.path.isdir(os.path.join(device_path, p)))
+    except OSError:
+        return samples
+    for tile in tiles:
+        tile_path = os.path.join(device_path, tile)
+        try:
+            gts = sorted(p for p in os.listdir(tile_path)
+                         if p.startswith('gt')
+                         and os.path.isdir(os.path.join(tile_path, p)))
+        except OSError:
+            continue
+        for gt in gts:
+            freq_path = os.path.join(tile_path, gt, 'freq0')
+            act = _read_float(os.path.join(freq_path, 'act_freq'))
+            if act is None:
+                continue
+            gt_labels = dict(labels)
+            gt_labels['gt'] = f'{tile}/{gt}'
+            samples.append({'name': 'reefy_gpu_freq_actual_mhz',
+                            'labels': gt_labels,
+                            'value': act})
+    return samples
+
+
+def _collect_xe_debug_mem(card_path: str, labels: dict[str, str]) -> list[dict]:
+    card = os.path.basename(card_path)
+    card_num = card.replace('card', '', 1)
+    samples = []
+    for debug_base in (f'/sys/kernel/debug/dri/{card_num}',
+                       f'/sys/kernel/debug/dri/{_pci_id(card_path)}'):
+        gtt_path = os.path.join(debug_base, 'gtt_mm')
+        if not _path_exists(gtt_path):
+            continue
+        total = None
+        used = None
+        try:
+            with open(gtt_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith('size:'):
+                        total = float(line.split(':', 1)[1].strip())
+                    elif line.startswith('usage:'):
+                        used = float(line.split(':', 1)[1].strip())
+        except (OSError, ValueError):
+            continue
+        if total and used is not None:
+            if used > total:
+                page_total = total * os.sysconf('SC_PAGE_SIZE')
+                if used <= page_total:
+                    total = page_total
+            samples.append({'name': 'reefy_gpu_mem_total_bytes',
+                            'labels': labels,
+                            'value': total})
+            samples.append({'name': 'reefy_gpu_mem_used_bytes',
+                            'labels': labels,
+                            'value': used})
+            samples.append({'name': 'reefy_gpu_mem_used_pct',
+                            'labels': labels,
+                            'value': used / total * 100})
+            break
+    return samples
+
+
+def _collect_xe_hwmon(card_path: str, labels: dict[str, str]) -> list[dict]:
+    global _prev_xe_energy
+    samples = []
+    hwmon_dir = os.path.join(card_path, 'device', 'hwmon')
+    if not os.path.isdir(hwmon_dir):
+        return samples
+
+    now = time.time()
+    try:
+        hwmons = sorted(os.path.join(hwmon_dir, p) for p in os.listdir(hwmon_dir)
+                        if p.startswith('hwmon'))
+    except OSError:
+        return samples
+
+    for hwmon in hwmons:
+        try:
+            entries = os.listdir(hwmon)
+        except OSError:
+            continue
+        for name in entries:
+            path = os.path.join(hwmon, name)
+            if re.match(r'^temp\d+_input$', name):
+                temp = _read_float(path)
+                if temp is not None:
+                    samples.append({'name': 'reefy_gpu_temp_celsius',
+                                    'labels': labels,
+                                    'value': temp / 1000.0})
+            elif re.match(r'^power\d+_input$', name):
+                power = _read_float(path)
+                if power is not None:
+                    samples.append({'name': 'reefy_gpu_power_watts',
+                                    'labels': labels,
+                                    'value': power / 1000000.0})
+            elif re.match(r'^energy\d+_input$', name):
+                energy = _read_float(path)
+                if energy is None:
+                    continue
+                key = path
+                prev = _prev_xe_energy.get(key)
+                if prev:
+                    prev_energy, prev_ts = prev
+                    dt = now - prev_ts
+                    delta = energy - prev_energy
+                    if dt > 0 and delta >= 0:
+                        samples.append({'name': 'reefy_gpu_power_watts',
+                                        'labels': labels,
+                                        'value': (delta / 1000000.0) / dt})
+                _prev_xe_energy[key] = (energy, now)
+    return samples
+
+
+def _collect_xe_rapl_power(labels: dict[str, str]) -> list[dict]:
+    """Best-effort Intel iGPU power via RAPL uncore energy.
+
+    xe dGPU cards can expose a DRM hwmon rail, but integrated GPUs
+    often do not. On those systems RAPL's "uncore" domain is the
+    closest kernel-exposed power counter for the iGPU/uncore slice.
+    It is not as exact as a dedicated GPU rail, so label the source.
+    """
+    global _prev_xe_energy
+    samples = []
+    powercap = '/sys/class/powercap'
+    if not os.path.isdir(powercap):
+        return samples
+
+    now = time.time()
+    try:
+        domains = sorted(os.path.join(powercap, p) for p in os.listdir(powercap)
+                         if p.startswith('intel-rapl'))
+    except OSError:
+        return samples
+
+    for domain in domains:
+        name_path = os.path.join(domain, 'name')
+        energy_path = os.path.join(domain, 'energy_uj')
+        try:
+            with open(name_path) as f:
+                name = f.read().strip()
+        except OSError:
+            continue
+        if name != 'uncore':
+            continue
+        energy = _read_float(energy_path)
+        if energy is None:
+            continue
+        key = energy_path
+        prev = _prev_xe_energy.get(key)
+        if prev:
+            prev_energy, prev_ts = prev
+            dt = now - prev_ts
+            delta = energy - prev_energy
+            if delta < 0:
+                max_range = _read_float(os.path.join(domain, 'max_energy_range_uj'))
+                if max_range:
+                    delta = (energy + max_range) - prev_energy
+            if dt > 0 and delta >= 0:
+                rapl_labels = dict(labels)
+                rapl_labels['power_source'] = 'rapl_uncore'
+                samples.append({'name': 'reefy_gpu_power_watts',
+                                'labels': rapl_labels,
+                                'value': (delta / 1000000.0) / dt})
+        _prev_xe_energy[key] = (energy, now)
+        break
+    return samples
+
+
+def _collect_intel_xe_gpu(start_idx: int = 0) -> list[dict]:
+    """Intel xe sysfs/debugfs collector modeled after xe-exporter."""
+    drm_dir = '/sys/class/drm'
+    if not os.path.isdir(drm_dir):
+        return []
+
+    samples = []
+    try:
+        cards = sorted(p for p in os.listdir(drm_dir)
+                       if re.match(r'^card\d+$', p))
+    except OSError:
+        return []
+
+    xe_idx = start_idx
+    for card in cards:
+        card_path = os.path.join(drm_dir, card)
+        if _driver_name(card_path) != 'xe':
+            continue
+        pci = _pci_id(card_path)
+        labels = {
+            'gpu': str(xe_idx),
+            'name': _intel_gpu_name(card_path),
+            'pci': pci,
+            'uuid': pci,
+            'driver': 'xe',
+        }
+        samples.extend(_collect_xe_gt_util(card_path, labels))
+        samples.extend(_collect_xe_freqs(card_path, labels))
+        samples.extend(_collect_xe_debug_mem(card_path, labels))
+        hwmon_samples = _collect_xe_hwmon(card_path, labels)
+        samples.extend(hwmon_samples)
+        if not any(s.get('name') == 'reefy_gpu_power_watts'
+                   for s in hwmon_samples):
+            samples.extend(_collect_xe_rapl_power(labels))
+        xe_idx += 1
     return samples
 
 
