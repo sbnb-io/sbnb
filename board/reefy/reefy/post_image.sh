@@ -15,6 +15,7 @@ set -euxo pipefail
 # Kernel boot args shared by every flavor. Per-flavor extras (e.g.
 # reefy.dev_shell=1) get appended below.
 COMMON_CMDLINE="console=tty0 panic=10 intel_iommu=on module_blacklist=nouveau,nvidiafb,snd_hda_intel,r8169"
+DEBUG_SHELL_CMDLINE="console=tty0 panic=10 intel_iommu=on module_blacklist=nouveau,nvidiafb,snd_hda_intel,r8169"
 
 # prod: `quiet` for a silent boot - kernel log messages stay off the
 #   monitor; the device-state banner still shows at the login prompt via
@@ -23,6 +24,7 @@ COMMON_CMDLINE="console=tty0 panic=10 intel_iommu=on module_blacklist=nouveau,nv
 declare -A FLAVORS=(
     [prod]="${COMMON_CMDLINE} quiet"
     [dev]="${COMMON_CMDLINE} reefy.dev_shell=1"
+    [debug-shell]="${DEBUG_SHELL_CMDLINE} systemd.show_status=1 systemd.log_level=debug systemd.log_target=console udev.log_level=debug loglevel=7 reefy.dev_shell=1 reefy.initramfs_shell=1"
 )
 
 pushd ${BINARIES_DIR}

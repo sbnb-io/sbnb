@@ -8,16 +8,32 @@ mount -t devtmpfs none /dev/
 echo "[reefy] Preparing environment ..." > /dev/kmsg
 mkdir -p /proc
 mkdir -p /sys
+mkdir -p /upper
+mkdir -p /work
+mkdir -p /rootfs
+mkdir -p /lower
 
 mount -t proc none /proc
 mount -t sysfs none /sys
+exec </dev/console >/dev/console 2>&1
+
+case " $(cat /proc/cmdline) " in
+*" reefy.initramfs_shell=1 "*)
+    echo "[reefy] reefy.initramfs_shell=1: starting pre-root shell" > /dev/kmsg
+    mount -t squashfs /rootfs.squashfs /lower 2>/dev/null || true
+    echo
+    echo "Reefy initramfs debug shell"
+    echo "Squashfs root is mounted at /lower."
+    echo "BusyBox tools are available via 'busybox <applet>'."
+    echo "Type 'exit' to continue normal boot."
+    echo
+    sh
+    echo "[reefy] initramfs debug shell exited, continuing boot" > /dev/kmsg
+    ;;
+esac
 
 echo "[reefy] Mounting squashfs root filesystem ..." > /dev/kmsg
-mkdir /upper
-mkdir /work
-mkdir /rootfs
-mkdir /lower
-mount -t squashfs /rootfs.squashfs /lower
+mountpoint -q /lower 2>/dev/null || mount -t squashfs /rootfs.squashfs /lower
 
 mount -t overlay -o rw,lowerdir=/lower,upperdir=/upper,workdir=/work overlay /rootfs/
 
