@@ -201,6 +201,49 @@ class IntelXeGpuTests(unittest.TestCase):
         self.assertEqual(samples[0]['labels']['power_source'], 'rapl_uncore')
         self.assertAlmostEqual(samples[0]['value'], 1.5)
 
+    def test_thermal_zone_fallback_prefers_tcpu_pci(self):
+        def fake_listdir(path):
+            if path == '/sys/class/thermal':
+                return ['thermal_zone0', 'thermal_zone1', 'thermal_zone2']
+            return []
+
+        def fake_open(path, *args, **kwargs):
+            if path.endswith('/thermal_zone0/type'):
+                return StringIO('x86_pkg_temp\n')
+            if path.endswith('/thermal_zone1/type'):
+                return StringIO('TCPU_PCI\n')
+            if path.endswith('/thermal_zone2/type'):
+                return StringIO('acpitz\n')
+            raise OSError(path)
+
+        def fake_read_float(path):
+            if path.endswith('/thermal_zone0/temp'):
+                return 66000.0
+            if path.endswith('/thermal_zone1/temp'):
+                return 65000.0
+            return None
+
+        labels = {'gpu': '0', 'name': 'Intel GPU', 'driver': 'xe'}
+        with mock.patch.object(self.publisher.os.path, 'isdir',
+                               return_value=True), \
+             mock.patch.object(self.publisher.os, 'listdir',
+                               side_effect=fake_listdir), \
+             mock.patch.object(self.publisher, '_read_float',
+                               side_effect=fake_read_float), \
+             mock.patch('builtins.open', side_effect=fake_open):
+            samples = self.publisher._collect_xe_thermal_zone_temp(labels)
+
+        self.assertEqual(samples, [{
+            'name': 'reefy_gpu_temp_celsius',
+            'labels': {
+                'gpu': '0',
+                'name': 'Intel GPU',
+                'driver': 'xe',
+                'temp_source': 'thermal_zone:TCPU_PCI',
+            },
+            'value': 65.0,
+        }])
+
 
 class MixedGpuIndexTests(unittest.TestCase):
     def setUp(self):

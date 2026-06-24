@@ -619,6 +619,56 @@ def _collect_xe_hwmon(card_path: str, labels: dict[str, str]) -> list[dict]:
     return samples
 
 
+def _collect_xe_thermal_zone_temp(labels: dict[str, str]) -> list[dict]:
+    """Fallback Intel iGPU temperature from platform thermal zones.
+
+    Some integrated xe GPUs, including Lunar Lake systems seen in the
+    field, do not expose a DRM hwmon temp node. In that case the kernel
+    may still expose package/platform zones that track the SoC tile the
+    iGPU lives in. Publish one clearly-labeled fallback so dashboards do
+    not show an unexplained blank, while preserving real xe hwmon as the
+    preferred source when available.
+    """
+    thermal_dir = '/sys/class/thermal'
+    if not os.path.isdir(thermal_dir):
+        return []
+
+    preferred_types = ('TCPU_PCI', 'x86_pkg_temp', 'TCPU')
+    candidates: dict[str, float] = {}
+    try:
+        zones = sorted(p for p in os.listdir(thermal_dir)
+                       if p.startswith('thermal_zone'))
+    except OSError:
+        return []
+
+    for zone in zones:
+        zone_path = os.path.join(thermal_dir, zone)
+        type_path = os.path.join(zone_path, 'type')
+        temp_path = os.path.join(zone_path, 'temp')
+        try:
+            with open(type_path) as f:
+                zone_type = f.read().strip()
+        except OSError:
+            continue
+        if zone_type not in preferred_types:
+            continue
+        temp = _read_float(temp_path)
+        if temp is None:
+            continue
+        temp_c = temp / 1000.0
+        if 0 <= temp_c <= 130:
+            candidates[zone_type] = temp_c
+
+    for zone_type in preferred_types:
+        if zone_type in candidates:
+            fallback_labels = dict(labels)
+            fallback_labels['temp_source'] = f'thermal_zone:{zone_type}'
+            return [{'name': 'reefy_gpu_temp_celsius',
+                     'labels': fallback_labels,
+                     'value': candidates[zone_type]}]
+    return []
+
+
 def _collect_xe_rapl_power(labels: dict[str, str]) -> list[dict]:
     """Best-effort Intel iGPU power via RAPL uncore energy.
 
@@ -705,6 +755,9 @@ def _collect_intel_xe_gpu(start_idx: int = 0) -> list[dict]:
         samples.extend(_collect_xe_debug_mem(card_path, labels))
         hwmon_samples = _collect_xe_hwmon(card_path, labels)
         samples.extend(hwmon_samples)
+        if not any(s.get('name') == 'reefy_gpu_temp_celsius'
+                   for s in hwmon_samples):
+            samples.extend(_collect_xe_thermal_zone_temp(labels))
         if not any(s.get('name') == 'reefy_gpu_power_watts'
                    for s in hwmon_samples):
             samples.extend(_collect_xe_rapl_power(labels))
