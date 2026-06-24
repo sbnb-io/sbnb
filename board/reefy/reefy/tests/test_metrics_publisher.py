@@ -2,6 +2,7 @@
 
 import importlib.machinery
 import importlib.util
+import os
 import sys
 import types
 import unittest
@@ -9,10 +10,9 @@ from io import StringIO
 from unittest import mock
 
 
-PUBLISHER_PATH = (
-    '/Users/aospan/src/reefy/board/reefy/reefy/rootfs-overlay/usr/bin/'
-    'reefy-metrics-publisher'
-)
+PUBLISHER_PATH = os.path.join(os.path.dirname(__file__), '..',
+                              'rootfs-overlay', 'usr', 'bin',
+                              'reefy-metrics-publisher')
 
 
 def _load_publisher():

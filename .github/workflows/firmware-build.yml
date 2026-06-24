@@ -30,6 +30,7 @@ on:
       - 'images/**'
       - 'misc/**'
       - 'collections/**'
+      - 'board/reefy/reefy/tests/**'
 
 permissions:
   contents: read
