@@ -78,9 +78,24 @@ jobs:
         working-directory: buildroot
         run: make O="$BR_OUTPUT" linux-firmware-dirclean
 
+      - name: Clean stale kernel build output
+        working-directory: buildroot
+        run: |
+          make O="$BR_OUTPUT" linux-dirclean
+          rm -rf "$BR_OUTPUT/target/lib/modules/"*
+          rm -f "$BR_OUTPUT/images/bzImage"
+
       - name: Build (post_image.sh loops flavors)
         working-directory: buildroot
         run: make O="$BR_OUTPUT" -j$(nproc)
+
+      - name: Verify pinned kernel version
+        run: |
+          expected_kernel=$(sed -n 's/^BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION="v\([0-9.]*\)"$/\1/p' configs/reefy_defconfig)
+          test -n "$expected_kernel" || { echo "could not read pinned kernel version"; exit 1; }
+          kernel_release=$(find "$BR_OUTPUT/target/lib/modules" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+          test "$kernel_release" = "$expected_kernel" \
+            || { echo "expected only kernel $expected_kernel, got ${kernel_release:-none}"; exit 1; }
 
       - name: Verify multi-flavor outputs
         run: |
