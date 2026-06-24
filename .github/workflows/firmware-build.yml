@@ -74,12 +74,18 @@ jobs:
         working-directory: buildroot
         run: make BR2_EXTERNAL=.. O="$BR_OUTPUT" reefy_defconfig
 
+      - name: Refresh linux-firmware package selection
+        working-directory: buildroot
+        run: make O="$BR_OUTPUT" linux-firmware-dirclean
+
       - name: Build (post_image.sh loops flavors)
         working-directory: buildroot
         run: make O="$BR_OUTPUT" -j$(nproc)
 
       - name: Verify multi-flavor outputs
         run: |
+          test -f "$BR_OUTPUT/target/lib/firmware/xe/lnl_guc_70.bin" \
+            || { echo "missing xe/lnl_guc_70.bin"; exit 1; }
           ls -la "$BR_OUTPUT/images/"
           for flavor in prod dev debug-shell; do
             test -f "$BR_OUTPUT/images/reefy-${flavor}.efi" \
