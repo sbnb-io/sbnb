@@ -31,6 +31,11 @@ def _trap_line():
         'could not find the INACTIVE_MNT EXIT trap in reefy-efi')
 
 
+def _source():
+    with open(REEFY_EFI) as f:
+        return f.read()
+
+
 class ExitTrapErrexitSafetyTests(unittest.TestCase):
     def test_trap_does_not_poison_exit_under_errexit(self):
         # Reproduce the success-path cleanup: INACTIVE_MNT names a temp dir
@@ -66,6 +71,27 @@ class ExitTrapErrexitSafetyTests(unittest.TestCase):
         self.assertIn(
             '|| true', trap,
             f'EXIT trap dropped its errexit guard: {trap!r}')
+
+
+class SetNextCommandTests(unittest.TestCase):
+    def test_set_next_command_is_exposed(self):
+        src = _source()
+        self.assertIn('reefy-efi set-next <a|b>', src)
+        self.assertIn('set-next) shift; cmd_set_next "$@" ;;', src)
+        self.assertIn('fix|update|confirm|set-next|status', src)
+
+    def test_set_next_accepts_only_a_or_b(self):
+        src = _source()
+        self.assertIn('a) LABEL="reefy-a" ;;', src)
+        self.assertIn('b) LABEL="reefy-b" ;;', src)
+        self.assertIn('Usage: reefy-efi set-next <a|b>', src)
+
+    def test_set_next_verifies_bootnext(self):
+        src = _source()
+        self.assertIn('efibootmgr -n "$BOOTNUM"', src)
+        self.assertIn("grep '^BootNext:'", src)
+        self.assertIn('BootNext not set', src)
+        self.assertIn('Next boot set to ${LABEL}', src)
 
 
 if __name__ == '__main__':

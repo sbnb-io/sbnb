@@ -5,6 +5,7 @@
 #   reefy-efi fix                    Verify/fix EFI entries + boot order
 #   reefy-efi update <efi-file> [-r] A/B firmware update with BootNext
 #   reefy-efi confirm                Commit current slot as default (swap BootOrder)
+#   reefy-efi set-next <a|b>         Set one-shot next boot slot
 #   reefy-efi status                 Show current slot info
 #
 # All commands are idempotent and self-healing:
@@ -73,7 +74,7 @@ resolve_slots() {
 
     CURRENT_BOOTNUM=$(efibootmgr 2>/dev/null | grep '^BootCurrent:' | awk '{print $2}')
 
-    # Always resolve from what's mounted — BootCurrent can be a transient entry
+    # Always resolve from what's mounted - BootCurrent can be a transient entry
     # that doesn't match the mounted ESP (e.g., after USB swap or UEFI quirks)
     if [ "$MOUNTED_DEV" = "$(part_dev "$DISK" 1)" ]; then
         ACTIVE_LABEL="reefy-a"
@@ -131,7 +132,7 @@ fix_entries() {
         else
             EXPECTED_GUID="$GUID_B"
         fi
-        # `[[:space:]]+` between Boot#### and label — inactive entries
+        # `[[:space:]]+` between Boot#### and label - inactive entries
         # have two spaces where active entries have `* ` (asterisk +
         # space), so a literal single space would miss them.
         efibootmgr -v 2>/dev/null \
@@ -205,6 +206,31 @@ cmd_confirm() {
     echo "[reefy-efi] Committed Boot${CURRENT} as default"
 }
 
+cmd_set_next() {
+    SLOT="$1"
+    case "$SLOT" in
+        a) LABEL="reefy-a" ;;
+        b) LABEL="reefy-b" ;;
+        *) die "Usage: reefy-efi set-next <a|b>" ;;
+    esac
+
+    fix_entries
+    BOOTNUM=$(boot_num_for_label "$LABEL")
+    [ -n "$BOOTNUM" ] || die "Could not find boot entry for ${LABEL}"
+
+    mount -o remount,rw /sys/firmware/efi/efivars 2>/dev/null || true
+    efibootmgr -n "$BOOTNUM" 2>/dev/null
+
+    BOOTNEXT_ACTUAL=$(efibootmgr 2>/dev/null | grep '^BootNext:' | awk '{print $2}')
+    mount -o remount,ro /sys/firmware/efi/efivars 2>/dev/null || true
+
+    if [ "$BOOTNEXT_ACTUAL" != "$BOOTNUM" ]; then
+        die "BootNext not set (got '${BOOTNEXT_ACTUAL}', wanted '${BOOTNUM}')"
+    fi
+
+    echo "[reefy-efi] Next boot set to ${LABEL} (Boot${BOOTNUM})"
+}
+
 cmd_update() {
     EFI_FILE="$1"
     REBOOT=0
@@ -269,7 +295,7 @@ cmd_update() {
     cp -a "${REEFY_MNT}/mqtt" "${INACTIVE_MNT}/" 2>/dev/null || true
     # /reefy/ is the namespace for per-device state that must survive
     # A/B firmware updates. New things to preserve = drop them under
-    # /reefy/ and they carry over automatically — no edit here needed.
+    # /reefy/ and they carry over automatically - no edit here needed.
     cp -a "${REEFY_MNT}/reefy" "${INACTIVE_MNT}/" 2>/dev/null || true
     mkdir -p "${INACTIVE_MNT}/EFI/Boot"
     echo "Copying EFI file..."
@@ -311,9 +337,10 @@ cmd_update() {
 # ── Main ──
 
 case "${1:-}" in
-    fix)     cmd_fix ;;
-    status)  cmd_status ;;
-    confirm) cmd_confirm ;;
-    update)  shift; cmd_update "$@" ;;
-    *)       echo "Usage: reefy-efi {fix|update|confirm|status}"; exit 1 ;;
+    fix)      cmd_fix ;;
+    status)   cmd_status ;;
+    confirm)  cmd_confirm ;;
+    set-next) shift; cmd_set_next "$@" ;;
+    update)   shift; cmd_update "$@" ;;
+    *)        echo "Usage: reefy-efi {fix|update|confirm|set-next|status}"; exit 1 ;;
 esac
