@@ -351,6 +351,8 @@ def _collect_nvidia_gpu() -> list[dict]:
     """nvidia-smi → util / VRAM / temp / power."""
     if not shutil.which('nvidia-smi'):
         return []
+    if not _has_nvidia_pci_device():
+        return []
     try:
         r = subprocess.run(
             ['nvidia-smi',
@@ -399,6 +401,30 @@ def _collect_nvidia_gpu() -> list[dict]:
         except ValueError:
             continue
     return samples
+
+
+def _has_nvidia_pci_device() -> bool:
+    """True when PCI sysfs reports any NVIDIA device.
+
+    Reefy images include nvidia-smi even on Intel-only hardware. Running
+    it there can autoload the NVIDIA kernel module, which logs NVRM
+    "No NVIDIA GPU found" directly to the physical console every metrics
+    cycle.
+    """
+    pci_root = '/sys/bus/pci/devices'
+    try:
+        devices = os.listdir(pci_root)
+    except OSError:
+        return False
+    for dev in devices:
+        vendor_path = os.path.join(pci_root, dev, 'vendor')
+        try:
+            with open(vendor_path) as f:
+                if f.read().strip().lower() == '0x10de':
+                    return True
+        except OSError:
+            continue
+    return False
 
 
 def _read_float(path: str) -> float | None:

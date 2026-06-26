@@ -4,6 +4,21 @@
 
 set -e
 
+has_nvidia_pci_device() {
+    for vendor in /sys/bus/pci/devices/*/vendor; do
+        [ -e "$vendor" ] || continue
+        if [ "$(cat "$vendor" 2>/dev/null)" = "0x10de" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+if ! has_nvidia_pci_device; then
+    echo "No NVIDIA PCI device found, skipping CDI setup"
+    exit 0
+fi
+
 # Load nvidia-uvm if not already loaded
 modprobe nvidia-uvm 2>/dev/null || true
 

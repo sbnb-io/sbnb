@@ -55,6 +55,8 @@ class NvidiaGpuTests(unittest.TestCase):
         )
         with mock.patch.object(self.publisher.shutil, 'which',
                                return_value='/usr/bin/nvidia-smi'), \
+             mock.patch.object(self.publisher, '_has_nvidia_pci_device',
+                               return_value=True), \
              mock.patch.object(self.publisher.subprocess, 'run',
                                return_value=types.SimpleNamespace(
                                    returncode=0, stdout=stdout)):
@@ -73,6 +75,8 @@ class NvidiaGpuTests(unittest.TestCase):
         )
         with mock.patch.object(self.publisher.shutil, 'which',
                                return_value='/usr/bin/nvidia-smi'), \
+             mock.patch.object(self.publisher, '_has_nvidia_pci_device',
+                               return_value=True), \
              mock.patch.object(self.publisher.subprocess, 'run',
                                return_value=types.SimpleNamespace(
                                    returncode=0, stdout=stdout)):
@@ -83,6 +87,17 @@ class NvidiaGpuTests(unittest.TestCase):
         self.assertIn('reefy_gpu_mem_used_pct', names)
         self.assertIn('reefy_gpu_temp_celsius', names)
         self.assertNotIn('reefy_gpu_power_watts', names)
+
+    def test_no_nvidia_pci_device_skips_nvidia_smi(self):
+        with mock.patch.object(self.publisher.shutil, 'which',
+                               return_value='/usr/bin/nvidia-smi'), \
+             mock.patch.object(self.publisher, '_has_nvidia_pci_device',
+                               return_value=False), \
+             mock.patch.object(self.publisher.subprocess, 'run') as run:
+            samples = self.publisher._collect_nvidia_gpu()
+
+        self.assertEqual(samples, [])
+        run.assert_not_called()
 
 
 class IntelXeGpuTests(unittest.TestCase):
