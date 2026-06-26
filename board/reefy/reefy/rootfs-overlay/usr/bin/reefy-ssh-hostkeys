@@ -1,0 +1,48 @@
+#!/bin/sh
+set -eu
+
+STATE_DIR="${REEFY_SSH_HOSTKEY_STATE_DIR:-/mnt/reefy-data/state/ssh}"
+ETC_SSH_DIR="${REEFY_SSH_HOSTKEY_ETC_DIR:-/etc/ssh}"
+KEYGEN="${REEFY_SSH_KEYGEN:-ssh-keygen}"
+
+key_types="rsa ecdsa ed25519"
+
+mkdir -p "${STATE_DIR}" "${ETC_SSH_DIR}"
+chmod 700 "${STATE_DIR}" 2>/dev/null || true
+
+generate_key() {
+    t="$1"
+    out="${ETC_SSH_DIR}/ssh_host_${t}_key"
+    rm -f "${out}" "${out}.pub"
+    case "${t}" in
+        rsa)
+            "${KEYGEN}" -q -t rsa -b 3072 -N '' -f "${out}"
+            ;;
+        ecdsa)
+            "${KEYGEN}" -q -t ecdsa -b 256 -N '' -f "${out}"
+            ;;
+        ed25519)
+            "${KEYGEN}" -q -t ed25519 -N '' -f "${out}"
+            ;;
+    esac
+}
+
+rm -f "${ETC_SSH_DIR}"/ssh_host_*_key \
+      "${ETC_SSH_DIR}"/ssh_host_*_key.pub 2>/dev/null || true
+
+for t in ${key_types}; do
+    if [ -s "${STATE_DIR}/ssh_host_${t}_key" ] &&
+       [ -s "${STATE_DIR}/ssh_host_${t}_key.pub" ]; then
+        cp "${STATE_DIR}/ssh_host_${t}_key" "${ETC_SSH_DIR}/"
+        cp "${STATE_DIR}/ssh_host_${t}_key.pub" "${ETC_SSH_DIR}/"
+    else
+        generate_key "${t}"
+        cp "${ETC_SSH_DIR}/ssh_host_${t}_key" "${STATE_DIR}/"
+        cp "${ETC_SSH_DIR}/ssh_host_${t}_key.pub" "${STATE_DIR}/"
+    fi
+done
+
+chmod 600 "${ETC_SSH_DIR}"/ssh_host_*_key \
+          "${STATE_DIR}"/ssh_host_*_key 2>/dev/null || true
+chmod 644 "${ETC_SSH_DIR}"/ssh_host_*_key.pub \
+          "${STATE_DIR}"/ssh_host_*_key.pub 2>/dev/null || true

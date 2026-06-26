@@ -1,0 +1,13 @@
+[Unit]
+Description=Persist Reefy SSH host keys
+After=reefy-storage.service
+Wants=reefy-storage.service
+Before=sshd.service
+RequiresMountsFor=/mnt/reefy-data
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/reefy-ssh-hostkeys
+
+[Install]
+WantedBy=multi-user.target
