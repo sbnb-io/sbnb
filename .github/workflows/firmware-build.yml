@@ -109,6 +109,13 @@ jobs:
             fi
           done
 
+          for module in nvidia nvidia-drm nvidia-modeset nvidia-uvm; do
+            if ! find "$module_dir" -name "${module}.ko*" 2>/dev/null | grep -q .; then
+              echo "missing ${module} module under $module_dir"
+              needs_clean=true
+            fi
+          done
+
           if [ "$needs_clean" = true ]; then
             # Use Buildroot dirclean targets so package stamp files stay
             # consistent with installed files. Do not delete generated
@@ -116,6 +123,7 @@ jobs:
             # module packages can keep old install stamps and skip reinstalling.
             make O="$BR_OUTPUT" linux-dirclean
             make O="$BR_OUTPUT" r8125-dirclean r8126-dirclean r8127-dirclean r8168-dirclean
+            make O="$BR_OUTPUT" nvidia-open-gpu-dirclean
           else
             echo "kernel module cache is current for $expected_kernel"
           fi
@@ -133,6 +141,10 @@ jobs:
             || { echo "expected only kernel $expected_kernel, got ${kernel_release:-none}"; exit 1; }
           module_dir="$BR_OUTPUT/target/lib/modules/$expected_kernel"
           for module in r8125 r8126 r8127 r8168; do
+            find "$module_dir" -name "${module}.ko*" | grep -q . \
+              || { echo "missing ${module} module under $module_dir"; exit 1; }
+          done
+          for module in nvidia nvidia-drm nvidia-modeset nvidia-uvm; do
             find "$module_dir" -name "${module}.ko*" | grep -q . \
               || { echo "missing ${module} module under $module_dir"; exit 1; }
           done
