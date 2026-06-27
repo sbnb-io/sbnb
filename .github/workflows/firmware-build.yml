@@ -153,6 +153,8 @@ jobs:
         run: |
           test -f "$BR_OUTPUT/target/lib/firmware/xe/lnl_guc_70.bin" \
             || { echo "missing xe/lnl_guc_70.bin"; exit 1; }
+          test -f "$BR_OUTPUT/target/lib/firmware/i915/xe2lpd_dmc.bin" \
+            || { echo "missing i915/xe2lpd_dmc.bin"; exit 1; }
           ls -la "$BR_OUTPUT/images/"
           for flavor in prod dev debug-shell; do
             test -f "$BR_OUTPUT/images/reefy-${flavor}.efi" \
