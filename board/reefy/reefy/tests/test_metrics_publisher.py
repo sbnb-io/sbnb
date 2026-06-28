@@ -64,8 +64,11 @@ class NvidiaGpuTests(unittest.TestCase):
 
         by_name = {s['name']: s for s in samples}
         self.assertEqual(by_name['reefy_gpu_power_watts']['value'], 187.42)
+        self.assertEqual(by_name['reefy_power_watts']['value'], 187.42)
         self.assertEqual(
             by_name['reefy_gpu_power_watts']['labels']['driver'], 'nvidia')
+        self.assertEqual(
+            by_name['reefy_power_watts']['labels']['source'], 'gpu')
         self.assertEqual(by_name['reefy_gpu_util_pct']['value'], 73.0)
 
     def test_nvidia_na_power_does_not_drop_other_metrics(self):
@@ -87,6 +90,7 @@ class NvidiaGpuTests(unittest.TestCase):
         self.assertIn('reefy_gpu_mem_used_pct', names)
         self.assertIn('reefy_gpu_temp_celsius', names)
         self.assertNotIn('reefy_gpu_power_watts', names)
+        self.assertNotIn('reefy_power_watts', names)
 
     def test_no_nvidia_pci_device_skips_nvidia_smi(self):
         with mock.patch.object(self.publisher.shutil, 'which',
@@ -215,6 +219,97 @@ class IntelXeGpuTests(unittest.TestCase):
         self.assertEqual(samples[0]['name'], 'reefy_gpu_power_watts')
         self.assertEqual(samples[0]['labels']['power_source'], 'rapl_uncore')
         self.assertAlmostEqual(samples[0]['value'], 1.5)
+
+    def test_collect_power_emits_all_rapl_domains(self):
+        self.publisher._prev_power_energy = {
+            '/sys/class/powercap/intel-rapl:0/energy_uj': (1000000.0, 10.0),
+            '/sys/class/powercap/intel-rapl:0:0/energy_uj': (2000000.0, 10.0),
+            '/sys/class/powercap/intel-rapl:0:1/energy_uj': (3000000.0, 10.0),
+        }
+
+        def fake_listdir(path):
+            if path == '/sys/class/powercap':
+                return ['intel-rapl:0', 'intel-rapl:0:0', 'intel-rapl:0:1']
+            return []
+
+        def fake_open(path, *args, **kwargs):
+            if path.endswith('/intel-rapl:0/name'):
+                return StringIO('package-0\n')
+            if path.endswith('/intel-rapl:0:0/name'):
+                return StringIO('core\n')
+            if path.endswith('/intel-rapl:0:1/name'):
+                return StringIO('uncore\n')
+            raise OSError(path)
+
+        def fake_read_float(path):
+            if path.endswith('/intel-rapl:0/energy_uj'):
+                return 21000000.0
+            if path.endswith('/intel-rapl:0:0/energy_uj'):
+                return 12000000.0
+            if path.endswith('/intel-rapl:0:1/energy_uj'):
+                return 8000000.0
+            return None
+
+        with mock.patch.object(self.publisher.time, 'time',
+                               return_value=20.0), \
+             mock.patch.object(self.publisher.os.path, 'isdir',
+                               return_value=True), \
+             mock.patch.object(self.publisher.os, 'listdir',
+                               side_effect=fake_listdir), \
+             mock.patch.object(self.publisher, '_read_float',
+                               side_effect=fake_read_float), \
+             mock.patch('builtins.open', side_effect=fake_open):
+            samples = self.publisher.collect_power()
+
+        self.assertEqual([s['name'] for s in samples],
+                         ['reefy_power_watts'] * 3)
+        by_domain = {s['labels']['domain']: s for s in samples}
+        self.assertEqual(by_domain['intel-rapl:0']['labels']['name'],
+                         'package-0')
+        self.assertEqual(by_domain['intel-rapl:0:0']['labels']['name'],
+                         'core')
+        self.assertEqual(by_domain['intel-rapl:0:1']['labels']['name'],
+                         'uncore')
+        self.assertAlmostEqual(by_domain['intel-rapl:0']['value'], 2.0)
+        self.assertAlmostEqual(by_domain['intel-rapl:0:0']['value'], 1.0)
+        self.assertAlmostEqual(by_domain['intel-rapl:0:1']['value'], 0.5)
+
+    def test_collect_power_handles_energy_counter_wrap(self):
+        self.publisher._prev_power_energy = {
+            '/sys/class/powercap/intel-rapl:0/energy_uj': (950.0, 10.0),
+        }
+
+        def fake_listdir(path):
+            if path == '/sys/class/powercap':
+                return ['intel-rapl:0']
+            return []
+
+        def fake_open(path, *args, **kwargs):
+            if path.endswith('/name'):
+                return StringIO('package-0\n')
+            raise OSError(path)
+
+        def fake_read_float(path):
+            if path.endswith('/energy_uj'):
+                return 50.0
+            if path.endswith('/max_energy_range_uj'):
+                return 1000.0
+            return None
+
+        with mock.patch.object(self.publisher.time, 'time',
+                               return_value=20.0), \
+             mock.patch.object(self.publisher.os.path, 'isdir',
+                               return_value=True), \
+             mock.patch.object(self.publisher.os, 'listdir',
+                               side_effect=fake_listdir), \
+             mock.patch.object(self.publisher, '_read_float',
+                               side_effect=fake_read_float), \
+             mock.patch('builtins.open', side_effect=fake_open):
+            samples = self.publisher.collect_power()
+
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0]['labels']['source'], 'rapl')
+        self.assertAlmostEqual(samples[0]['value'], 0.00001)
 
     def test_thermal_zone_fallback_prefers_tcpu_pci(self):
         def fake_listdir(path):

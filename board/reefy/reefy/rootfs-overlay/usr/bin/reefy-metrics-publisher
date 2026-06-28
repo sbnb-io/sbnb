@@ -66,6 +66,7 @@ COLLECTOR_DEADLINES = {
     'containers': 5.0,
     'gpu':        2.0,
     'storage':    3.0,
+    'power':      1.0,
     'reefy':      0.5,
     'ipmi':       5.0,   # BMC roundtrip can be slow; only fires on server hw
     'llm_proxy':  2.0,   # localhost http GET; should be sub-50ms
@@ -126,6 +127,7 @@ _prev_cpu: list[int] | None = None
 _prev_net: dict[str, tuple[int, int]] = {}
 _prev_xe_gt_idle: dict[str, tuple[int, float]] = {}
 _prev_xe_energy: dict[str, tuple[float, float]] = {}
+_prev_power_energy: dict[str, tuple[float, float]] = {}
 
 
 def _read_proc_stat() -> list[int] | None:
@@ -394,8 +396,14 @@ def _collect_nvidia_gpu() -> list[dict]:
             samples.append({'name': 'reefy_gpu_temp_celsius',
                             'labels': labels, 'value': float(temp)})
             try:
+                power_watts = float(watts)
                 samples.append({'name': 'reefy_gpu_power_watts',
-                                'labels': labels, 'value': float(watts)})
+                                'labels': labels, 'value': power_watts})
+                power_labels = dict(labels)
+                power_labels['source'] = 'gpu'
+                samples.append({'name': 'reefy_power_watts',
+                                'labels': power_labels,
+                                'value': power_watts})
             except ValueError:
                 pass
         except ValueError:
@@ -624,9 +632,16 @@ def _collect_xe_hwmon(card_path: str, labels: dict[str, str]) -> list[dict]:
             elif re.match(r'^power\d+_input$', name):
                 power = _read_float(path)
                 if power is not None:
+                    power_watts = power / 1000000.0
                     samples.append({'name': 'reefy_gpu_power_watts',
                                     'labels': labels,
-                                    'value': power / 1000000.0})
+                                    'value': power_watts})
+                    power_labels = dict(labels)
+                    power_labels['source'] = 'gpu'
+                    power_labels['sensor'] = name
+                    samples.append({'name': 'reefy_power_watts',
+                                    'labels': power_labels,
+                                    'value': power_watts})
             elif re.match(r'^energy\d+_input$', name):
                 energy = _read_float(path)
                 if energy is None:
@@ -638,9 +653,16 @@ def _collect_xe_hwmon(card_path: str, labels: dict[str, str]) -> list[dict]:
                     dt = now - prev_ts
                     delta = energy - prev_energy
                     if dt > 0 and delta >= 0:
+                        power_watts = (delta / 1000000.0) / dt
                         samples.append({'name': 'reefy_gpu_power_watts',
                                         'labels': labels,
-                                        'value': (delta / 1000000.0) / dt})
+                                        'value': power_watts})
+                        power_labels = dict(labels)
+                        power_labels['source'] = 'gpu'
+                        power_labels['sensor'] = name
+                        samples.append({'name': 'reefy_power_watts',
+                                        'labels': power_labels,
+                                        'value': power_watts})
                 _prev_xe_energy[key] = (energy, now)
     return samples
 
@@ -747,6 +769,59 @@ def _collect_xe_rapl_power(labels: dict[str, str]) -> list[dict]:
                                 'value': (delta / 1000000.0) / dt})
         _prev_xe_energy[key] = (energy, now)
         break
+    return samples
+
+
+def collect_power() -> list[dict]:
+    """Generic host power metrics.
+
+    Emits all available Intel RAPL domains as reefy_power_watts so the
+    dashboard can show package/core/uncore/DRAM today and accept IPMI,
+    PSU, PDU, or UPS rails later under the same metric name.
+    """
+    global _prev_power_energy
+    samples = []
+    powercap = '/sys/class/powercap'
+    if not os.path.isdir(powercap):
+        return samples
+
+    now = time.time()
+    try:
+        domains = sorted(os.path.join(powercap, p) for p in os.listdir(powercap)
+                         if p.startswith('intel-rapl'))
+    except OSError:
+        return samples
+
+    for domain in domains:
+        name_path = os.path.join(domain, 'name')
+        energy_path = os.path.join(domain, 'energy_uj')
+        try:
+            with open(name_path) as f:
+                name = f.read().strip()
+        except OSError:
+            continue
+        energy = _read_float(energy_path)
+        if energy is None:
+            continue
+        key = energy_path
+        prev = _prev_power_energy.get(key)
+        if prev:
+            prev_energy, prev_ts = prev
+            dt = now - prev_ts
+            delta = energy - prev_energy
+            if delta < 0:
+                max_range = _read_float(os.path.join(domain, 'max_energy_range_uj'))
+                if max_range:
+                    delta = (energy + max_range) - prev_energy
+            if dt > 0 and delta >= 0:
+                samples.append({'name': 'reefy_power_watts',
+                                'labels': {
+                                    'source': 'rapl',
+                                    'domain': os.path.basename(domain),
+                                    'name': name,
+                                },
+                                'value': (delta / 1000000.0) / dt})
+        _prev_power_energy[key] = (energy, now)
     return samples
 
 
@@ -959,6 +1034,7 @@ COLLECTORS: dict[str, Callable[[], list[dict]]] = {
     'containers': collect_containers,
     'gpu':        collect_gpu,
     'storage':    collect_storage,
+    'power':      collect_power,
     'reefy':      collect_reefy,
     'ipmi':       collect_ipmi,
     'llm_proxy':  collect_llm_proxy,
