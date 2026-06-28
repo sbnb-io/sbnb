@@ -1,0 +1,13 @@
+config BR2_PACKAGE_INTEL_NPU_FIRMWARE
+	bool "intel-npu-firmware"
+	depends on BR2_x86_64
+	help
+	  Intel NPU firmware for Meteor Lake, Lunar Lake, and newer Intel
+	  Core Ultra systems using the in-kernel intel_vpu driver.
+
+	  Firmware files are installed from the official upstream
+	  linux-firmware release at kernel.org. This package installs only
+	  intel/vpu firmware so we can use a newer NPU firmware set without
+	  globally bumping every firmware blob in the image.
+
+	  https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git
