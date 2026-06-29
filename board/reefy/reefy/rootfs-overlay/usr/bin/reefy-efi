@@ -28,6 +28,11 @@ REEFY_MNT="/mnt/reefy"
 
 die() { echo "Error: $1" >&2; exit 1; }
 
+die_after_efivar_cleanup() {
+    mount -o remount,ro /sys/firmware/efi/efivars 2>/dev/null || true
+    die "$1"
+}
+
 # Extract the 4-digit boot number for an entry whose label matches $1.
 # Tolerant of efibootmgr output that may or may not include the active
 # asterisk after the boot number (depends on firmware/efivars state).
@@ -40,6 +45,35 @@ boot_num_for_label() {
         | head -1
 }
 
+# Extract all 4-digit boot numbers for entries whose label and device path
+# match the expected PARTUUID. Prints one number per line.
+boot_nums_for_label_guid() {
+    LABEL="$1"
+    GUID="$2"
+    efibootmgr -v 2>/dev/null \
+        | grep -E "^Boot[0-9A-Fa-f]{4}\*?[[:space:]]+${LABEL}[[:space:]]" \
+        | grep -i -- "$GUID" \
+        | sed -E 's/^Boot([0-9A-Fa-f]{4})\*?.*/\1/'
+}
+
+# Return the entry in $2 that is not present in $1. Both arguments are
+# newline-separated Boot#### numbers without the "Boot" prefix.
+new_boot_num_from_sets() {
+    OLD_SET="$1"
+    NEW_SET="$2"
+    for NUM in $NEW_SET; do
+        FOUND=0
+        for OLD_NUM in $OLD_SET; do
+            if [ "$NUM" = "$OLD_NUM" ]; then
+                FOUND=1
+                break
+            fi
+        done
+        [ "$FOUND" -eq 0 ] && echo "$NUM" && return 0
+    done
+    return 1
+}
+
 # Find the reefy boot disk from what's mounted at /mnt/reefy. The
 # supported hardware shape is USB-boot (sda); EC2 / mmcblk / NVMe-boot
 # is exotic but the tool works on them too once part_dev() handles the
@@ -48,6 +82,10 @@ boot_num_for_label() {
 find_disk() {
     MOUNTED_DEV=$(findmnt -n -o SOURCE "$REEFY_MNT" 2>/dev/null) || true
     [ -z "$MOUNTED_DEV" ] && return 1
+    if [ -n "${REEFY_EFI_TEST_DISK:-}" ]; then
+        DISK="$REEFY_EFI_TEST_DISK"
+        return 0
+    fi
     DISK="/dev/$(lsblk -no PKNAME "$MOUNTED_DEV" 2>/dev/null)"
     [ -b "$DISK" ] || return 1
 }
@@ -171,6 +209,89 @@ fix_entries() {
     mount -o remount,ro /sys/firmware/efi/efivars 2>/dev/null || true
 }
 
+# Commit the currently booted slot by replacing the Reefy boot entries with
+# freshly allocated Boot#### numbers. Some firmware keeps a hidden/default BBS
+# order outside standard BootOrder; recreating entries causes that firmware
+# state to follow the new standard order on the next boot.
+commit_current_slot_with_fresh_entries() {
+    resolve_slots
+    fix_entries
+
+    GUID_A=$(blkid -s PARTUUID -o value "$(part_dev "$DISK" 1)" 2>/dev/null)
+    GUID_B=$(blkid -s PARTUUID -o value "$(part_dev "$DISK" 2)" 2>/dev/null)
+    [ -n "$GUID_A" ] || die "Could not resolve PARTUUID for $(part_dev "$DISK" 1)"
+    [ -n "$GUID_B" ] || die "Could not resolve PARTUUID for $(part_dev "$DISK" 2)"
+
+    OLD_A_SET=$(boot_nums_for_label_guid reefy-a "$GUID_A" || true)
+    OLD_B_SET=$(boot_nums_for_label_guid reefy-b "$GUID_B" || true)
+    OLD_A_COUNT=$(printf '%s\n' "$OLD_A_SET" | grep -c . || true)
+    OLD_B_COUNT=$(printf '%s\n' "$OLD_B_SET" | grep -c . || true)
+    [ "$OLD_A_COUNT" -eq 1 ] || die "Expected exactly one valid reefy-a entry, found ${OLD_A_COUNT}"
+    [ "$OLD_B_COUNT" -eq 1 ] || die "Expected exactly one valid reefy-b entry, found ${OLD_B_COUNT}"
+
+    OLD_A="$OLD_A_SET"
+    OLD_B="$OLD_B_SET"
+
+    mount -o remount,rw /sys/firmware/efi/efivars 2>/dev/null || true
+
+    if ! efibootmgr -c -d "$DISK" -p 1 -L "reefy-a" -l '\EFI\Boot\bootx64.efi' 2>/dev/null; then
+        die_after_efivar_cleanup "Could not create fresh reefy-a boot entry"
+    fi
+
+    AFTER_A_SET=$(boot_nums_for_label_guid reefy-a "$GUID_A" || true)
+    NEW_A=$(new_boot_num_from_sets "$OLD_A_SET" "$AFTER_A_SET") || die_after_efivar_cleanup "Could not identify newly created reefy-a entry"
+
+    if ! efibootmgr -c -d "$DISK" -p 2 -L "reefy-b" -l '\EFI\Boot\bootx64.efi' 2>/dev/null; then
+        efibootmgr -b "$NEW_A" -B 2>/dev/null || true
+        die_after_efivar_cleanup "Could not create fresh reefy-b boot entry"
+    fi
+
+    AFTER_B_SET=$(boot_nums_for_label_guid reefy-b "$GUID_B" || true)
+    NEW_B=$(new_boot_num_from_sets "$OLD_B_SET" "$AFTER_B_SET") || {
+        efibootmgr -b "$NEW_A" -B 2>/dev/null || true
+        die_after_efivar_cleanup "Could not identify newly created reefy-b entry"
+    }
+
+    if [ "$ACTIVE_LABEL" = "reefy-a" ]; then
+        NEW_ACTIVE="$NEW_A"
+        NEW_INACTIVE="$NEW_B"
+    else
+        NEW_ACTIVE="$NEW_B"
+        NEW_INACTIVE="$NEW_A"
+    fi
+
+    if ! efibootmgr -o "${NEW_ACTIVE},${NEW_INACTIVE}" 2>/dev/null; then
+        efibootmgr -b "$NEW_A" -B 2>/dev/null || true
+        efibootmgr -b "$NEW_B" -B 2>/dev/null || true
+        die_after_efivar_cleanup "Could not set BootOrder to Boot${NEW_ACTIVE},Boot${NEW_INACTIVE}"
+    fi
+
+    # Delete the old entries by exact Boot#### number. The new entries are
+    # already first in BootOrder, so a deletion failure leaves a bootable order.
+    efibootmgr -b "$OLD_A" -B 2>/dev/null || true
+    efibootmgr -b "$OLD_B" -B 2>/dev/null || true
+    sync
+
+    FINAL_A_SET=$(boot_nums_for_label_guid reefy-a "$GUID_A" || true)
+    FINAL_B_SET=$(boot_nums_for_label_guid reefy-b "$GUID_B" || true)
+    FINAL_A_COUNT=$(printf '%s\n' "$FINAL_A_SET" | grep -c . || true)
+    FINAL_B_COUNT=$(printf '%s\n' "$FINAL_B_SET" | grep -c . || true)
+    [ "$FINAL_A_COUNT" -eq 1 ] || die "Expected one final reefy-a entry, found ${FINAL_A_COUNT}"
+    [ "$FINAL_B_COUNT" -eq 1 ] || die "Expected one final reefy-b entry, found ${FINAL_B_COUNT}"
+    [ "$FINAL_A_SET" = "$NEW_A" ] || die "Final reefy-a entry is Boot${FINAL_A_SET}, wanted Boot${NEW_A}"
+    [ "$FINAL_B_SET" = "$NEW_B" ] || die "Final reefy-b entry is Boot${FINAL_B_SET}, wanted Boot${NEW_B}"
+
+    FINAL_ORDER=$(efibootmgr 2>/dev/null | grep '^BootOrder:' | awk '{print $2}')
+    FINAL_FIRST=$(echo "$FINAL_ORDER" | cut -d, -f1)
+    FINAL_SECOND=$(echo "$FINAL_ORDER" | cut -d, -f2)
+    [ "$FINAL_FIRST" = "$NEW_ACTIVE" ] || die "BootOrder first entry is Boot${FINAL_FIRST}, wanted Boot${NEW_ACTIVE}"
+    [ "$FINAL_SECOND" = "$NEW_INACTIVE" ] || die "BootOrder second entry is Boot${FINAL_SECOND}, wanted Boot${NEW_INACTIVE}"
+
+    mount -o remount,ro /sys/firmware/efi/efivars 2>/dev/null || true
+
+    echo "[reefy-efi] Committed ${ACTIVE_LABEL} as default with fresh entries: Boot${NEW_ACTIVE},Boot${NEW_INACTIVE}"
+}
+
 # ── Commands ──
 
 cmd_fix() {
@@ -189,7 +310,7 @@ cmd_status() {
 }
 
 cmd_confirm() {
-    # Commit current boot slot as default by swapping BootOrder.
+    # Commit current boot slot as default.
     # Called by reefy-boot-confirm after health checks pass.
     CURRENT=$(efibootmgr 2>/dev/null | grep '^BootCurrent:' | awk '{print $2}')
     DEFAULT=$(efibootmgr 2>/dev/null | grep '^BootOrder:' | awk '{print $2}' | cut -d, -f1)
@@ -199,11 +320,7 @@ cmd_confirm() {
         exit 0
     fi
 
-    mount -o remount,rw /sys/firmware/efi/efivars 2>/dev/null || true
-    efibootmgr -o "${CURRENT},${DEFAULT}" 2>/dev/null
-    mount -o remount,ro /sys/firmware/efi/efivars 2>/dev/null || true
-
-    echo "[reefy-efi] Committed Boot${CURRENT} as default"
+    commit_current_slot_with_fresh_entries
 }
 
 cmd_set_next() {
