@@ -74,6 +74,10 @@ class ExitTrapErrexitSafetyTests(unittest.TestCase):
             '|| true', trap,
             f'EXIT trap dropped its errexit guard: {trap!r}')
 
+    def test_pipefail_clear_is_errexit_safe(self):
+        src = _source()
+        self.assertIn('set +o pipefail 2>/dev/null || true', src)
+
 
 class SetNextCommandTests(unittest.TestCase):
     def test_set_next_command_is_exposed(self):
