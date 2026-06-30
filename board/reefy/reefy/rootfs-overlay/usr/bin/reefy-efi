@@ -20,7 +20,7 @@
 # (see cmd_update's EXIT trap) so a failing cleanup can't poison the exit
 # code after a successful operation.
 set -e
-set +o pipefail 2>/dev/null
+set +o pipefail 2>/dev/null || true
 
 REEFY_MNT="/mnt/reefy"
 
