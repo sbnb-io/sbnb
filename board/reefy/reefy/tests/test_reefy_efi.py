@@ -14,6 +14,7 @@ it cannot poison the exit status under errexit.
 """
 
 import os
+import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -76,7 +77,7 @@ class ExitTrapErrexitSafetyTests(unittest.TestCase):
 
     def test_pipefail_clear_is_errexit_safe(self):
         src = _source()
-        self.assertIn('set +o pipefail 2>/dev/null || true', src)
+        self.assertIn('(set +o pipefail) 2>/dev/null || true', src)
 
 
 class SetNextCommandTests(unittest.TestCase):
@@ -299,8 +300,9 @@ exit 2
 
             os.makedirs(os.path.dirname(env['REEFY_EFI_TEST_DISK']))
 
+            shell = shutil.which('dash') or 'sh'
             proc = subprocess.run(
-                ['sh', REEFY_EFI, 'confirm'],
+                [shell, REEFY_EFI, 'confirm'],
                 env=env,
                 text=True,
                 capture_output=True,
