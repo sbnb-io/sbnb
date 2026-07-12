@@ -25,6 +25,7 @@ on:
   push:
     paths-ignore:
       - '**/README*.md'
+      - 'docs/**'
       - 'scripts/**'
       - 'containers/**'
       - 'images/**'
