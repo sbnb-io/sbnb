@@ -71,9 +71,21 @@ echo c > /proc/sysrq-trigger
 ## Layer 3: App Watchdog (reefy-watchdog.timer)
 
 **Timer**: `reefy-watchdog.timer` (every 60s, starts 2min after boot)
-**Script**: `/usr/bin/reefy-watchdog`
+**Script**: `/usr/bin/reefy-watchdog.sh`
 
-Checks app-level health: Docker running, MQTT connected, network reachable. Can restart individual services or trigger full reboot if recovery fails.
+Checks app-level health every minute. In addition to the legacy Tailscale
+recovery, it probes:
+
+- `cloudflared` at `http://127.0.0.1:20241/ready`. The response must report at
+  least one ready tunnel connection.
+- `reefy-proxy` at `http://127.0.0.1:8080/`. Any complete HTTP response,
+  including the normal unauthenticated 403, proves the proxy event loop is
+  responsive.
+
+After three consecutive failures, the watchdog restarts only the failed
+container. A five-minute per-service cooldown prevents restart storms during
+extended network or system pressure. Each restart is bounded so the oneshot
+watchdog service cannot hang behind Docker.
 
 ## Design Decisions
 
