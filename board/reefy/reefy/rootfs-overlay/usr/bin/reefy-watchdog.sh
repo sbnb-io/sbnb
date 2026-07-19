@@ -39,5 +39,6 @@ check_tailscale() {
 # Main
 mkdir -p "$COOLDOWN_DIR"
 check_tailscale
-# Future checks:
-# check_xxx
+# Detect running-but-unresponsive tunnel infrastructure. The Python helper
+# requires three consecutive probe failures and rate-limits recovery.
+PYTHONPATH=/usr/lib/reefy python3 -m reefy.watchdog
