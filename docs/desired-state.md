@@ -2,10 +2,9 @@
 
 ## Overview
 
-Desired state is how the Reefy service converges an adopted device on its
-requested configuration. The service builds one complete JSON document for a
-device, sends it as an MQTT command, and compares a deterministic state hash to
-avoid unnecessary re-applies.
+Desired state is how Reefy converges an adopted device on its
+requested configuration. Reefy sends an authenticated configuration request,
+and the device applies it only when it differs from the state already accepted.
 
 The device is split into two processes:
 
@@ -19,154 +18,67 @@ is slow, out of memory, or temporarily wedged.
 ## Data flow
 
 ```text
-Reefy service                              Reefy device
--------------                              ------------
-build_desired_state(uuid)
-  read device, instances, catalog,
-  SSH keys, providers, and backup config
-  build compose, routes, files, volumes
-
-MQTT commands topic  --------------------> reefy-control
-  {"action":"apply_state","state":{...}}       |
-                                                  | Varlink ApplyState
-                                                  v
-                                            reefy-reconciler
-                                              read old state
-                                              save new state
-                                              reconcile host + apps
-
-retained state_hash <---------------------- reefy-control
-device status/stage <---------------------- reefy-control
+Requested device configuration
+              |
+              v
+Authenticated control channel ---------> reefy-control
+                                               |
+                                               | local Varlink call
+                                               v
+                                         reefy-reconciler
+                                           persist request
+                                           reconcile host + apps
+                                               |
+Device status and convergence <---------------'
 ```
 
-The command topic is:
+## Configuration contents
 
-```text
-reefy/{public_id}/devices/{device_uuid}/commands
-```
-
-The retained hash topic is:
-
-```text
-reefy/{public_id}/devices/{device_uuid}/state_hash
-```
-
-Command delivery uses MQTT QoS 1. The state hash is retained and uses the
-client's default QoS 0; a later publication replaces the retained value.
-
-## State document
-
-The state is an internal server-to-firmware contract. A representative shape
-is:
-
-```json
-{
-  "hostname": "seahorse",
-  "compose": {
-    "services": {
-      "cloudflared": {},
-      "reefy-proxy": {},
-      "reefy-llm-proxy": {},
-      "reefy-app-api": {},
-      "<instance-uuid>": {}
-    },
-    "networks": {},
-    "volumes": {}
-  },
-  "instances": [
-    {
-      "instance_name": "openclaw",
-      "instance_uuid": "a1b2c3d4",
-      "app_slug": "openclaw",
-      "uid": 1000
-    }
-  ],
-  "app_volumes": [
-    {
-      "path": "/mnt/reefy-data/apps/a1b2c3d4/data",
-      "uid": 1000,
-      "seed_files": {}
-    }
-  ],
-  "volume_caps": {},
-  "files": [],
-  "user_ssh_keys": [],
-  "wifi": {"ssid": "MyNetwork", "password": "..."},
-  "storage": {"devices": ["nvme0n1"]},
-  "network": {"addresses": ["192.0.2.10/24"]},
-  "backup": {
-    "schedule": "03:17",
-    "retention": {"keep_last": 30},
-    "instances": []
-  }
-}
-```
-
-Optional blocks are omitted when they are not needed. Infrastructure services
-are also conditional. For example, `reefy-llm-proxy` appears only when the
-device has an attached LLM provider, and `reefy-app-api` appears only when an
-installed app declares a supported capability.
-
-## Server-side build
-
-`app/services/desired_state.py` in `reefy-service` is the builder and hash
-authority. It combines:
+The requested configuration can include:
 
 1. Device identity, hostname, tunnel credentials, hardware, and user.
 2. Installed app instances, their pinned images, ports, slots, and overrides.
-3. The DB-backed app catalog, with the bundled `apps/` directory as a cold-start
-   fallback when the catalog table is unavailable or empty.
-4. User SSH keys, Wi-Fi, static network addresses, and storage selection.
-5. LLM-provider credentials and capability-scoped app API tokens.
-6. App volume, seed-file, rendered-file, restore, and backup configuration.
+3. User SSH keys, Wi-Fi, static network addresses, and storage selection.
+4. Optional provider integrations and app capabilities.
+5. App volumes, seed files, restore requests, and backup configuration.
 
-Instance rows are ordered by database ID before rendering. Stable ordering is
-required because dictionary and list order contributes to the state hash.
-
-If an installed instance references an app missing from the catalog, the
-builder aborts the whole state build. Omitting only that app would make
-`docker compose up --remove-orphans` delete a valid running container.
+Reefy treats the request as one coherent configuration. If it cannot safely
+represent every installed app, it leaves the device's accepted configuration
+unchanged rather than sending a partial request that could remove a workload.
 
 ## App ports and routes
 
-Each app instance receives a `host_port` starting at 10001. For a normal
-bridge-network app, Reefy maps a loopback-only internal port to the app's
-declared container port:
+Each web app receives an available device-facing port. For a normal
+bridge-network app, Reefy forwards authenticated traffic to the app's declared
+container port without exposing that listener directly:
 
 ```text
-LAN URL port       host_port                 10001
-loopback bind      host_port + 10000         20001
-container listener app.json default_port    for example 8080
-compose mapping    127.0.0.1:20001:8080
+LAN URL port       assigned by Reefy
+container listener declared by the app, for example 8080
 ```
 
-`reefy-proxy` terminates LAN HTTPS on the allocated LAN port and forwards to
-the loopback bind. Remote tunnel access uses the instance slot hostname and
-also forwards through `reefy-proxy`. The app port is never bound directly to
-all host interfaces.
+LAN and remote access pass through Reefy's authenticated routing layer. The
+app port is never bound directly to all host interfaces.
 
 Host-network apps are an exception. Reefy routes to the app's declared port,
 or injects `APP_PORT_<default_port>` when the manifest declares
 `dynamic_port: true`.
 
-Terminals no longer use ttyd containers or per-app terminal sidecars. The
-`reefy-terminal-bridge` carries host and container terminal sessions over
-MQTT. The `tty_port` database field remains allocated for compatibility but is
-not a listening terminal port.
+Interactive terminals use Reefy's authenticated terminal bridge and do not
+open a separate public listener per app.
 
 ## When state is pushed
 
-The service builds and publishes state when:
+Reefy publishes a configuration update when:
 
 - a device is adopted;
-- an adopted device reports online and its saved hash differs;
+- an adopted device comes online with pending changes;
 - a user changes apps, versions, environment, Wi-Fi, network, storage, SSH
   keys, backup settings, or attached providers; or
 - the user requests a manual resync.
 
-Repeated online messages are deduplicated. The same server hash is not pushed
-again inside the apply cooldown, while a genuinely new hash is sent
-immediately.
+An unchanged request is not applied again. A genuine configuration change is
+sent immediately.
 
 ## Device-side apply order
 
@@ -208,23 +120,15 @@ file itself. This preserves the data plane's ownership of old/new diffs and
 closes the startup race between offline reconciliation and the first server
 push.
 
-## Hash and convergence
+## Convergence
 
-Both sides compute:
+After a successful apply, the device reports a deterministic fingerprint of
+the configuration it accepted. A matching fingerprint means no newer request
+needs to be applied. Per-app health remains the authority for whether every
+workload is actually running.
 
-```text
-first 16 hexadecimal characters of
-SHA-256(json.dumps(state, sort_keys=True))
-```
-
-After a successful apply, control publishes the saved-state hash as retained
-MQTT state. The service stores it on the device row and compares it with the
-next server build. A matching hash means the device accepted that exact state
-document and no newer configuration needs to be pushed. Per-instance health
-events remain the authority for whether every app is actually running.
-
-Control reports `applying` before the Varlink call, republishes online status
-and the hash after success, waits for proxy health, and then reports `ready`.
+Control reports `applying` before the local data-plane call, reports
+convergence after success, waits for proxy health, and then reports `ready`.
 An apply failure reports `error` and does not claim convergence.
 
 ## Compose failure policy
@@ -242,13 +146,11 @@ After terminal failure, the reconciler stores a signature of the failed
 Compose document. An unchanged state is not repeatedly pulled on every
 reconnect. A changed state or a successful apply clears the guard.
 
-## Implementation files
+## Device implementation files
 
-| Repository | File | Responsibility |
-|---|---|---|
-| `reefy-service` | `app/services/desired_state.py` | Build state, Compose, routes, files, and hash. |
-| `reefy-service` | `app/services/mqtt.py` | Online hash comparison and deduplicated publish. |
-| `reefy` | `board/reefy/reefy/rootfs-overlay/usr/lib/reefy/reefy/control.py` | MQTT command handling, stage reporting, and Varlink client. |
-| `reefy` | `board/reefy/reefy/rootfs-overlay/usr/lib/reefy/reefy/dataplane.py` | Persist and apply state, Compose, backups, files, and cleanup. |
-| `reefy` | `board/reefy/reefy/rootfs-overlay/usr/lib/reefy/reefy/storage.py` | Encrypted storage and per-volume lifecycle. |
-| `reefy` | `board/reefy/reefy/rootfs-overlay/usr/share/varlink/io.reefy.Reconciler.varlink` | Control-to-data-plane method contract. |
+| File | Responsibility |
+|---|---|
+| `board/reefy/reefy/rootfs-overlay/usr/lib/reefy/reefy/control.py` | Authenticated command handling, stage reporting, and local data-plane calls. |
+| `board/reefy/reefy/rootfs-overlay/usr/lib/reefy/reefy/dataplane.py` | Persist and apply configuration, Compose, backups, files, and cleanup. |
+| `board/reefy/reefy/rootfs-overlay/usr/lib/reefy/reefy/storage.py` | Encrypted storage and per-volume lifecycle. |
+| `board/reefy/reefy/rootfs-overlay/usr/share/varlink/io.reefy.Reconciler.varlink` | Control-to-data-plane method contract. |

@@ -2,9 +2,9 @@
 
 ## What a Reefy app is
 
-A Reefy app is a versioned container package that the Reefy service can
-install and operate on an adopted device. The package is more than a Docker
-image. Its manifest can declare:
+A Reefy app is a versioned container package that Reefy can install and
+operate on an adopted device. The package is more than a Docker image. Its
+manifest can declare:
 
 - display metadata and release history;
 - the container port and launch command;
@@ -22,20 +22,9 @@ executed directly by an arbitrary device user.
 
 ## Catalog and release model
 
-At runtime, the Reefy service reads app definitions from the `app_catalog`
-PostgreSQL table and keeps an in-memory catalog. The bundled `apps/`
-directories are a cold-start fallback when the table is empty or unavailable.
-
-Catalog sources can be:
-
-- authored manifests in `reefy-service/apps/<slug>/`; or
-- a manifest fetched from a pinned external repository and path declared in
-  `catalog-sources.yaml`.
-
-The publishing tool validates and assembles the app definition, preserves
-release history, upserts it into the catalog table, and asks the running
-service to reload. Publishing one app does not require a backend-container
-restart.
+Reefy maintains a curated catalog of reviewed app packages and their available
+versions. Catalog entries describe what users can install; they do not grant
+arbitrary manifests permission to run on a device.
 
 When a user installs an app, the selected image is pinned on that instance.
 A later catalog update can appear as an available version, but it does not
@@ -49,27 +38,17 @@ selected image.
 Catalog app + user settings
           |
           v
-device_instances row
-  instance UUID, name, slot, image, env, host port
+Reefy records the selected version and settings
           |
           v
-reefy-service builds complete desired state
+Device receives its requested configuration
           |
           v
-MQTT apply_state command
-          |
-          v
-reefy-control -> Varlink -> reefy-reconciler
-          |
-          |-- prepare persistent volumes
-          |-- restore backup when requested
-          |-- write seed and rendered files
-          |-- generate Docker Compose
-          `-- docker compose up -d --pull missing --remove-orphans
+Device prepares storage, applies configuration, and starts the app
 ```
 
-The stable instance UUID is used as the Compose service name and storage
-directory. A display name can change without moving app data.
+Each installation has a stable identity, so changing its display name does not
+move or recreate its persistent data.
 
 ## Minimal manifest
 
@@ -96,14 +75,7 @@ directory. A display name can change without moving app data.
 }
 ```
 
-The directory name must equal `slug`. For an authored app this file would be:
-
-```text
-apps/hello-reefy/app.json
-```
-
-The complete field contract is maintained in the
-[Reefy App Spec](https://github.com/reefyai/reefy-service/blob/main/APP-SPEC.md).
+The package directory name must equal `slug`.
 
 ## Core manifest fields
 
@@ -129,30 +101,20 @@ hardware or kernel requirement, not general defaults.
 
 ## Port allocation and routing
 
-Reefy allocates ports per device in pairs. The first instance receives:
-
-```text
-host_port = 10001
-tty_port  = 10002
-```
-
-The next instance starts after the highest reserved value, so it normally
-receives 10003 and 10004. `tty_port` remains reserved for database and client
-compatibility; interactive terminals now use the MQTT terminal bridge and do
-not listen on that TCP port.
+Reefy assigns each web app an available user-facing port on its device. Apps
+declare only the port used inside their container; they do not choose or share
+the device-facing port.
 
 For an ordinary bridge-network app whose `default_port` is 8080:
 
 ```text
-user-facing LAN port       10001
-loopback internal port     20001  (host_port + 10000)
-container port              8080  (default_port)
-compose bind               127.0.0.1:20001:8080
+device LAN URL       https://<device>:<assigned-port>
+container listener  8080
 ```
 
-`reefy-proxy` terminates authenticated LAN HTTPS on port 10001 and forwards to
-the loopback address. Remote access uses an authenticated slot hostname such
-as:
+Reefy terminates authenticated LAN HTTPS and forwards requests without
+exposing the container listener directly. Remote access uses an authenticated
+slot hostname such as:
 
 ```text
 https://<device>--s<slot>--<public-id>.reefy.ai
@@ -164,28 +126,23 @@ its own network namespace.
 
 Host-network apps are reviewed exceptions. A fixed-port host app is routed to
 its declared `default_port`. A manifest with `dynamic_port: true` receives the
-allocated internal value through an environment variable named
+assigned value through an environment variable named
 `APP_PORT_<default_port>` and must listen on that value.
 
-The fixed and dynamic ranges are tracked in the
-[Reefy port allocation registry](https://github.com/reefyai/reefy-service/blob/main/docs/PORT-ALLOCATION.md).
+## App connectivity
 
-## Container networks
+Normal apps use an isolated container network. Multiple installations of the
+same app can therefore reuse the same container port without conflicts.
 
-Normal apps join the default Compose bridge and receive one DNS alias derived
-from their instance name. There is no shared bare app-slug alias, because two
-instances of the same app would collide or round-robin unexpectedly.
+Optional Reefy integrations are added only when needed:
 
-Conditional platform networks are added only when needed:
+- LLM-aware apps can use an attached provider without embedding provider
+  credentials in the app package.
+- Apps that declare a supported capability receive access limited to that
+  capability.
 
-- `reefy-llm`: joins apps automatically when the device has attached LLM
-  credentials, the app has not opted out, and the user did not provide their
-  own supported LLM environment variables.
-- `reefy-app-api`: joins apps that declare a supported capability and receive
-  a scoped token.
-
-Host-network apps cannot resolve these sidecars by Compose service name and
-therefore do not receive automatic sidecar wiring.
+Host-network apps are reviewed separately and do not receive automatic
+container-network integrations.
 
 ## Environment injected by Reefy
 
@@ -201,20 +158,15 @@ an override cannot impersonate a different instance:
 | `REEFY_DEVICE_UUID` | Stable device UUID. |
 | `REEFY_DEVICE_NAME` | Device display name. |
 
-An app routed through the LLM proxy also receives an OpenAI-compatible base
-URL. A capability-enabled app receives `REEFY_API_URL` and a per-instance JWT
-whose claims contain the instance ID, app slug, and granted capabilities.
+An app connected to Reefy's LLM integration also receives an OpenAI-compatible
+base URL. A capability-enabled app receives `REEFY_API_URL` and a credential
+limited to that installation and its granted capabilities.
 
 ## Reefy app API
 
-The device-side `reefy-app-api` is emitted only when at least one installed app
-requests a supported capability. Version 1 supports `notify`.
-
-Install is the grant. The backend mints a token scoped to the manifest's
-declared and platform-supported capabilities. The sidecar holds no device
-certificate. It forwards notification metadata to `reefy-control` through a
-dedicated Varlink socket, and attachments use a shared volume that
-`reefy-proxy` can serve through a token-validated route.
+Version 1 of the Reefy app API supports `notify`. Installing an app grants only
+the capabilities declared by its reviewed manifest and supported by the
+platform.
 
 A manifest requests it with:
 
@@ -224,15 +176,12 @@ A manifest requests it with:
 }
 ```
 
-Unsupported capability names are not added to the token.
+Unsupported capability names are not granted.
 
 ## Persistent volumes and seed files
 
-A volume declaration maps a stable host path into the container:
-
-```text
-/mnt/reefy-data/apps/<instance-uuid>/<volume-name>
-```
+A volume declaration gives an app stable Reefy-managed storage at the
+container mount point it requests:
 
 ```json
 {
@@ -254,10 +203,9 @@ A volume declaration maps a stable host path into the container:
 - `cap_pct` gives the volume a thin LV limited to that percentage of the app
   pool.
 
-Files under `seed/<volume-name>/` are base64-embedded in desired state and
-written only when the destination does not exist. A restored file therefore
-wins over a seed. Seed files are for first-run defaults, not configuration
-updates.
+Seed files are written only when the destination does not exist. A restored
+file therefore wins over a seed. Seed files are for first-run defaults, not
+configuration updates.
 
 Backup-enabled volumes get their own thin LV for snapshot consistency.
 Containers whose requested restore fails are excluded from that Compose apply
@@ -265,14 +213,9 @@ so they cannot start against empty data.
 
 ## Generated files and credentials
 
-`template_files` can render a catalog-owned `string.Template` with an attached
-credential payload. Reefy writes the result under the instance's
-`.credentials` directory with an allow-listed path, mode, and UID, then
-bind-mounts it at the requested container path.
-
-The browser sees only the credential `data_key`, not the template or target
-path. Files are written with `if_absent` behavior so an app that refreshes its
-own token is not overwritten by the next resync.
+`template_files` lets a reviewed app request a generated credential file at a
+specific container path. Reefy creates it only when absent, so an app that
+refreshes its own credential is not overwritten by the next resync.
 
 The separate `files` manifest field downloads public files into declared
 volumes when absent. It is useful for models or static assets that should not
@@ -307,29 +250,16 @@ rollback of wrapper revisions is not needed. Build a Reefy derivative image
 when files inside the image change or every wrapper revision must remain
 independently selectable.
 
-The full rules, including release de-duplication and OCI labels, are in the
-[App Spec versioning section](https://github.com/reefyai/reefy-service/blob/main/APP-SPEC.md#versioning-apps-based-on-upstream-containers).
+## Authoring an app
 
-## Adding or publishing an app
-
-For an authored app in `reefy-service`:
-
-1. Create `apps/<slug>/app.json` and optional `seed/` or template files.
-2. Validate that `slug` equals the directory name and test desired-state
-   rendering.
-3. Add or update the source entry in `catalog-sources.yaml` when needed.
-4. Publish the app to a target deployment with `reefy-deploy admin
-   app-publish <slug>`.
-5. Verify the catalog response, install on a test device, and inspect the
-   generated desired state and container health.
-
-`admin app-publish-all` bootstraps every curated source. Normal single-app
-updates should use `app-publish` so unrelated catalog entries do not move.
+App sources are maintained in a dedicated app repository. Each package
+contains `app.json` and may include seed or template files. Before publication,
+validate the manifest, test installation on a Reefy device, verify persistent
+data across updates, and confirm that requested privileges are no broader than
+necessary. Catalog publication is limited to reviewed packages.
 
 ## Related architecture
 
 - [Desired state](https://reefy.ai/docs/internals/desired-state)
 - [Storage architecture](https://reefy.ai/docs/internals/storage-architecture)
 - [Security model](https://reefy.ai/docs/security-model)
-- [Reefy App Spec](https://github.com/reefyai/reefy-service/blob/main/APP-SPEC.md)
-- [Port allocation registry](https://github.com/reefyai/reefy-service/blob/main/docs/PORT-ALLOCATION.md)
