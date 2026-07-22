@@ -75,13 +75,11 @@ move or recreate its persistent data.
 }
 ```
 
-The package directory name must equal `slug`.
-
 ## Core manifest fields
 
 | Field | Meaning |
 |---|---|
-| `slug` | Stable catalog identifier and directory name. |
+| `slug` | Stable catalog identifier. Keep it unchanged across releases. |
 | `name`, `description`, `icon`, `tags` | Catalog presentation and search metadata. |
 | `image` | Default container image reference. Production packages should use an immutable tag or digest. |
 | `version` | Human-readable Reefy package version shown to users and injected as `REEFY_APP_VERSION`. |
