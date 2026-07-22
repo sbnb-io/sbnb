@@ -2,7 +2,7 @@
 
 > The full board-by-board investigation, raw EFI-variable evidence, failed
 > experiments, and bidirectional validation are preserved in
-> [A/B EFI Boot Findings and Fix](./a-b-efi-boot-findings-and-fix.md).
+> [A/B EFI Boot Findings and Fix](https://github.com/reefyai/reefy/blob/main/docs/a-b-efi-boot-findings-and-fix.md).
 
 ## Summary
 
