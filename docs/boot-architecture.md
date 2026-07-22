@@ -1,129 +1,228 @@
-# Boot Architecture
+# Boot architecture
 
 ## Overview
 
-The boot process is split into two phases via systemd units, enabling parallel startup and fault isolation. Storage setup is on the critical path; everything else runs concurrently once storage is ready.
+Reefy boots a read-only Buildroot system from one of two EFI system
+partitions. Persistent state and apps live under `/mnt/reefy-data` and are
+mounted before Docker starts. Network access is deliberately not a boot
+prerequisite: the saved desired state is reconciled offline, and the control
+plane connects to MQTT whenever a network becomes available.
 
-## Systemd Unit Graph
+The boot design has four important properties:
 
-```
-                       reefy-storage.service ──────────────────────────────────┐
-                          (critical path)                                     │
-                    ┌───────┬──────────────┬──────┬──────┬──────┐             │
-                    │       │              │      │      │      │             │
-               docker  reefy-wifi-early  tunnel  cmds  mgmt  nvidia-cdi   reefy-init
-                          │                                              (non-critical)
-                    network-online.target
-                    (--any, 30s timeout)
-                          │
-                      reefy-mqtt
-```
+- A/B EFI slots make firmware updates testable and recoverable.
+- Storage and per-app mounts form the container startup barrier.
+- MQTT control and storage/container reconciliation run in separate processes.
+- Non-critical initialization runs in parallel and does not hold up apps.
 
-All services in the bottom row start **in parallel** once `reefy-storage.service` completes.
+## Boot dependency graph
 
-`reefy-wifi-early` runs before `network-online.target`, ensuring WiFi connectivity is available even without ethernet. `systemd-networkd-wait-online` uses `--any` so it succeeds as soon as any interface (WiFi or ethernet) has an IP address.
-
-## Phase 1: reefy-storage.service (critical path)
-
-**Script**: `/usr/bin/boot-reefy-storage.sh`
-**Type**: oneshot, `RemainAfterExit=yes`
-**Flags**: `set -euxo pipefail` — any failure here is fatal (no storage = no system)
-
-| Step | Function | What it does | Failure impact |
-|------|----------|-------------|----------------|
-| 1 | `mount_reefy_usb` | Mount active ESP read-only at `/mnt/reefy` | No certs, no MQTT config |
-| 2 | `ensure_boot_entries` | Verify/fix EFI boot entries via `reefy-efi fix` | Stale boot entries |
-| 3 | `setup_internal_storage` | Open LUKS on internal drives, activate LVM VG `reefy`, mount at `/mnt/reefy-data` | Falls back to USB |
-| 4 | `setup_data_partition` | If no internal storage: open LUKS on USB partition 4, mount at `/mnt/reefy-data` | No persistent state |
-
-*Hostname setup* moved out of this phase — see **reefy-hostname.service** (separate unit, udev- and timer-triggered; reefy-mqtt depends on it). Background in `docs/hostname.md`.
-
-**After this completes**: `/mnt/reefy` and `/mnt/reefy-data` are mounted. Docker, MQTT, and all other services can start.
-
-## Phase 2: reefy-init.service (non-critical, parallel)
-
-**Script**: `/usr/bin/boot-reefy-init.sh`
-**Type**: oneshot, `RemainAfterExit=yes`
-**Flags**: `set -uxo pipefail` — **no `set -e`**, errors are logged but don't stop execution
-**After**: `reefy-storage.service`
-
-| Step | Function | What it does | Failure impact |
-|------|----------|-------------|----------------|
-| 1 | `setup_device_credentials` | Generate password (first boot), create `reefy` user, set root+reefy passwords via `mkpasswd`+`sed` | No SSH access, no credentials in dashboard |
-| 2 | `display_banner` | Print ASCII art + IPs to `/dev/kmsg` | Cosmetic only |
-
-**Nothing depends on this unit** — it runs alongside Docker/MQTT startup, not before it.
-
-## All Systemd Units
-
-| Unit | Type | Depends on | Purpose |
-|------|------|-----------|---------|
-| `reefy-storage.service` | oneshot | `dev-disk-by-partlabel-reefy.device` | Mount USB, open LUKS, mount internal storage |
-| `reefy-init.service` | oneshot | `reefy-storage.service` | Device credentials, banner |
-| `docker.service` | — | `reefy-storage.service` | Container runtime (via drop-in `ramdisk.conf`) |
-| `reefy-wifi-early.service` | oneshot | `reefy-storage.service` | Apply saved WiFi config before `network-online.target` |
-| `reefy-mqtt.service` | simple | `reefy-storage.service`, `network-online.target` | MQTT reconciler — device registration, desired state |
-| `reefy-tunnel.service` | simple | `reefy-storage.service` | Tailscale tunnel (if configured) |
-| `reefy-cmds.service` | oneshot | `reefy-storage.service` | Execute custom commands from USB |
-| `reefy-mgmt.service` | simple | `reefy-storage.service`, `network-online.target` | Mgmt config daemon (if configured) |
-| `nvidia-cdi-generate.service` | oneshot | `reefy-storage.service`, `systemd-modules-load` | GPU device nodes + CDI spec |
-| `reefy-watchdog.timer` | timer | — | Health check every 60s (starts 2min after boot) |
-
-## Normal Boot Timeline
-
-```
-t=0   EFI hands off to systemd
-t+1s  reefy-storage.service starts
-        ├── hostname set
-        ├── USB mounted
-        ├── EFI boot entries verified
-        ├── internal drive mounted at /mnt/reefy-data (or USB fallback)
-        └── LUKS opened
-t+3s  reefy-storage.service completes → triggers parallel startup:
-        ├── reefy-wifi-early.service (applies saved WiFi config if present)
-        ├── docker.service          (pulls images, starts containers)
-        ├── reefy-tunnel.service     (Tailscale tunnel)
-        ├── nvidia-cdi-generate     (GPU device nodes)
-        └── reefy-init.service       (credentials + banner)
-t+7s  reefy-wifi-early completes (WiFi connected or skipped)
-        └── network-online.target reached (--any: first interface with IP)
-            └── reefy-mqtt.service   (connects to EMQX, registers device)
-t+9s  MQTT connected, device registered
-t+10s Docker containers running
+```text
+local-fs.target
+  |-- reefy-boot-watchdog.service
+  |-- reefy-boot-confirm.service
+  |
+  `-- reefy-storage.service
+        |-- reefy-app-volumes.service
+        |     `-- docker.service
+        |            `-- reefy-reconciler.service
+        |
+        |-- reefy-hostname.service
+        |     `-- reefy-control.service
+        |
+        |-- reefy-wifi-early.service -> network-online.target
+        |-- reefy-init.service
+        |-- reefy-cmds.service
+        |-- reefy-tunnel.service, when configured
+        `-- nvidia-cdi-generate.service
 ```
 
-## First Boot Differences
+The diagram shows the ordering constraints, not a single serial chain. The
+hostname, Wi-Fi, initialization, command, tunnel, and NVIDIA setup branches can
+run in parallel after base storage is ready.
 
-On first boot, `reefy-storage.service` takes longer (~5-10s extra):
-- Creates USB partitions 2 (key) and 3 (data)
-- Fills key partition with random data + passphrase
-- LUKS formats partition 3
-- Creates f2fs filesystem
+`reefy-control` does not wait for `network-online.target`, Docker, or the data
+plane. It applies cached identity, starts its reconnect loop, and remains the
+communication path even when the app layer is unhealthy. `reefy-reconciler`
+waits for storage, per-app mounts, and Docker because it owns Compose work.
 
-Everything after storage setup is the same as normal boot.
+## UEFI and A/B slots
 
-## Fault Isolation
+The boot device uses two 1 GiB FAT EFI system partitions:
 
-| Failure | Impact | Recovery |
-|---------|--------|----------|
-| `set_hostname` fails | Generic hostname, boot continues | Reboot |
-| `mount_reefy_usb` fails | Fatal — no USB means no certs/config | Check USB dongle |
-| `setup_data_partition` fails | Fatal — no persistent state | Check disk, LUKS key |
-| `setup_internal_storage` fails | Docker uses slow USB, boot continues | Check internal drive |
-| `setup_device_credentials` fails | No SSH password, boot continues normally | Fixed on next reboot or manual setup |
-| `display_banner` fails | No banner, boot continues | Cosmetic |
-| GPU setup fails | No GPU passthrough, boot continues | Check nvidia modules |
- 
-## Implementation Files
+| Partition | Label | Role |
+|---|---|---|
+| 1 | `reefy-a` | EFI slot A |
+| 2 | `reefy-b` | EFI slot B |
 
-| File | Purpose |
-|------|---------|
-| `usr/bin/boot-reefy-storage.sh` | Phase 1: hostname, USB mount, EFI fix, LUKS, internal storage |
-| `usr/bin/reefy-efi` | Unified EFI boot entry management (fix/update/confirm/status) |
-| `usr/bin/boot-reefy-init.sh` | Phase 2: credentials, banner |
-| `usr/lib/systemd/system/reefy-storage.service` | Systemd unit for phase 1 |
-| `usr/lib/systemd/system/reefy-init.service` | Systemd unit for phase 2 |
-| `usr/bin/reefy-wifi-early` | Apply saved WiFi config from desired-state.json |
-| `usr/lib/systemd/system/reefy-wifi-early.service` | Systemd unit: runs after storage, before network-online |
-| `usr/lib/systemd/system/systemd-networkd-wait-online.service.d/any-interface.conf` | Override: `--any --timeout=30` (succeed on first interface with IP) |
-| `etc/systemd/system/docker.service.d/ramdisk.conf` | Docker depends on reefy-storage |
+UEFI `BootCurrent` and the mounted partition identify the active slot.
+`reefy-efi fix` validates entries by both label and partition UUID, removes
+stale or duplicate entries, recreates missing entries, and keeps the Reefy
+pair at the front of standard `BootOrder`.
+
+An update formats and writes the inactive slot, copies device-specific files,
+and sets standard UEFI `BootNext` for a one-shot trial. If `BootNext` cannot be
+verified, Reefy falls back to updating the active EFI image too rather than
+claiming that a safe A/B trial was scheduled.
+
+See [A/B EFI boot and recovery](https://reefy.ai/docs/internals/a-b-firmware-updates)
+for confirmation, fallback, and firmware-specific behavior.
+
+## Base storage barrier
+
+`reefy-storage.service` runs `/usr/bin/boot-reefy-storage.sh` as a oneshot
+before Docker. It performs discovery and mounting only. Fresh partition and
+filesystem creation happens later during adoption in the data plane.
+
+The boot script:
+
+1. Determines the active A/B slot and mounts that ESP read-only at
+   `/mnt/reefy`.
+2. Runs `reefy-efi fix` to repair standard boot entries.
+3. Reads the LUKS key from boot partition 3.
+4. Tries to open Reefy-encrypted internal disks and activate VG `reefy`.
+5. Mounts `reefy_default`, or the legacy `data` LV, at `/mnt/reefy-data`.
+6. Mounts the optional thick `reefy_state` LV at
+   `/mnt/reefy-data/state`.
+7. Falls back to the encrypted USB partition 4 stack when no internal
+   Reefy VG is available.
+8. Uses the writable rootfs overlay for bootstrap state when no persistent
+   stack exists yet.
+
+Opening LUKS enables discard pass-through and crypto-CPU submission. Mount
+options are selected by filesystem so current XFS volumes and legacy ext4 or
+f2fs volumes remain bootable.
+
+## Per-app volume barrier
+
+`reefy-app-volumes.service` reads the saved desired state and mounts capped or
+backup-enabled per-app thin LVs before Docker. This prevents Docker's
+`restart: unless-stopped` restoration from binding an empty directory before
+the real volume is mounted.
+
+The Docker drop-in uses `Wants=` rather than `Requires=`. The volume service
+has a 120-second timeout, so a wedged mount degrades to Docker starting and a
+later reconciler retry instead of permanently blocking the application layer.
+
+## Control and data plane
+
+### `reefy-control.service`
+
+The control process starts after base storage and the MAC-derived hostname. It
+loads bootstrap MQTT configuration from the active ESP and an adopted-device
+override from persistent state. It has no network-online dependency and
+restarts continuously with a 10-second delay.
+
+Its responsibilities include:
+
+- MQTT connection, registration, status, and commands;
+- desired-state stages and hash publication;
+- firmware update command execution; and
+- Varlink calls into the data plane.
+
+### `reefy-reconciler.service`
+
+The data plane starts after Docker and the per-app mount barrier. It owns:
+
+- persisted desired state;
+- Wi-Fi, static network, SSH-key, and app-user reconciliation;
+- encrypted storage and app volumes;
+- backup, restore, and generated files; and
+- Docker Compose application.
+
+The local Varlink socket is bound promptly while saved-state reconciliation
+runs in a background thread. A server state arriving during that boot apply is
+queued and applied afterward.
+
+## Wi-Fi and network readiness
+
+`reefy-wifi-early.service` reads saved Wi-Fi settings after storage and before
+`network-online.target`. The network wait override uses `--any --timeout=1`.
+This short timeout is intentional: cached images and desired state can run
+offline, while systemd-networkd and the MQTT reconnect loop react when Ethernet
+or Wi-Fi becomes usable.
+
+Services that truly require a network, such as optional `reefy-mgmt.service`,
+can still order themselves after `network-online.target`. Core device boot does
+not.
+
+## Parallel non-critical initialization
+
+`reefy-init.service` runs `/usr/bin/boot-reefy-init.sh` after storage. The
+script does not use shell `errexit`, so individual credential or banner
+failures are logged without aborting the remaining work. It creates the local
+`reefy` account and first-boot credentials, preserves development SSH access
+when configured, and refreshes the console banner.
+
+Other parallel branches include:
+
+- `reefy-cmds.service` for boot-device custom commands;
+- `reefy-tunnel.service` when `/mnt/reefy/tunnel-start.sh` exists;
+- `nvidia-cdi-generate.service` for NVIDIA device nodes and CDI metadata; and
+- `reefy-hostname.service`, which waits for a physical interface and derives a
+  stable hostname before control registration.
+
+NVIDIA CDI generation is ordered before `reefy-control` so a saved GPU app is
+not reconciled before its CDI device name exists.
+
+## First boot and adoption
+
+A freshly flashed device already contains the two EFI slots. It may not yet
+have partitions 3 and 4 or any persistent app storage.
+
+The first boot therefore uses ephemeral rootfs-overlay state to register and
+reach the adoption flow. During adoption, `reefy-reconciler`:
+
+1. creates the 1 MiB key partition at slot 3 when absent;
+2. provisions selected internal disks when configured, otherwise creates USB
+   data partition 4;
+3. writes a fresh key and creates LUKS2 containers;
+4. builds VG `reefy`, a thick state LV, and the thin-pool layout;
+5. migrates bootstrap state into persistent storage; and
+6. mounts the finished stack without requiring a reboot.
+
+Subsequent boots only discover and mount that storage.
+
+## A/B boot health
+
+On a normal boot, `BootCurrent` is already the first standard `BootOrder`
+entry, so both A/B safety units exit without changing the slot.
+
+After a `BootNext` trial:
+
+- `reefy-boot-confirm` waits up to 300 seconds for `reefy-storage` and
+  `reefy-control` to be active;
+- successful health checks call `reefy-efi confirm`, which commits the active
+  slot with freshly allocated standard boot entries; and
+- `reefy-boot-watchdog` reboots through sysrq after 360 seconds if confirmation
+  never stops it, allowing the previous default slot to boot again.
+
+Docker and every app are not part of firmware confirmation. The control plane
+must remain reachable so application problems can be repaired without
+rejecting an otherwise healthy OS image.
+
+## Failure boundaries
+
+| Failure | Expected effect |
+|---|---|
+| Active ESP cannot be mounted | Bootstrap and EFI configuration are unavailable; storage logs a warning and leaves ephemeral state. |
+| Persistent LUKS or LV cannot be mounted | Device uses another known stack or bootstrap overlay; control can still start when identity is available. |
+| Per-app LV mount times out | Docker is allowed to start; reconciler retries mounts during state application. |
+| Network is absent | Saved apps reconcile offline; MQTT keeps reconnecting. |
+| Data plane crashes or hangs | MQTT control stays separate and continues restarting independently. |
+| Docker fails | Control remains online; app health and desired-state stages expose the failure. |
+| New A/B image does not reach control health | Boot confirmation refuses the slot and the boot watchdog returns to the previous default. |
+
+## Implementation files
+
+| File | Responsibility |
+|---|---|
+| `board/reefy/reefy/rootfs-overlay/usr/bin/boot-reefy-storage.sh` | Discover and mount active ESP and persistent storage. |
+| `board/reefy/reefy/rootfs-overlay/usr/bin/reefy-mount-volumes` | Mount per-app volumes before Docker. |
+| `board/reefy/reefy/rootfs-overlay/usr/bin/reefy-efi` | EFI entry repair, A/B update, and confirmation. |
+| `board/reefy/reefy/rootfs-overlay/usr/bin/boot-reefy-init.sh` | Local credentials and console banner. |
+| `board/reefy/reefy/rootfs-overlay/usr/bin/reefy-wifi-early` | Apply saved Wi-Fi before network readiness. |
+| `board/reefy/reefy/rootfs-overlay/usr/lib/reefy/reefy/control.py` | MQTT control plane. |
+| `board/reefy/reefy/rootfs-overlay/usr/lib/reefy/reefy/dataplane.py` | Desired-state data plane. |
+| `board/reefy/reefy/rootfs-overlay/usr/lib/reefy/reefy/storage.py` | Persistent and per-app storage implementation. |
+| `board/reefy/reefy/rootfs-overlay/usr/lib/systemd/system/` | Reefy unit definitions. |

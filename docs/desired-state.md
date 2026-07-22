@@ -1,151 +1,254 @@
-# Desired State Architecture
+# Desired state architecture
 
 ## Overview
 
-Desired state is the mechanism for configuring adopted devices. The server builds a JSON state object containing the device's full configuration (hostname, Docker compose, WiFi, storage, app volumes), pushes it to the device via MQTT, and the device reconciler applies it idempotently.
+Desired state is how the Reefy service converges an adopted device on its
+requested configuration. The service builds one complete JSON document for a
+device, sends it as an MQTT command, and compares a deterministic state hash to
+avoid unnecessary re-applies.
 
-## Data Flow
+The device is split into two processes:
 
+- `reefy-control` owns MQTT, command dispatch, status, and stage reporting.
+- `reefy-reconciler` owns storage, files, backups, and Docker Compose. Control
+  calls it over the local `io.reefy.Reconciler` Varlink interface.
+
+This split keeps the MQTT control path available if storage or container work
+is slow, out of memory, or temporarily wedged.
+
+## Data flow
+
+```text
+Reefy service                              Reefy device
+-------------                              ------------
+build_desired_state(uuid)
+  read device, instances, catalog,
+  SSH keys, providers, and backup config
+  build compose, routes, files, volumes
+
+MQTT commands topic  --------------------> reefy-control
+  {"action":"apply_state","state":{...}}       |
+                                                  | Varlink ApplyState
+                                                  v
+                                            reefy-reconciler
+                                              read old state
+                                              save new state
+                                              reconcile host + apps
+
+retained state_hash <---------------------- reefy-control
+device status/stage <---------------------- reefy-control
 ```
-Server (reefy-service)                          Device (reefy-mqtt-reconciler)
-       |                                                |
-       |-- build_desired_state(uuid)                    |
-       |   Queries DB: device, instances, apps          |
-       |   Generates compose + routes + proxy           |
-       |                                                |
-       |-- MQTT: {action: apply_state, state: {...}} -->|
-       |   Topic: reefy/{pub_id}/devices/{uuid}/commands|
-       |                                                |
-       |                                  Save to desired-state.json
-       |                                  Set stage → 'applying'
-       |                                  Apply hostname
-       |                                  Apply WiFi (if present)
-       |                                  Apply storage (LUKS/LVM)
-       |                                  Prepare app dirs (chown)
-       |                                  docker compose up -d
-       |                                  Publish state_hash
-       |                                  Wait for tunnel health
-       |                                  Set stage → 'ready'
-       |                                                |
-       |<-- state_hash (retained) ----------------------|
-       |    Topic: reefy/{pub_id}/devices/{uuid}/state_hash
+
+The command topic is:
+
+```text
+reefy/{public_id}/devices/{device_uuid}/commands
 ```
 
-## State Object Structure
+The retained hash topic is:
+
+```text
+reefy/{public_id}/devices/{device_uuid}/state_hash
+```
+
+Command delivery uses MQTT QoS 1. The state hash is retained and uses the
+client's default QoS 0; a later publication replaces the retained value.
+
+## State document
+
+The state is an internal server-to-firmware contract. A representative shape
+is:
 
 ```json
 {
   "hostname": "seahorse",
   "compose": {
     "services": {
-      "cloudflared": { "image": "cloudflare/cloudflared:latest", "..." },
-      "ttyd": { "image": "tsl0922/ttyd:latest", "..." },
-      "reefy-proxy": { "image": "ghcr.io/reefyai/reefy-proxy:latest", "..." },
-      "<instance-name>": { "image": "...", "ports": [...], "volumes": [...] },
-      "<instance-name>-tty": { "image": "ghcr.io/reefyai/reefy-app-sidecar-ttyd:latest", "..." }
-    }
+      "cloudflared": {},
+      "reefy-proxy": {},
+      "reefy-llm-proxy": {},
+      "reefy-app-api": {},
+      "<instance-uuid>": {}
+    },
+    "networks": {},
+    "volumes": {}
   },
-  "app_volumes": [
-    { "path": "/mnt/reefy-data/apps/<instance>/<vol>", "uid": 1000, "seed_files": {"...": "base64..."} }
+  "instances": [
+    {
+      "instance_name": "openclaw",
+      "instance_uuid": "a1b2c3d4",
+      "app_slug": "openclaw",
+      "uid": 1000
+    }
   ],
-  "wifi": { "ssid": "MyNetwork", "password": "..." },
-  "storage": {
-    "devices": [{ "path": "/dev/nvme0n1", "..." }]
+  "app_volumes": [
+    {
+      "path": "/mnt/reefy-data/apps/a1b2c3d4/data",
+      "uid": 1000,
+      "seed_files": {}
+    }
+  ],
+  "volume_caps": {},
+  "files": [],
+  "user_ssh_keys": [],
+  "wifi": {"ssid": "MyNetwork", "password": "..."},
+  "storage": {"devices": ["nvme0n1"]},
+  "network": {"addresses": ["192.0.2.10/24"]},
+  "backup": {
+    "schedule": "03:17",
+    "retention": {"keep_last": 30},
+    "instances": []
   }
 }
 ```
 
-## Server Side (`app/services/desired_state.py`)
+Optional blocks are omitted when they are not needed. Infrastructure services
+are also conditional. For example, `reefy-llm-proxy` appears only when the
+device has an attached LLM provider, and `reefy-app-api` appears only when an
+installed app declares a supported capability.
 
-### `build_desired_state(device_uuid)`
+## Server-side build
 
-Builds the full state by:
-1. Querying device info (name, tunnel_id, tunnel_token, auth_secret, storage/wifi config)
-2. Querying device_instances (app deployments with ports)
-3. Loading app definitions from `apps/*/app.json` catalog
-4. Generating compose services:
-   - **cloudflared** — Cloudflare tunnel connector (if tunnel_token exists)
-   - **ttyd** — Host terminal (always present)
-   - **reefy-proxy** — Auth reverse proxy with route table (if auth_secret exists)
-   - **User apps** — From device_instances, with port mapping, volumes, GPU, env vars
-   - **App tty sidecars** — Per-app terminal containers (if tty_port allocated)
-5. Computing routes for both tunnel (Cloudflare) and LAN (HTTPS) access
+`app/services/desired_state.py` in `reefy-service` is the builder and hash
+authority. It combines:
 
-### Port allocation
+1. Device identity, hostname, tunnel credentials, hardware, and user.
+2. Installed app instances, their pinned images, ports, slots, and overrides.
+3. The DB-backed app catalog, with the bundled `apps/` directory as a cold-start
+   fallback when the catalog table is unavailable or empty.
+4. User SSH keys, Wi-Fi, static network addresses, and storage selection.
+5. LLM-provider credentials and capability-scoped app API tokens.
+6. App volume, seed-file, rendered-file, restore, and backup configuration.
 
-- User app ports start at 10001+, allocated sequentially per device
-- Internal ports are offset by +10000 (e.g., host_port=10001 → internal=20001)
-- LAN HTTPS proxy fronts the original ports with TLS + JWT auth
-- Host terminal: LAN port 7682 → ttyd at 127.0.0.1:7681
+Instance rows are ordered by database ID before rendering. Stable ordering is
+required because dictionary and list order contributes to the state hash.
 
-### `compute_state_hash(state)`
+If an installed instance references an app missing from the catalog, the
+builder aborts the whole state build. Omitting only that app would make
+`docker compose up --remove-orphans` delete a valid running container.
 
-SHA-256 of `json.dumps(state, sort_keys=True)`, truncated to 16 hex chars. Must match device-side implementation.
+## App ports and routes
 
-## When State is Pushed
+Each app instance receives a `host_port` starting at 10001. For a normal
+bridge-network app, Reefy maps a loopback-only internal port to the app's
+declared container port:
 
-State is pushed via MQTT `apply_state` command in these scenarios:
+```text
+LAN URL port       host_port                 10001
+loopback bind      host_port + 10000         20001
+container listener app.json default_port    for example 8080
+compose mapping    127.0.0.1:20001:8080
+```
 
-1. **Device adoption** — Server calls `build_desired_state()` and publishes immediately
-2. **Device comes online** — Server compares device's `state_hash` with server-computed hash; pushes only if they differ (dedup)
-3. **Config change** — User modifies services, WiFi, storage, or device name via dashboard → server pushes updated state
-4. **Manual sync** — User clicks "Sync State" in dashboard
+`reefy-proxy` terminates LAN HTTPS on the allocated LAN port and forwards to
+the loopback bind. Remote tunnel access uses the instance slot hostname and
+also forwards through `reefy-proxy`. The app port is never bound directly to
+all host interfaces.
 
-## Device Side (`reefy-mqtt-reconciler`)
+Host-network apps are an exception. Reefy routes to the app's declared port,
+or injects `APP_PORT_<default_port>` when the manifest declares
+`dynamic_port: true`.
 
-### File paths
+Terminals no longer use ttyd containers or per-app terminal sidecars. The
+`reefy-terminal-bridge` carries host and container terminal sessions over
+MQTT. The `tty_port` database field remains allocated for compatibility but is
+not a listening terminal port.
 
-| Path | Purpose |
-|------|---------|
-| `/mnt/reefy-data/state/desired-state.json` | Persisted desired state (survives reboots) |
-| `/mnt/reefy-data/state/docker-compose.json` | Generated compose file (written from state) |
+## When state is pushed
 
-### Apply sequence (`_apply_desired_state`)
+The service builds and publishes state when:
 
-1. **Hostname** — `hostnamectl set-hostname` (or revert to MAC-based default)
-2. **WiFi** — Calls `wifi-setup <ssid> <password>` script (before compose, connectivity may be needed for image pulls)
-3. **Storage** — LUKS + LVM setup for encrypted extra data drives
-4. **App volumes** — Creates host directories and chowns to correct UID; writes seed files (base64-decoded) on first run
-5. **Docker compose** — Writes `docker-compose.json`, runs `docker compose up -d --pull always --remove-orphans`
+- a device is adopted;
+- an adopted device reports online and its saved hash differs;
+- a user changes apps, versions, environment, Wi-Fi, network, storage, SSH
+  keys, backup settings, or attached providers; or
+- the user requests a manual resync.
 
-### Concurrency
+Repeated online messages are deduplicated. The same server hash is not pushed
+again inside the apply cooldown, while a genuinely new hash is sent
+immediately.
 
-`_apply_lock` (threading.Lock) prevents parallel `apply_state` runs. If a second command arrives while one is in progress, it is skipped with a log message.
+## Device-side apply order
 
-### Boot-time apply
+For a new command, the data plane reads the old persisted state before saving
+the new document. That old/new diff is required for safe cleanup of removed
+static IPs and deleted per-app logical volumes.
 
-On device connect (`_handle_device_connect`), if `desired-state.json` exists, the reconciler re-applies the saved state. This ensures the device converges to the desired state after reboots without needing the server to re-push.
+The current apply order is:
 
-### State hash dedup
+1. Persist `/mnt/reefy-data/state/desired-state.json`.
+2. Set the requested hostname, or restore the MAC-derived default.
+3. Apply Wi-Fi, using the old state to remove obsolete configuration.
+4. Provision or activate encrypted storage when requested.
+5. Apply static network addresses with old/new diff cleanup.
+6. Rewrite user SSH keys and synchronize per-app system users.
+7. Create and mount app volumes, including capped or backup-backed thin LVs.
+8. Write backup configuration and restore requested archives before apps start.
+9. Apply allow-listed rendered files under `/mnt/reefy-data/apps/` or
+   `/mnt/reefy-data/state/`.
+10. Write Docker Compose and run `docker compose up -d --pull missing
+    --remove-orphans`.
+11. Reclaim per-volume LVs belonging to instances removed from the new state.
 
-After applying state, the device publishes its state hash on a retained MQTT topic. The server reads this hash on the next device heartbeat and only pushes state if the hash has changed. This avoids redundant apply cycles.
+Before Compose runs, the reconciler removes optional device mappings whose
+`/dev` nodes are absent. It also verifies that every registered instance has a
+matching Compose service. An inconsistent state is rejected rather than
+allowed to remove an app as an orphan.
 
-## Error Handling and Recovery
+## Concurrency and boot reconciliation
 
-### Compose failure recovery (`_diagnose_compose_failure`)
+Both control and data-plane paths serialize applies. If a newer state arrives
+while an apply is running, the newest pending payload is queued and drained
+before the lock is released.
 
-When `docker compose up` fails, the reconciler analyzes the output and attempts automated recovery:
+At boot, `reefy-reconciler` starts applying its saved state in a background
+thread while it brings up the Varlink socket. On MQTT connection,
+`reefy-control` calls `Reconcile` rather than reading or overwriting the state
+file itself. This preserves the data plane's ownership of old/new diffs and
+closes the startup race between offline reconciliation and the first server
+push.
 
-| Error pattern | Recovery action |
-|---------------|----------------|
-| `failed to register layer`, `no such file or directory`, `layer does not exist`, `error creating overlay mount`, `failed to mount overlay` | `docker system prune -a -f --volumes` (clear all images, re-pull) |
-| `no space left on device` | `docker system prune -a -f` (free disk space) |
+## Hash and convergence
 
-Recovery runs **once** per apply attempt. After recovery, compose is retried immediately (no backoff delay).
+Both sides compute:
 
-### Retry policy
+```text
+first 16 hexadecimal characters of
+SHA-256(json.dumps(state, sort_keys=True))
+```
 
-- 5 attempts with exponential backoff (10s, 20s, 40s, 80s, 160s)
-- Recovery action (if triggered) replaces the backoff delay for that attempt
-- On final failure: stage is set to `error` and reported to server
+After a successful apply, control publishes the saved-state hash as retained
+MQTT state. The service stores it on the device row and compares it with the
+next server build. A matching hash means the device accepted that exact state
+document and no newer configuration needs to be pushed. Per-instance health
+events remain the authority for whether every app is actually running.
 
-### Stage reporting
+Control reports `applying` before the Varlink call, republishes online status
+and the hash after success, waits for proxy health, and then reports `ready`.
+An apply failure reports `error` and does not claim convergence.
 
-The device reports its stage via MQTT throughout the apply process:
+## Compose failure policy
 
-| Stage | Meaning |
-|-------|---------|
-| `applying` | Desired state apply in progress |
-| `ready` | All services running, tunnel healthy |
-| `error` | Apply failed (compose failure after retries) |
-| `updating` | Firmware update in progress |
+Compose is attempted at most five times. Failures are classified:
+
+| Class | Behavior |
+|---|---|
+| Image missing or access denied | Fail immediately because retrying cannot fix the reference. |
+| No space | Prune images once without volumes; retry only if space was reclaimed. |
+| Docker layer or overlay corruption | Prune once with anonymous volumes, then retry. |
+| Network, registry, timeout, or other transient error | Exponential backoff of 10, 20, 40, 80 seconds between attempts. |
+
+After terminal failure, the reconciler stores a signature of the failed
+Compose document. An unchanged state is not repeatedly pulled on every
+reconnect. A changed state or a successful apply clears the guard.
+
+## Implementation files
+
+| Repository | File | Responsibility |
+|---|---|---|
+| `reefy-service` | `app/services/desired_state.py` | Build state, Compose, routes, files, and hash. |
+| `reefy-service` | `app/services/mqtt.py` | Online hash comparison and deduplicated publish. |
+| `reefy` | `board/reefy/reefy/rootfs-overlay/usr/lib/reefy/reefy/control.py` | MQTT command handling, stage reporting, and Varlink client. |
+| `reefy` | `board/reefy/reefy/rootfs-overlay/usr/lib/reefy/reefy/dataplane.py` | Persist and apply state, Compose, backups, files, and cleanup. |
+| `reefy` | `board/reefy/reefy/rootfs-overlay/usr/lib/reefy/reefy/storage.py` | Encrypted storage and per-volume lifecycle. |
+| `reefy` | `board/reefy/reefy/rootfs-overlay/usr/share/varlink/io.reefy.Reconciler.varlink` | Control-to-data-plane method contract. |

@@ -148,13 +148,13 @@ class DataPlane:
             print("[mqtt] apply_state already running, queued pending state")
             return "Queued"
         try:
-            self._apply_state(payload)
+            applied = self._apply_state(payload)
             while self._pending_state is not None:
                 pending = self._pending_state
                 self._pending_state = None
                 print("[mqtt] Applying queued pending state")
-                self._apply_state(pending)
-            return "State applied"
+                applied = self._apply_state(pending)
+            return bool(applied)
         finally:
             self._apply_lock.release()
 
@@ -243,7 +243,7 @@ class DataPlane:
         state = payload.get('state', {})
         if not state:
             print("[mqtt] ERROR: Empty state in apply_state")
-            return
+            return False
 
         # Read old state before overwriting (for diff-based cleanup)
         old_state = None
@@ -261,11 +261,11 @@ class DataPlane:
             log('mqtt', f'Saved desired state: {state}')
         except OSError as e:
             log('mqtt', f'ERROR: Failed to save desired state: {e}')
-            return
+            return False
 
         # Data plane applies directly; the control process publishes the
         # applying/ready stages around its Varlink call.
-        self._apply_desired_state(old_state=old_state)
+        return self._apply_desired_state(old_state=old_state)
 
     def _apply_desired_state(self, old_state=None):
         """Load saved desired state and apply it (hostname, compose, proxy).
@@ -665,7 +665,12 @@ class DataPlane:
 
     def _dp_apply_state(self, state):
         try:
-            self._apply_state_command({'state': json.loads(state)})
+            result = self._apply_state_command({'state': json.loads(state)})
+            if result is False:
+                return {
+                    'ok': False,
+                    'error': 'desired-state apply failed',
+                }
             return {'ok': True, 'error': ''}
         except Exception as e:
             log('mqtt', f'[data-plane] ApplyState failed: {e}')
@@ -683,11 +688,18 @@ class DataPlane:
             # A command apply is already running; it covers current state.
             return {'ok': True, 'applied': had_state, 'error': ''}
         try:
-            self._apply_desired_state()  # no saved state -> resets hostname
+            applied_ok = self._apply_desired_state()
+            # No saved state resets the hostname and returns True.
             while self._pending_state is not None:
                 pending = self._pending_state
                 self._pending_state = None
-                self._apply_state(pending)
+                applied_ok = self._apply_state(pending)
+            if applied_ok is False:
+                return {
+                    'ok': False,
+                    'applied': had_state,
+                    'error': 'desired-state reconcile failed',
+                }
         except Exception as e:
             log('mqtt', f'[data-plane] reconcile failed: {e}')
             return {'ok': False, 'applied': had_state, 'error': str(e)[:500]}

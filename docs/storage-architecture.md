@@ -1,245 +1,243 @@
-# Reefy Device Storage Architecture
+# Storage architecture
 
 ## Overview
 
-A reefy device has two mount points:
+Reefy separates boot media from persistent device and application data:
 
-| Mount Point | Media | Purpose |
-|-------------|-------|---------|
-| `/mnt/reefy` | USB dongle, partition 1 (A or B) | EFI image, certs, MQTT bootstrap (read-only) |
-| `/mnt/reefy-data` | Internal drive (preferred) or USB partition 4 (fallback) | Everything: device state, Docker, app volumes |
+| Mount point | Backing storage | Purpose |
+|---|---|---|
+| `/mnt/reefy` | Currently active EFI slot, read-only | Boot image and bootstrap or device-specific files. |
+| `/mnt/reefy-data` | Reefy LVM data LV on internal disks or USB fallback | Docker data, apps, desired state, credentials, and backups. |
+| `/mnt/reefy-data/state` | Optional thick state LV | Control-plane identity and state isolated from thin-pool exhaustion. |
+| `/mnt/reefy-data/apps/<instance>/<volume>` | Directory or per-volume thin LV | App data with declared ownership, backup, and optional capacity cap. |
 
-When an internal drive is available, it is mounted directly at `/mnt/reefy-data` by `boot-reefy-storage.sh`. If no internal drive, USB partition 4 is used as fallback.
+Fresh storage is provisioned during adoption, not by the boot oneshot. At
+later boots, the storage service only discovers, opens, activates, and mounts
+the existing stack.
 
-## Partition Layout
+## Boot-device partition layout
 
-### USB Dongle (boot device)
-
-```
-USB dongle (e.g., 58 GB)
-├── Partition 1: EFI System Partition        (0 - 511 MiB)
-│   Type:      EFI System (GPT)
-│   Format:    VFAT, PARTLABEL="reefy"
-│   Mount:     /mnt/reefy (read-only)
-│   Contents:  EFI boot image, MQTT certs, bootstrap config
-│   Lifecycle: Written once during image flash; updated only by firmware OTA
-│
-├── Partition 2: Key Partition               (511 - 512 MiB)
-│   Type:      Microsoft Reserved (GPT type E3C9E316-...)
-│   Format:    Raw binary (no filesystem)
-│   Purpose:   LUKS passphrase storage (first 44 bytes); rest is random noise
-│   Note:      Disguised as system partition — all OSes ignore this type
-│   Lifecycle: Created on first boot; never modified after
-│
-└── Partition 3: Data Partition              (512 MiB - end of disk)
-    Type:      Linux data
-    Format:    LUKS2 → f2fs inside
-    PARTLABEL: "reefy-data"
-    Mount:     /mnt/reefy-data (read-write, noatime)
-    Contents:  Device state, MQTT config, app data (or bind-mount targets)
-    Lifecycle: Created and encrypted on first boot; persists across reboots/updates
+```text
+Reefy boot disk
+|-- partition 1, 1 GiB, FAT, EFI System Partition, label reefy-a
+|-- partition 2, 1 GiB, FAT, EFI System Partition, label reefy-b
+|-- partition 3, 1 MiB, Microsoft Reserved type, raw LUKS key material
+`-- partition 4, remaining space, optional USB persistent-data fallback
 ```
 
-### Internal Drive(s) (optional, mounted directly at /mnt/reefy-data)
+Partitions 1 and 2 exist in the flashed image. Adoption creates partition 3
+when it is absent. If no internal disk is selected, adoption also creates
+partition 4 from 2050 MiB to the end of the boot disk.
 
-```
-Internal drives (nvme0n1, sda, etc.)
-└── Entire device(s) wiped and reformatted:
-    LUKS2 → LVM PV → VG "reefy" → LV "data" → ext4
-    Mount: /mnt/reefy-data (read-write, noatime, commit=60)
+The helper that constructs partition device names handles both conventional
+names such as `/dev/sda4` and digit-ending devices such as
+`/dev/nvme0n1p4`.
 
-    Multiple drives are combined into a single LVM volume group
-    (linear concatenation, not striped — handles mixed sizes).
-    Replaces USB partition 4 when available.
-```
+## Persistent storage stack
 
-## Encryption
+Current installations use the same stack on internal disks and the USB
+fallback:
 
-All persistent data is encrypted at rest.
-
-### Scheme
-
-- **Algorithm**: LUKS2 with AES-XTS (kernel default)
-- **Passphrase**: 44-character base64 string (256 bits entropy)
-- **Key location**: Raw bytes at start of USB partition 2
-- **Shared key**: Extra data drives use the same passphrase as the USB data partition
-
-### Key Lifecycle
-
-| Event | Action |
-|-------|--------|
-| First boot | Generate random passphrase → write to partition 2 → LUKS format partition 3 |
-| Every boot | Read 44 bytes from partition 2 → unlock LUKS container |
-| Storage config | Read same passphrase → LUKS format internal drive(s) |
-| Key backup | `dd if=/dev/sdb2 bs=44 count=1 2>/dev/null` |
-| Future | Migrate key from partition 2 → TPM (`tpm2_tools` already in image) |
-
-### Key Backup and Restore
-
-**Reading the passphrase (for backup):**
-
-```bash
-dd if=/dev/sdb2 bs=44 count=1 2>/dev/null
+```text
+physical device or devices
+  -> LUKS2 container per device
+  -> LVM physical volume per opened mapper
+  -> volume group reefy
+       |-- thick LV reefy_state, XFS
+       |-- thin pool reefy_pool, 512 KiB chunks
+       |    |-- thin LV reefy_default, XFS
+       |    `-- thin LV per capped or backup-enabled app volume, XFS
+       `-- legacy flat LV data, ext4, mounted when present
 ```
 
-This outputs a printable string like `K7xR2pQ...=` that can be saved as text.
+Multiple selected internal disks become physical volumes in the same LVM
+volume group. Reefy does not add mirroring or parity, so this is capacity
+aggregation rather than a redundant storage design.
 
-**Restoring from passphrase (if key partition is damaged):**
+### Default data LV
 
-```bash
-# Write passphrase back to key partition
-echo -n "YOUR_BACKED_UP_PASSPHRASE" | dd of=/dev/sdb2 conv=notrunc
+`reefy_default` has a virtual size equal to the thin pool and is mounted at
+`/mnt/reefy-data`. It contains Docker storage, ordinary app-volume
+directories, caches, and the state directory when the separate state LV is
+not available.
 
-# Or open LUKS manually with the passphrase as a file
-echo -n "YOUR_BACKED_UP_PASSPHRASE" > /tmp/key
-cryptsetup luksOpen /dev/sdb3 reefy-data --key-file /tmp/key --keyfile-size 44
-shred -u /tmp/key
+Fresh default LVs use XFS because dynamic inode allocation avoids the large
+up-front inode-table cost seen with full-pool-size ext4 volumes. Existing ext4
+or f2fs filesystems are detected and mounted without reformatting.
+
+### Thick state LV
+
+Fresh volume groups reserve `reefy_state` before the thin pool consumes the
+remaining space. Its size is:
+
+```text
+min(4 GiB, 10 percent of VG size), with a 256 MiB floor
 ```
 
-### Obfuscation
+It is a thick XFS LV outside the thin pool and mounts at
+`/mnt/reefy-data/state`. This keeps device identity, MQTT configuration,
+desired state, LAN certificates, and control-plane files writable even if app
+or Docker activity fills the thin pool.
 
-Partition 2 is typed as "Microsoft Reserved" so all operating systems ignore it. The entire partition is filled with random data, making the 44-byte passphrase boundary invisible without knowing the exact offset and length.
+Existing devices whose pool already owns all free extents cannot add this LV
+in place. They continue storing state on `reefy_default` until reprovisioned
+or manually migrated.
 
-## Boot Flow
+### Per-app thin LVs
 
-### First Boot
+An app volume receives its own thin LV when it is backup-enabled or declares a
+capacity percentage. Reefy derives a stable LV name from the absolute host
+path, creates XFS on first use, and mounts it before Docker.
 
+Backup volumes need their own LV so Reefy can take a consistent LVM snapshot.
+Capped volumes use the thin LV's virtual size as containment: when a manifest
+sets `cap_pct`, only that percentage of the pool is addressable by the volume.
+An uncapped backup LV uses the full pool virtual size but consumes physical
+chunks only as data is written.
+
+Reefy does not mount a new LV over a non-empty legacy directory. It preserves
+the existing files and leaves that volume on the default LV rather than
+hiding data.
+
+## Encryption and key handling
+
+Every newly provisioned persistent data device is formatted as LUKS2. A single
+fresh 44-character base64 key is written at the start of partition 3 and used
+for all data devices provisioned in that operation.
+
+The key partition is raw, has no filesystem, and is marked with the Microsoft
+Reserved GPT type so desktop operating systems normally ignore it. The full
+1 MiB partition is filled with random data before the key bytes are written at
+the known offset.
+
+LUKS is opened with discard pass-through and crypto-CPU submission enabled.
+These flags are persisted in the LUKS header on provisioning. Filesystems also
+mount with discard so deleted thin-pool chunks can reach the physical device.
+
+This design protects an internal data disk removed without the Reefy boot
+disk. It does not protect against an attacker who obtains both the boot disk
+and the encrypted data disks, because the unlock key is on the boot disk. A
+future TPM-sealed key can strengthen that boundary without changing the LUKS
+or LVM layout.
+
+## Adoption flow
+
+Before adoption, `/mnt/reefy-data` may be only a writable rootfs-overlay
+directory. Adoption calls the shared storage implementation:
+
+1. Find the disk containing `reefy-a` or `reefy-b`.
+2. Create partition 3 when missing.
+3. Look for existing Reefy-encrypted internal disks that the current key can
+   open, supporting a restore or reattachment case.
+4. If the desired storage list names internal disks, tear down existing
+   device-mapper layers, wipe signatures and the first 4 MiB, and provision
+   those whole disks.
+5. Otherwise create partition 4 and provision it as the USB fallback.
+6. Write one fresh key, create and open the LUKS containers, and create LVM
+   physical volumes.
+7. Create or extend VG `reefy`.
+8. Create `reefy_state`, then `reefy_pool`, then `reefy_default` when this is a
+   fresh layout.
+9. Copy bootstrap state aside, mount the persistent LV, restore state, mount
+   `reefy_state`, and create standard directories.
+
+The new storage becomes active during the adoption apply. No reboot is
+required.
+
+Provisioning selected disks is destructive by design. The dashboard and
+desired state identify the devices to use; the data plane wipes them before
+creating Reefy's encrypted stack.
+
+## Boot flow
+
+`boot-reefy-storage.sh` follows an internal-first, USB-fallback policy:
+
+1. Mount the active A/B ESP read-only at `/mnt/reefy`.
+2. Resolve partition 3 as the key file.
+3. Scan every non-boot block device for LUKS and try Reefy's key.
+4. Activate VG `reefy` and mount `reefy_default`, or the legacy `data` LV,
+   when found.
+5. Mount `reefy_state` at the nested state path when it exists.
+6. If no internal stack mounted, open USB partition 4 and mount the same LVM
+   layout or a supported legacy direct filesystem.
+7. If neither path is persistent, create bootstrap state directories in the
+   writable rootfs overlay.
+
+The script detects the actual LV filesystem before choosing mount options.
+XFS gets `noatime,discard`; ext4 keeps
+`noatime,commit=60,discard`; legacy f2fs uses `noatime`.
+
+## App-volume boot ordering
+
+`reefy-app-volumes.service` runs after base storage and before Docker. It reads
+the persisted desired state, collects backup paths and capped-volume paths,
+and mounts each thin LV through a shared file lock.
+
+This closes a boot race where Docker could restore a container before its
+bind-mount target was mounted. The operation is idempotent, and the running
+reconciler uses the same locked primitive for app install or removal.
+
+When an app instance is deleted, the data plane waits until Compose has
+removed its container, unmounts its per-volume LVs, and removes them. Merely
+disabling backup does not delete the volume because the instance still appears
+elsewhere in desired state.
+
+## Directory structure
+
+```text
+/mnt/reefy/
+|-- EFI/Boot/bootx64.efi
+|-- mqtt/
+|   |-- mqtt.conf
+|   |-- ca.crt
+|   |-- bootstrap.crt
+|   `-- bootstrap.key
+`-- reefy/                         device-specific files preserved by OTA
+
+/mnt/reefy-data/
+|-- state/
+|   |-- mqtt.conf
+|   |-- device-uuid
+|   |-- device.crt
+|   |-- device.key
+|   |-- desired-state.json
+|   |-- docker-compose.json
+|   |-- backup/
+|   |-- lan/
+|   `-- llm-proxy/
+|-- apps/
+|   `-- <instance-uuid>/
+|       `-- <volume-name>/
+|-- docker/
+`-- cache/
 ```
-power on
-  → EFI boots from USB partition 1
-  → reefy-storage.service runs boot-reefy-storage.sh
-  → mount /dev/sdb1 → /mnt/reefy (read-only)
-  → detect: partition 3 doesn't exist
-  → fix GPT backup header (image was 512 MB, dongle is larger)
-  → create partition 2 (1 MiB, key) + partition 3 (rest, data)
-  → fill partition 2 with urandom, write passphrase at offset 0
-  → LUKS2 format partition 3 with passphrase
-  → mkfs.f2fs inside LUKS container
-  → mount → /mnt/reefy-data
-  → start docker, reefy-mqtt reconciler (parallel)
-  → reefy-init.service: credentials + banner (parallel)
-  → device registers via MQTT bootstrap
-```
 
-### Small Disks
+Docker's configured data root is `/mnt/reefy-data/docker`.
 
-If the disk is smaller than 600 MiB (e.g., the raw QEMU image without resizing),
-partition creation is silently skipped. Services use optional references (e.g.,
-systemd's `EnvironmentFile=-` prefix) and handle missing mounts gracefully.
+## Compatibility behavior
 
-### Normal Boot
+The implementation retains read and mount compatibility for earlier layouts:
 
-```
-power on
-  → EFI boots from USB partition 1
-  → reefy-storage.service runs boot-reefy-storage.sh
-  → mount /dev/sdb1 → /mnt/reefy (read-only)
-  → detect: partition 3 exists and is LUKS
-  → read passphrase from partition 2
-  → cryptsetup luksOpen → mount → /mnt/reefy-data
-  → mount internal drive at /mnt/reefy-data (if available)
-  → start docker, reefy-mqtt reconciler (parallel)
-  → reefy-init.service: credentials + banner (parallel)
-  → reconciler connects, receives desired state
-```
+- `sbnb-a` and `sbnb-b` labels can still identify a legacy boot disk.
+- A flat VG `reefy` LV named `data` is mounted when `reefy_default` is absent.
+- Existing ext4 app LVs are mounted and never reformatted.
+- A legacy direct f2fs or ext4 filesystem inside USB LUKS partition 4 remains
+  mountable.
+- Existing non-empty app directories are not shadowed by new thin LVs.
 
-### Storage Configuration (internal drives)
+Compatibility is intentionally conservative. Devices keep working, but some
+new capabilities such as snapshot-backed per-volume backup require a fresh
+thin-pool layout.
 
-Triggered by the reconciler when desired state includes `storage.devices`:
+## Implementation files
 
-```
-reconciler receives desired state with storage config
-  → for each device in storage.devices:
-      → wipe device (remove DM layers, wipefs, zero first 4 MB)
-      → LUKS2 format with passphrase from USB partition 2
-      → cryptsetup luksOpen
-      → pvcreate (LVM physical volume)
-  → vgcreate "reefy" from all PVs
-  → lvcreate -l 100%FREE (linear, full capacity)
-  → mkfs.ext4
-  → migrate state from overlay → mount at /mnt/reefy-data
-  → restart Docker for new storage
-```
-
-## Directory Structure
-
-```
-/mnt/reefy/                              ← USB partition 1 (read-only)
-├── EFI/Boot/bootx64.efi               ← EFI boot image
-└── mqtt/
-    ├── mqtt.conf                       ← MQTT broker config (bootstrap)
-    ├── ca.crt                          ← CA certificate
-    ├── bootstrap.crt                   ← Bootstrap client cert
-    └── bootstrap.key                   ← Bootstrap client key
-
-/mnt/reefy-data/                         ← USB partition 3 (encrypted)
-├── state/
-│   ├── mqtt.conf                       ← MQTT runtime config (post-adoption)
-│   ├── device-uuid                     ← Device UUID
-│   ├── device.crt                      ← Device certificate (from provisioning)
-│   ├── device.key                      ← Device private key
-│   ├── desired-state.json              ← Last applied desired state
-│   └── docker-compose.json             ← Generated compose file
-├── apps/                               ← App instance volumes
-│   └── {instance-name}/{volume}/       ← Per-app persistent data
-├── docker/                             ← Docker data root
-│   ├── overlay2/                       ← Image layers, container filesystems
-│   ├── containers/                     ← Container metadata
-│   └── volumes/                        ← Docker managed volumes
-└── cache/                             ← Temporary files
-```
-
-When an internal drive is configured, `/mnt/reefy-data` is the internal drive (mounted directly by `boot-reefy-storage.sh` or the reconciler). Everything — state, apps, docker — lives on the fast internal drive.
-
-## Filesystem Choices
-
-| Mount | Filesystem | Rationale |
-|-------|-----------|-----------|
-| `/mnt/reefy` | VFAT | EFI standard; must be FAT for UEFI boot |
-| `/mnt/reefy-data` (USB) | f2fs | Flash-friendly, log-structured; converts random writes to sequential; `noatime` |
-| `/mnt/reefy-data` (internal) | ext4 | Standard for internal drives; `noatime,commit=60` for batched journal writes |
-
-For the thin-pool chunk size and the XFS-vs-ext4 trade-offs (inode tax,
-reclaim granularity, throughput, CPU) behind the storage redesign, see
-[storage-chunk-size-study.md](storage-chunk-size-study.md).
-
-## Security Properties
-
-| Property | Status |
-|----------|--------|
-| Data at rest | Encrypted (LUKS2/AES-XTS) on all partitions |
-| Key storage | USB partition 2 (obfuscated as Microsoft Reserved) |
-| Key strength | 256-bit random (44 chars base64) |
-| Drive reuse | Full wipe before formatting (DM teardown + wipefs + zero 4 MB) |
-| Drive removal | Data unreadable without USB dongle (key on USB) |
-| USB removal | State (certs, UUID) lost — device re-bootstraps from scratch |
-| TPM upgrade path | `tpm2_tools` in image; future: seal key to TPM hardware |
-
-## Future: TPM Key Storage
-
-The current architecture stores the LUKS key on a partition (sdb2). The key can
-be migrated to a TPM for hardware-backed security:
-
-1. `BR2_PACKAGE_TPM2_TOOLS=y` is already in the image
-2. Future flow: read key from TPM instead of sdb2
-3. The LUKS container itself doesn't change — only the key source
-
-```bash
-# Seal passphrase into TPM
-tpm2_createprimary -C o -c primary.ctx
-tpm2_create -C primary.ctx -u key.pub -r key.priv -i /dev/sdb2
-# ... then update boot script to unseal from TPM instead of reading sdb2
-```
-
-## Implementation Files
-
-| File | Purpose |
-|------|---------|
-| `board/reefy/reefy/rootfs-overlay/usr/bin/boot-reefy-storage.sh` | Partition creation, LUKS setup, mount internal storage |
-| `board/reefy/reefy/rootfs-overlay/usr/bin/boot-reefy-init.sh` | Device credentials, banner |
-| `board/reefy/reefy/rootfs-overlay/usr/bin/reefy-efi` | Unified EFI boot entry management (fix/update/confirm/status) |
-| `board/reefy/reefy/rootfs-overlay/usr/bin/reefy-mqtt-reconciler` | Internal storage setup (LUKS+LVM), app lifecycle |
-| `board/reefy/reefy/rootfs-overlay/usr/lib/systemd/system/reefy-storage.service` | Runs boot-reefy-storage.sh at startup |
-| `board/reefy/reefy/rootfs-overlay/usr/lib/systemd/system/reefy-init.service` | Runs boot-reefy-init.sh (parallel, non-critical) |
-| `configs/reefy_defconfig` | Buildroot packages (cryptsetup, e2fsprogs, lvm2) |
-| `board/reefy/reefy/kernel-config` | Kernel modules (dm_crypt, crypto) |
+| File | Responsibility |
+|---|---|
+| `board/reefy/reefy/rootfs-overlay/usr/lib/reefy/reefy/storage.py` | Provisioning, LUKS/LVM lifecycle, mounts, app volumes, and reclaim. |
+| `board/reefy/reefy/rootfs-overlay/usr/lib/reefy/reefy/shared.py` | Shared layout constants and partition-name helper. |
+| `board/reefy/reefy/rootfs-overlay/usr/bin/boot-reefy-storage.sh` | Boot discovery and mount flow. |
+| `board/reefy/reefy/rootfs-overlay/usr/bin/reefy-mount-volumes` | Pre-Docker per-app mount entry point. |
+| `board/reefy/reefy/rootfs-overlay/usr/lib/systemd/system/reefy-storage.service` | Base storage boot barrier. |
+| `board/reefy/reefy/rootfs-overlay/usr/lib/systemd/system/reefy-app-volumes.service` | Per-app volume boot barrier. |
+| `board/reefy/reefy/rootfs-overlay/etc/docker/daemon.json` | Docker data-root configuration. |
+| `docs/storage-chunk-size-study.md` | Measurements behind the 512 KiB thin-pool chunk and XFS choices. |

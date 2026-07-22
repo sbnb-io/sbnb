@@ -233,12 +233,10 @@ class ApplyPathTests(unittest.TestCase):
         stages = [c.args[1].get('stage')
                   for c in m_emit.call_args_list if c.args and c.args[0] == 'stage']
         self.assertIn('error', stages)
-        # KNOWN GAP (deferred follow-up): _dp_apply_state still returns ok=True
-        # on an apply that returned False - only an *exception* yields not-ok -
-        # so control would publish 'ready' despite the failure. The hardening
-        # (propagate apply failure as not-ok) is the separate observability
-        # follow-up.
-        self.assertTrue(res['ok'])
+        # The Varlink result must preserve the apply failure so control does
+        # not publish ready after the data plane emitted error.
+        self.assertFalse(res['ok'])
+        self.assertIn('apply failed', res['error'])
 
     def _apply_custom(self, dp, state):
         """Run _dp_apply_state on a caller-supplied state with the same
@@ -498,6 +496,16 @@ class ReconcileTests(unittest.TestCase):
         self.assertIn('boom', res['error'])
         self.assertTrue(self.dp._apply_lock.acquire(blocking=False),
                         'apply lock not released after a failed reconcile')
+
+    def test_false_apply_result_returns_error_and_releases_lock(self):
+        with mock.patch.object(dataplane.os.path, 'exists', return_value=True), \
+                mock.patch.object(self.dp, '_apply_desired_state',
+                                  return_value=False):
+            res = self.dp._dp_reconcile()
+        self.assertFalse(res['ok'])
+        self.assertIn('reconcile failed', res['error'])
+        self.assertTrue(self.dp._apply_lock.acquire(blocking=False),
+                        'apply lock not released after a false reconcile')
 
     def test_boot_apply_delegates_to_reconcile(self):
         with mock.patch.object(self.dp, '_dp_reconcile') as rec:

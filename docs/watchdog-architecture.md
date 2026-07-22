@@ -1,18 +1,23 @@
-# Watchdog Architecture
+# Watchdog architecture
 
 ## Overview
 
-Three layers of watchdog protection ensure devices recover from failures automatically:
+Reefy uses three independent recovery layers:
 
-| Layer | What it watches | Trigger | Recovery |
-|-------|----------------|---------|----------|
-| **Hardware watchdog** (systemd) | systemd itself, kernel | Kernel panic, deadlock, freeze | Hardware reboot in ~60-120s |
-| **Boot watchdog** (reefy-boot-watchdog) | A/B firmware update health | Critical services not starting after update | sysrq reboot in 360s, falls back to old firmware |
-| **App watchdog** (reefy-watchdog.timer) | Docker, MQTT, network | Service failures, connectivity loss | Restart services or reboot |
+| Layer | Watches | Trigger | Recovery |
+|---|---|---|---|
+| Hardware watchdog | PID 1, kernel progress, and shutdown | systemd stops petting the hardware watchdog | Hardware reset. |
+| A/B boot watchdog | Trial firmware reaching control-plane health | A non-default boot is not confirmed within 360 seconds | Immediate sysrq reboot so the prior default slot can boot. |
+| Infrastructure watchdog | Tailscale authentication and selected tunnel containers | Repeated service-specific failures | Restart only the affected tunnel unit or container, with cooldown. |
 
-## Layer 1: Hardware Watchdog (systemd RuntimeWatchdogSec)
+The layers do not share a timer or watchdog file descriptor. systemd owns the
+hardware watchdog for the full system lifetime. The A/B watchdog uses sysrq,
+and the infrastructure watchdog uses a systemd timer plus bounded service
+restarts.
 
-**Config**: `/etc/systemd/system.conf.d/watchdog.conf`
+## Layer 1: systemd hardware watchdog
+
+Configuration:
 
 ```ini
 [Manager]
@@ -20,113 +25,142 @@ RuntimeWatchdogSec=120
 RebootWatchdogSec=2min
 ```
 
-**How it works**:
-- systemd opens `/dev/watchdog0` at boot
-- Pings hardware watchdog every 60s (half of 120s timeout)
-- If systemd stops pinging (kernel panic, deadlock, OOM) → hardware forces reboot after 120s
-- `RebootWatchdogSec=2min` — if shutdown hangs, hardware forces reboot after 2 minutes
+When the hardware exposes `/dev/watchdog0`, systemd opens it and pets it at
+half the runtime timeout. A kernel deadlock, PID 1 stall, or other failure that
+stops those pings lets the device reset the machine. `RebootWatchdogSec` also
+bounds a shutdown that never completes.
 
-**Verification**:
+The kernel has its own production panic timeout, so a normal kernel panic can
+reboot before the hardware watchdog. The hardware timer remains the fallback
+for failures that prevent the kernel's recovery path from progressing.
+
+Useful checks on a device:
+
 ```bash
-# Check watchdog is active
-systemctl show | grep -i watchdog
-# Expected: RuntimeWatchdogUSec=2min, WatchdogLastPingTimestamp=<recent>
-
-# Check systemd has watchdog fd open
-lsof | grep watchdog
-# Expected: systemd PID 1 has /dev/watchdog0 open
+systemctl show --property=RuntimeWatchdogUSec \
+  --property=RebootWatchdogUSec \
+  --property=WatchdogLastPingTimestamp
+ls -l /dev/watchdog0
 ```
 
-**Testing** (lab devices only):
-```bash
-# Disable kernel auto-reboot on panic, then trigger panic
-echo 0 > /proc/sys/kernel/panic
-echo c > /proc/sysrq-trigger
-# Kernel panics. Watchdog fires after ~60-120s (hardware reboot).
-# With panic=10 (production), kernel auto-reboots in 10s before watchdog.
+Hardware-watchdog panic tests can interrupt storage and active workloads and
+should be run only on disposable lab devices.
+
+## Layer 2: A/B boot watchdog
+
+`reefy-boot-watchdog.service` activates its timer only when standard UEFI
+`BootCurrent` differs from the first `BootOrder` entry. That state means Reefy
+is testing a one-shot `BootNext` slot rather than booting the persistent
+default.
+
+The confirmation flow is:
+
+1. Firmware consumes `BootNext` and boots the inactive slot.
+2. `reefy-boot-confirm` waits up to 300 seconds.
+3. It refuses confirmation immediately if `reefy-storage` or `reefy-control`
+   enters the failed state.
+4. When both are active, it runs `reefy-efi confirm`.
+5. Confirmation commits the current slot with a fresh pair of standard UEFI
+   boot entries.
+6. Boot confirmation stops `reefy-boot-watchdog.service`.
+
+If confirmation does not stop the watchdog within 360 seconds, it writes `b`
+to `/proc/sysrq-trigger`. That performs an immediate software reboot. Because
+`BootNext` was one-shot and has already been consumed, firmware uses the prior
+persistent default on the next boot.
+
+The A/B watchdog does not open, close, or pet `/dev/watchdog0`. This avoids a
+second owner fighting systemd and avoids accidentally leaving a hardware timer
+armed after a file descriptor closes.
+
+Docker and individual apps are not boot-confirmation requirements. Storage and
+the MQTT control plane are the minimum recovery surface needed to diagnose and
+repair application failures.
+
+## Layer 3: infrastructure watchdog
+
+`reefy-watchdog.timer` starts two minutes after boot and runs every minute. It
+launches a bounded oneshot service with a 50-second systemd timeout.
+
+The shell entry point performs the Tailscale-specific log check and then runs
+the Python liveness checks. State and cooldown files live in
+`/run/reefy-watchdog`, so they reset on reboot.
+
+### Tailscale authentication recovery
+
+Some expired or deleted ephemeral Tailscale nodes can leave `tailscaled`
+reporting a running backend while repeatedly logging `node not found`.
+
+The watchdog counts those messages over the previous two minutes. After at
+least three errors, it restarts `reefy-tunnel.service`, which reruns the Reefy
+tunnel setup and authentication. It deliberately does not restart
+`tailscaled`, because killing that daemon would drop active Tailscale SSH and
+tmux sessions. A three-minute cooldown prevents repeated reauthentication.
+
+### Tunnel-container liveness
+
+The Python watchdog checks only optional containers that actually exist in the
+Compose project:
+
+| Service | Probe | Healthy result |
+|---|---|---|
+| `cloudflared` | `http://127.0.0.1:20241/ready` | JSON status 200 with at least one ready connection. |
+| `reefy-proxy` | `http://127.0.0.1:8080/` | Any complete HTTP response, including the expected unauthenticated 403. |
+
+An absent optional service is skipped and its failure count is cleared. One
+failed probe increments a per-service counter; a healthy probe clears it.
+After three consecutive failures, the watchdog restarts only the matching
+container using:
+
+```text
+docker restart --time 5 <container>
 ```
 
-**Test result**: Device rebooted in ~80 seconds after kernel panic with `panic=0`. This is expected — last watchdog ping was at most 60s before the panic, plus 120s timeout = 60-120s total.
+The restart call is bounded to 15 seconds. Whether it succeeds or fails, a
+five-minute per-service cooldown prevents a restart storm. A successful
+restart clears the failure counter.
 
-## Layer 2: Boot Watchdog (A/B Firmware Updates)
+The infrastructure layer does not currently claim to monitor every app,
+Docker as a whole, MQTT reachability, or general Internet connectivity. Its
+scope is the known tunnel failure modes above.
 
-**Script**: `/usr/bin/reefy-boot-watchdog`
-**Service**: `reefy-boot-watchdog.service`
+## Timing
 
-**How it works**:
-- Only activates when `BootCurrent != BootOrder[0]` (pending A/B firmware update)
-- Starts a 360-second timer
-- If `reefy-boot-confirm` doesn't stop the service within 360s → sysrq reboot
-- UEFI falls back to old firmware slot (BootNext was consumed)
-
-**No hardware watchdog manipulation** — Layer 1 (systemd) owns `/dev/watchdog0` exclusively. Boot watchdog uses sysrq as a software fallback.
-
-**Boot confirmation flow**:
-1. Device boots new firmware via BootNext
-2. `reefy-boot-confirm` waits for critical services (reefy-storage, reefy-mqtt) to be active
-3. If all healthy → `reefy-efi confirm` commits new slot as default
-4. Stops `reefy-boot-watchdog` → timer cancelled
-5. If services fail → watchdog fires → sysrq reboot → old slot
-
-## Layer 3: App Watchdog (reefy-watchdog.timer)
-
-**Timer**: `reefy-watchdog.timer` (every 60s, starts 2min after boot)
-**Script**: `/usr/bin/reefy-watchdog.sh`
-
-Checks app-level health every minute. In addition to the legacy Tailscale
-recovery, it probes:
-
-- `cloudflared` at `http://127.0.0.1:20241/ready`. The response must report at
-  least one ready tunnel connection.
-- `reefy-proxy` at `http://127.0.0.1:8080/`. Any complete HTTP response,
-  including the normal unauthenticated 403, proves the proxy event loop is
-  responsive.
-
-After three consecutive failures, the watchdog restarts only the failed
-container. A five-minute per-service cooldown prevents restart storms during
-extended network or system pressure. Each restart is bounded so the oneshot
-watchdog service cannot hang behind Docker.
-
-## Design Decisions
-
-### Why systemd owns the hardware watchdog
-
-Previous design: `reefy-boot-watchdog` opened `/dev/watchdog0` directly with `exec 3>/dev/watchdog0`. This caused issues:
-- Watchdog was only armed during A/B updates, not during normal operation
-- No watchdog pinging during the timeout → hardware rebooted prematurely (~60s instead of 360s)
-- Closing the watchdog fd without writing magic close char `V` left the watchdog ticking
-
-New design: systemd owns the watchdog for the entire system lifetime. Boot watchdog uses sysrq (software) as a separate safety net.
-
-### Watchdog timing
-
-```
-Boot ──────────────────────────────────────────────────────────────
-  │
-  ├─ t=0    systemd starts, opens /dev/watchdog0, pings every 60s
-  │
-  ├─ t=3s   reefy-storage.service completes
-  │           ├─ reefy-boot-watchdog starts (360s timer, sysrq only)
-  │           └─ reefy-boot-confirm starts (waits for services)
-  │
-  ├─ t=8s   reefy-mqtt connects, boot-confirm health checks pass
-  │           ├─ reefy-efi confirm → commits new boot slot
-  │           └─ stops reefy-boot-watchdog (timer cancelled)
-  │
-  ├─ t=∞    systemd keeps pinging hardware watchdog forever
-  │           Any kernel hang → hardware reboot in ~60-120s
-  │
-  └─ Normal operation: Layer 1 always active, Layer 2 inactive,
-     Layer 3 checks every 60s
+```text
+boot
+ |-- systemd arms and continuously pets the hardware watchdog
+ |-- normal default-slot boot: A/B services exit without action
+ |
+ |-- trial slot boot
+ |     |-- boot-confirm waits up to 300 seconds for storage + control
+ |     |-- success: commit current slot and stop boot watchdog
+ |     `-- no confirmation by 360 seconds: sysrq reboot
+ |
+ `-- 2 minutes after boot
+       `-- infrastructure watchdog every minute
+             |-- Tailscale log recovery, 3-minute cooldown
+             `-- cloudflared/proxy probes, 3 failures, 5-minute cooldown
 ```
 
-## Files
+## Failure containment
 
-| File | Purpose |
-|------|---------|
-| `etc/systemd/system.conf.d/watchdog.conf` | RuntimeWatchdogSec + RebootWatchdogSec |
-| `usr/bin/reefy-boot-watchdog` | A/B update sysrq safety net |
-| `usr/lib/systemd/system/reefy-boot-watchdog.service` | Systemd unit for boot watchdog |
-| `usr/bin/reefy-boot-confirm` | Health check + boot slot confirmation |
-| `usr/lib/systemd/system/reefy-boot-confirm.service` | Systemd unit for boot confirm |
-| `usr/bin/reefy-efi` | EFI operations (fix/update/confirm/status) |
+- A container liveness failure cannot manipulate the hardware watchdog.
+- A missing optional tunnel container does not trigger recovery.
+- A transient failed HTTP probe must repeat across three timer runs.
+- Container recovery does not restart unrelated user apps.
+- Tailscale recovery preserves the long-running `tailscaled` process.
+- The A/B timeout remains longer than the boot-confirm health window.
+- All infrastructure restart subprocesses and the oneshot service are time
+  bounded.
+
+## Implementation files
+
+| File | Responsibility |
+|---|---|
+| `board/reefy/reefy/rootfs-overlay/etc/systemd/system.conf.d/watchdog.conf` | systemd hardware watchdog configuration. |
+| `board/reefy/reefy/rootfs-overlay/usr/bin/reefy-boot-watchdog` | 360-second A/B trial watchdog and sysrq reboot. |
+| `board/reefy/reefy/rootfs-overlay/usr/bin/reefy-boot-confirm` | Storage and control health check plus slot confirmation. |
+| `board/reefy/reefy/rootfs-overlay/usr/bin/reefy-watchdog.sh` | Timer entry point and Tailscale log recovery. |
+| `board/reefy/reefy/rootfs-overlay/usr/lib/reefy/reefy/watchdog.py` | cloudflared and proxy probes, failure counts, and bounded restart. |
+| `board/reefy/reefy/rootfs-overlay/usr/lib/systemd/system/reefy-watchdog.timer` | Two-minute delay and one-minute interval. |
+| `board/reefy/reefy/rootfs-overlay/usr/lib/systemd/system/reefy-watchdog.service` | Bounded oneshot wrapper. |
