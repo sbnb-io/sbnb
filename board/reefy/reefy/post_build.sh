@@ -79,3 +79,19 @@ fi
 rm -f "${TARGET_DIR}/usr/bin/reefy-mqtt-reconciler" \
       "${TARGET_DIR}/usr/lib/systemd/system/reefy-mqtt.service" \
       "${TARGET_DIR}/etc/systemd/system/multi-user.target.wants/reefy-mqtt.service"
+
+# Prune kernel modules of superseded kernel versions from TARGET_DIR.
+# Same stale-file class as above: Buildroot has no uninstall mechanism
+# (pkg dirclean removes only build dirs + install stamps, never files
+# already installed in TARGET_DIR), so after a kernel version bump the
+# old /lib/modules/<old-version> dir lingers and ships in the rootfs.
+# The CI "Verify pinned kernel version" step also requires exactly one
+# version dir. Every package that installs kernel modules (linux,
+# r8125/26/27/8168, nvidia-open-gpu) is dircleaned on version change and
+# reinstalls under the pinned version, so purging old dirs here is safe.
+# Fail-safe: if the pin can't be read, purge nothing - CI verify catches it.
+PINNED_KERNEL=$(sed -n 's/^BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION="v\([0-9.]*\)"$/\1/p' "${BR2_CONFIG}")
+if [ -n "${PINNED_KERNEL}" ] && [ -d "${TARGET_DIR}/lib/modules" ]; then
+  find "${TARGET_DIR}/lib/modules" -mindepth 1 -maxdepth 1 -type d \
+    ! -name "${PINNED_KERNEL}" -exec rm -rf {} +
+fi
