@@ -35,6 +35,7 @@ class Storage:
     LEGACY_STORAGE_LV = shared.LEGACY_STORAGE_LV
     REEFY_DATA_MOUNT_OPTS = shared.REEFY_DATA_MOUNT_OPTS
     DESIRED_STATE_PATH = shared.DESIRED_STATE_PATH
+    LUKS_SECTOR_SIZES = (4096, 2048, 1024, 512)
 
     def __init__(self, volume_caps=None):
         # Per-app fair-share caps (host_path -> %% of pool); read by
@@ -54,22 +55,171 @@ class Storage:
         """
         if _log:
             _log('Writing fresh LUKS keyfile...')
-        subprocess.run(
+        result = subprocess.run(
             ['dd', 'if=/dev/urandom', f'of={key_part}', 'bs=1M', 'count=1'],
             capture_output=True, timeout=10)
-        passphrase = subprocess.run(
+        if result.returncode != 0:
+            raise RuntimeError(
+                f'Failed to initialize LUKS key partition {key_part}: '
+                f'{self._process_error(result)}')
+        result = subprocess.run(
             ['openssl', 'rand', '-base64', '32'],
             capture_output=True, text=True, timeout=5
-        ).stdout.strip()
-        subprocess.run(
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            raise RuntimeError(
+                f'Failed to generate LUKS key: {self._process_error(result)}')
+        passphrase = result.stdout.strip()
+        result = subprocess.run(
             ['sh', '-c', f'echo -n "{passphrase}" | dd of={key_part} conv=notrunc'],
             capture_output=True, timeout=10)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f'Failed to write LUKS key partition {key_part}: '
+                f'{self._process_error(result)}')
 
-    def _provision_luks_stack(self, targets, key_part, _log=None):
-        """Provision fresh LUKS volumes on `targets`, all keyed by a
-        single freshly-written keyfile. Returns the /dev/mapper/<name>
-        paths that opened successfully - the PV list for the next LVM
-        stack step.
+    @staticmethod
+    def _process_error(result):
+        """Return a readable stderr/stdout string for CompletedProcess."""
+        value = getattr(result, 'stderr', None) or getattr(result, 'stdout', None)
+        if isinstance(value, bytes):
+            value = value.decode(errors='replace')
+        value = (value or '').strip()
+        return value or '(no output)'
+
+    @staticmethod
+    def _is_power_of_two(value):
+        return isinstance(value, int) and value > 0 and not value & (value - 1)
+
+    def _read_blockdev_int(self, target, option):
+        result = subprocess.run(
+            ['blockdev', option, target],
+            capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f'Cannot read {option} for {target}: '
+                f'{self._process_error(result)}')
+        try:
+            return int(result.stdout.strip())
+        except (TypeError, ValueError) as e:
+            raise RuntimeError(
+                f'Invalid {option} value for {target}: '
+                f'{result.stdout!r}') from e
+
+    def _read_block_geometry(self, target):
+        """Return raw block geometry needed for safe LUKS formatting."""
+        geometry = {
+            'logical': self._read_blockdev_int(target, '--getss'),
+            'physical': self._read_blockdev_int(target, '--getpbsz'),
+            'size': self._read_blockdev_int(target, '--getsize64'),
+        }
+        logical = geometry['logical']
+        physical = geometry['physical']
+        if (not self._is_power_of_two(logical)
+                or not self._is_power_of_two(physical)
+                or logical < 512
+                or physical < logical
+                or geometry['size'] <= 0):
+            raise RuntimeError(
+                f'Invalid block geometry for {target}: '
+                f'logical={logical}, physical={physical}, '
+                f'size={geometry["size"]}')
+        return geometry
+
+    @classmethod
+    def _choose_luks_sector_size(cls, geometries, required_sector_size=None):
+        """Choose the largest safe LUKS sector shared by every raw disk."""
+        if not geometries:
+            raise RuntimeError('No storage devices selected for LUKS provisioning')
+        candidates = (
+            (required_sector_size,)
+            if required_sector_size is not None
+            else cls.LUKS_SECTOR_SIZES
+        )
+        for candidate in candidates:
+            if candidate not in cls.LUKS_SECTOR_SIZES:
+                continue
+            if all(
+                    geometry['logical'] <= candidate <= geometry['physical']
+                    and candidate % geometry['logical'] == 0
+                    and geometry['physical'] % candidate == 0
+                    and geometry['size'] % candidate == 0
+                    for geometry in geometries.values()):
+                return candidate
+        details = '; '.join(
+            f'{target} logical={geometry["logical"]} '
+            f'physical={geometry["physical"]} size={geometry["size"]}'
+            for target, geometry in geometries.items())
+        requirement = (f' required={required_sector_size}'
+                       if required_sector_size is not None else '')
+        raise RuntimeError(
+            f'No safe common LUKS sector size for selected devices'
+            f'{requirement}: {details}')
+
+    def _preflight_luks_targets(self, targets, required_sector_size=None,
+                                _log=None):
+        """Validate a complete target batch before key rotation or wiping."""
+        if not targets:
+            raise RuntimeError('No storage devices selected for LUKS provisioning')
+        device_paths = [target for target, _ in targets]
+        mapper_names = [mapper_name for _, mapper_name in targets]
+        if len(set(device_paths)) != len(device_paths):
+            raise RuntimeError(f'Duplicate LUKS target selected: {device_paths}')
+        if len(set(mapper_names)) != len(mapper_names):
+            raise RuntimeError(f'Duplicate LUKS mapper selected: {mapper_names}')
+        missing = [target for target in device_paths if not os.path.exists(target)]
+        if missing:
+            raise RuntimeError(
+                f'Selected storage device(s) not found: {", ".join(missing)}')
+
+        geometries = {
+            target: self._read_block_geometry(target)
+            for target in device_paths
+        }
+        sector_size = self._choose_luks_sector_size(
+            geometries, required_sector_size=required_sector_size)
+        if _log:
+            details = ', '.join(
+                f'{target}={geometry["logical"]}/{geometry["physical"]}'
+                for target, geometry in geometries.items())
+            _log(f'Using common LUKS sector size {sector_size} ({details})')
+        return sector_size
+
+    def _require_common_mapper_sector_size(self, mapper_paths,
+                                           required_sector_size=None):
+        if not mapper_paths:
+            raise RuntimeError('No LUKS mapper devices were prepared')
+        sizes = {
+            mapper_path: self._read_blockdev_int(mapper_path, '--getss')
+            for mapper_path in mapper_paths
+        }
+        unique = set(sizes.values())
+        if len(unique) != 1:
+            rendered = ', '.join(
+                f'{path}={size}' for path, size in sizes.items())
+            raise RuntimeError(
+                f'LUKS mapper logical sector sizes do not match: {rendered}')
+        sector_size = next(iter(unique))
+        if sector_size not in self.LUKS_SECTOR_SIZES:
+            raise RuntimeError(
+                f'Unsupported LUKS mapper sector size {sector_size}: '
+                f'{", ".join(mapper_paths)}')
+        if (required_sector_size is not None
+                and sector_size != required_sector_size):
+            raise RuntimeError(
+                f'LUKS mapper sector size {sector_size} does not match '
+                f'required size {required_sector_size}: '
+                f'{", ".join(mapper_paths)}')
+        return sector_size
+
+    def _provision_luks_stack(self, targets, key_part, _log=None,
+                              sector_size=None, write_keyfile=True):
+        """Provision every target with one explicit LUKS sector size.
+
+        Returns all /dev/mapper/<name> paths for the next LVM layer, or
+        raises after closing newly opened mappers. Fresh adoption writes one
+        new shared key before formatting; extension and recovery callers set
+        write_keyfile=False to preserve the existing shared key.
 
         `targets` is a list of (device_path, mapper_name) tuples; the
         USB-p4 fallback passes `[('/dev/sda4', 'reefy-data')]`, the
@@ -82,68 +232,90 @@ class Storage:
         drops the captured output, leaving only the command line and
         budget - unactionable upstream), then luksOpen.
 
-        Fresh keyfile is written ONCE up front. All targets in this
-        call share the same key, which matches the existing single-
-        key-unlocks-all-reefy-volumes invariant the boot scripts
-        depend on.
+        When requested, the fresh keyfile is written once up front. All
+        targets in this call share the same key, matching the existing
+        single-key-unlocks-all-reefy-volumes invariant used at boot.
         """
-        self._write_fresh_keyfile(key_part, _log)
+        sector_size = self._preflight_luks_targets(
+            targets, required_sector_size=sector_size, _log=_log)
+        if write_keyfile:
+            self._write_fresh_keyfile(key_part, _log)
 
         luks_pvs = []
-        for target, mapper_name in targets:
-            if _log:
-                _log(f'LUKS formatting {target}...')
-            self._force_wipe_device(target)
-
-            try:
-                result = subprocess.run(
-                    ['cryptsetup', 'luksFormat', target,
-                     '--key-file', key_part, '--keyfile-size', '44',
-                     '--batch-mode'],
-                    capture_output=True, timeout=600, check=False)
-            except subprocess.TimeoutExpired as e:
-                out = (e.stdout or b'').decode(errors='replace').strip()
-                err = (e.stderr or b'').decode(errors='replace').strip()
-                try:
-                    dmesg = subprocess.run(
-                        ['dmesg', '--ctime'], capture_output=True,
-                        text=True, timeout=5
-                    ).stdout.strip().splitlines()[-20:]
-                    dmesg_tail = '\n'.join(dmesg)
-                except Exception:
-                    dmesg_tail = '(dmesg unavailable)'
-                raise RuntimeError(
-                    f'cryptsetup luksFormat on {target} timed out after '
-                    f'{e.timeout}s.\nstdout: {out or "(empty)"}\n'
-                    f'stderr: {err or "(empty)"}\n'
-                    f'dmesg tail:\n{dmesg_tail}') from e
-
-            if result.returncode != 0:
-                err = result.stderr.decode(errors='replace').strip()
+        opened_mapper_names = []
+        try:
+            for target, mapper_name in targets:
                 if _log:
-                    _log(f'LUKS format failed on {target}: {err}')
-                continue
+                    _log(f'LUKS formatting {target}...')
+                self._force_wipe_device(target)
 
-            # --allow-discards lets dm-crypt pass TRIM down to the
-            # drive; --persistent stores the flags in the LUKS header
-            # so subsequent opens (boot-reefy-storage.sh) inherit them.
-            # Required for dm-thin discard_passdown and FTL recovery.
-            # --perf-submit_from_crypt_cpus drops dm-crypt's single
-            # post-encryption write-submission thread (the serialization
-            # point); it recovers ~+38% concurrent random write through
-            # the full stack with no read/seq cost (see
-            # docs/storage-chunk-size-study.md). Persisted, so every
-            # later open inherits it too.
-            result = subprocess.run(
-                ['cryptsetup', 'luksOpen', target, mapper_name,
-                 '--allow-discards', '--perf-submit_from_crypt_cpus',
-                 '--persistent',
-                 '--key-file', key_part, '--keyfile-size', '44'],
-                capture_output=True, timeout=120)
-            if result.returncode != 0:
-                continue
+                try:
+                    result = subprocess.run(
+                        ['cryptsetup', 'luksFormat', '--type', 'luks2',
+                         '--sector-size', str(sector_size), target,
+                         '--key-file', key_part, '--keyfile-size', '44',
+                         '--batch-mode'],
+                        capture_output=True, text=True, timeout=600,
+                        check=False)
+                except subprocess.TimeoutExpired as e:
+                    out = e.stdout or ''
+                    err = e.stderr or ''
+                    if isinstance(out, bytes):
+                        out = out.decode(errors='replace')
+                    if isinstance(err, bytes):
+                        err = err.decode(errors='replace')
+                    try:
+                        dmesg = subprocess.run(
+                            ['dmesg', '--ctime'], capture_output=True,
+                            text=True, timeout=5
+                        ).stdout.strip().splitlines()[-20:]
+                        dmesg_tail = '\n'.join(dmesg)
+                    except Exception:
+                        dmesg_tail = '(dmesg unavailable)'
+                    raise RuntimeError(
+                        f'cryptsetup luksFormat on {target} timed out after '
+                        f'{e.timeout}s.\nstdout: {out.strip() or "(empty)"}\n'
+                        f'stderr: {err.strip() or "(empty)"}\n'
+                        f'dmesg tail:\n{dmesg_tail}') from e
 
-            luks_pvs.append(f'/dev/mapper/{mapper_name}')
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        f'LUKS format failed on {target}: '
+                        f'{self._process_error(result)}')
+
+                # --allow-discards lets dm-crypt pass TRIM down to the
+                # drive; --persistent stores the flags in the LUKS header
+                # so subsequent opens inherit them. The performance flag
+                # avoids a single post-encryption submission bottleneck.
+                result = subprocess.run(
+                    ['cryptsetup', 'luksOpen', target, mapper_name,
+                     '--allow-discards', '--perf-submit_from_crypt_cpus',
+                     '--persistent',
+                     '--key-file', key_part, '--keyfile-size', '44'],
+                    capture_output=True, text=True, timeout=120)
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        f'LUKS open failed on {target}: '
+                        f'{self._process_error(result)}')
+
+                mapper_path = f'/dev/mapper/{mapper_name}'
+                opened_mapper_names.append(mapper_name)
+                actual_sector_size = self._read_blockdev_int(
+                    mapper_path, '--getss')
+                if actual_sector_size != sector_size:
+                    raise RuntimeError(
+                        f'LUKS mapper {mapper_path} has logical sector size '
+                        f'{actual_sector_size}, expected {sector_size}')
+                luks_pvs.append(mapper_path)
+        except Exception:
+            for mapper_name in reversed(opened_mapper_names):
+                try:
+                    subprocess.run(
+                        ['cryptsetup', 'luksClose', mapper_name],
+                        capture_output=True, timeout=30)
+                except Exception:
+                    pass
+            raise
 
         return luks_pvs
 
@@ -163,8 +335,7 @@ class Storage:
 
         disk, _ = self._find_reefy_disk()
         if not disk:
-            print("[mqtt] ERROR: Cannot find reefy USB disk")
-            return
+            raise RuntimeError('Cannot find Reefy boot disk for storage key')
 
         key_part = _part_dev(disk, 3)
 
@@ -193,8 +364,8 @@ class Storage:
             time.sleep(1)
 
             if not os.path.exists(key_part):
-                print("[mqtt] ERROR: Key partition not created")
-                return
+                raise RuntimeError(
+                    f'LUKS key partition was not created: {key_part}')
 
         # Try to open existing internal drives with our key (restore scenario)
         parent = subprocess.run(
@@ -229,8 +400,15 @@ class Storage:
 
         # Check if we can activate LVM from opened drives
         subprocess.run(['vgscan'], capture_output=True, timeout=10)
-        if subprocess.run(['vgs', 'reefy'], capture_output=True, timeout=5).returncode == 0:
-            subprocess.run(['vgchange', '-ay', 'reefy'], capture_output=True, timeout=10)
+        if subprocess.run(['vgs', 'reefy'], capture_output=True,
+                          timeout=5).returncode == 0:
+            result = subprocess.run(
+                ['vgchange', '-ay', 'reefy'], capture_output=True,
+                text=True, timeout=10)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f'Existing storage VG activation failed: '
+                    f'{self._process_error(result)}')
             # Prefer the new thin LV (reefy_default) over the legacy
             # flat `data` LV from pre-thin-pool installs.
             lv_path = self._active_reefy_lv_path()
@@ -239,6 +417,9 @@ class Storage:
                     _log('Mounting existing internal storage...')
                 if self._finalize_data_mount(lv_path, _log, 'existing internal'):
                     return
+                raise RuntimeError(
+                    f'Existing internal storage mount failed for {lv_path}; '
+                    f'refusing destructive reprovisioning')
 
         # Try setting up new internal drives if specified in storage config
         if storage_config and storage_config.get('devices'):
@@ -250,6 +431,9 @@ class Storage:
                 capture_output=True, text=True, timeout=5).stdout.strip()
             if mount_type and mount_type != 'tmpfs':
                 return
+            raise RuntimeError(
+                'Requested internal storage was not mounted after '
+                'provisioning; refusing USB fallback')
 
         # Fall back to USB p4 — wrap in LUKS + LVM (same stack as
         # internal drives; unifies single-disk and multi-disk paths
@@ -266,8 +450,8 @@ class Storage:
             time.sleep(1)
 
         if not os.path.exists(data_part):
-            print("[mqtt] ERROR: USB data partition not created")
-            return
+            raise RuntimeError(
+                f'USB data partition was not created: {data_part}')
 
         # Fresh LUKS on the USB data partition via shared provision
         # helper (handles wipe + luksFormat + luksOpen + timeout
@@ -276,20 +460,20 @@ class Storage:
         # subsequent boots.
         luks_pvs = self._provision_luks_stack(
             [(data_part, 'reefy-data')], key_part, _log)
-        if not luks_pvs:
-            print("[mqtt] ERROR: USB data partition LUKS provision failed")
-            return
+        if len(luks_pvs) != 1:
+            raise RuntimeError(
+                'USB data partition LUKS provision did not return one mapper')
 
         # Build VG + thin pool + reefy_default LV on top of the LUKS-
         # opened mapper. Helper handles the fresh-install path here.
         self._ensure_lvm_stack(luks_pvs, _log)
         lv_path = self._active_reefy_lv_path()
         if not lv_path:
-            print("[mqtt] ERROR: No reefy LV after USB LVM setup")
-            return
+            raise RuntimeError('No Reefy LV after USB LVM setup')
 
         # Migrate state from tmpfs, mount persistent (+ state LV + dirs).
-        self._finalize_data_mount(lv_path, _log, 'USB, LVM thin')
+        if not self._finalize_data_mount(lv_path, _log, 'USB, LVM thin'):
+            raise RuntimeError('USB persistent storage mount failed')
         print("[mqtt] Persistent storage created on USB (LVM thin)")
 
     def _setup_internal_persistent(self, storage_config, key_part, _log=None):
@@ -301,33 +485,38 @@ class Storage:
         subprocess.run(['modprobe', 'dm_crypt'], capture_output=True, timeout=5)
         subprocess.run(['modprobe', 'dm_mod'], capture_output=True, timeout=5)
 
-        targets = []
-        for dev_name in devices:
-            target = f'/dev/{dev_name}'
-            if not os.path.exists(target):
-                if _log:
-                    _log(f'Device {target} not found, skipping')
-                continue
-            # Mapper names `reefy-<dev_name>` match what
-            # boot-reefy-storage.sh's setup_internal_storage expects.
-            targets.append((target, f'reefy-{dev_name}'))
+        targets = [
+            (f'/dev/{dev_name}', f'reefy-{dev_name}')
+            for dev_name in devices
+        ]
+        missing = [target for target, _ in targets
+                   if not os.path.exists(target)]
+        if missing:
+            raise RuntimeError(
+                f'Selected internal storage device(s) not found: '
+                f'{", ".join(missing)}')
 
         luks_pvs = self._provision_luks_stack(targets, key_part, _log)
-        if not luks_pvs:
-            return
+        if len(luks_pvs) != len(targets):
+            raise RuntimeError(
+                f'Prepared {len(luks_pvs)} of {len(targets)} selected '
+                f'internal storage devices')
 
         # Build VG + thin pool + reefy_default LV (helper handles
         # existing-VG extend / legacy-LV mount paths too).
         self._ensure_lvm_stack(luks_pvs, _log)
         lv_path = self._active_reefy_lv_path()
         if not lv_path:
-            if _log:
-                _log('No reefy_default or legacy LV after LVM setup')
-            return
+            raise RuntimeError(
+                'No reefy_default or legacy LV after internal LVM setup')
 
         # Migrate state from tmpfs, mount persistent (+ state LV + dirs).
         dev_list = ', '.join(devices)
-        self._finalize_data_mount(lv_path, _log, f'internal: {dev_list}')
+        if not self._finalize_data_mount(
+                lv_path, _log, f'internal: {dev_list}'):
+            raise RuntimeError(
+                f'Internal storage mount failed for selected devices: '
+                f'{dev_list}')
         print(f"[mqtt] Persistent storage created on internal drives: {dev_list}")
 
     def _find_usb_disk(self):
@@ -341,6 +530,16 @@ class Storage:
             if os.path.ismount(d):
                 return d
         return None
+
+    def _pv_vg_name(self, pv):
+        result = subprocess.run(
+            ['pvs', '--noheadings', '-o', 'vg_name',
+             '-S', f'pv_name={pv}'],
+            capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f'Cannot inspect PV {pv}: {self._process_error(result)}')
+        return result.stdout.strip() or None
 
     def _ensure_lvm_stack(self, luks_pvs, _log=None):
         """Bring up the LVM stack on top of the given LUKS-mapped PVs.
@@ -365,9 +564,23 @@ class Storage:
           'existing' — pool + default LV already in place (restore/upgrade)
           'legacy'   — only the legacy flat LV is present (caller mounts it)
         """
+        self._require_common_mapper_sector_size(luks_pvs)
+        pv_memberships = {}
         for pv in luks_pvs:
-            subprocess.run(['pvcreate', '-ff', '-y', pv],
-                           capture_output=True, text=True, timeout=15)
+            pv_memberships[pv] = self._pv_vg_name(pv)
+            if (pv_memberships[pv]
+                    and pv_memberships[pv] != self.STORAGE_VG):
+                raise RuntimeError(
+                    f'PV {pv} already belongs to VG {pv_memberships[pv]}')
+            if pv_memberships[pv]:
+                continue
+            result = subprocess.run(
+                ['pvcreate', '-ff', '-y', pv],
+                capture_output=True, text=True, timeout=15)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f'PV create failed on {pv}: '
+                    f'{self._process_error(result)}')
 
         vg_exists = subprocess.run(
             ['vgs', self.STORAGE_VG], capture_output=True
@@ -381,12 +594,23 @@ class Storage:
             if _log:
                 _log(f'Created VG {self.STORAGE_VG}')
         else:
-            # Extend VG with any not-yet-member PVs.
-            for pv in luks_pvs:
-                subprocess.run(['vgextend', self.STORAGE_VG, pv],
-                               capture_output=True, text=True, timeout=15)
-            subprocess.run(['vgchange', '-ay', self.STORAGE_VG],
-                           capture_output=True, timeout=15)
+            # Extend with the complete new PV set in one LVM transaction.
+            new_pvs = [pv for pv in luks_pvs
+                       if pv_memberships[pv] != self.STORAGE_VG]
+            if new_pvs:
+                result = subprocess.run(
+                    ['vgextend', self.STORAGE_VG] + new_pvs,
+                    capture_output=True, text=True, timeout=15)
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        f'VG extend failed for {", ".join(new_pvs)}: '
+                        f'{self._process_error(result)}')
+            result = subprocess.run(
+                ['vgchange', '-ay', self.STORAGE_VG],
+                capture_output=True, text=True, timeout=15)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f'VG activation failed: {self._process_error(result)}')
 
         default_lv_path = f'/dev/{self.STORAGE_VG}/{self.STORAGE_LV}'
         legacy_lv_path = f'/dev/{self.STORAGE_VG}/{self.LEGACY_STORAGE_LV}'
@@ -812,75 +1036,70 @@ class Storage:
 
     def _find_new_storage_disks(self, desired_devices):
         """Compare desired device list against current VG PVs to find new disks."""
-        try:
-            result = subprocess.run(
-                ['pvs', '--noheadings', '-o', 'pv_name',
-                 '-S', f'vg_name={self.STORAGE_VG}'],
-                capture_output=True, text=True, timeout=10
-            )
-            if result.returncode != 0:
-                return []
-            # Parse PV names like "/dev/mapper/reefy-sda" → "sda"
-            current_devs = set()
-            for line in result.stdout.strip().splitlines():
-                pv = line.strip()
-                # Extract device name from /dev/mapper/reefy-<name>
-                prefix = '/dev/mapper/reefy-'
-                if pv.startswith(prefix):
-                    current_devs.add(pv[len(prefix):])
-            return [d for d in desired_devices if d not in current_devs]
-        except Exception:
-            return []
+        result = subprocess.run(
+            ['pvs', '--noheadings', '-o', 'pv_name',
+             '-S', f'vg_name={self.STORAGE_VG}'],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f'Cannot inspect VG {self.STORAGE_VG} storage devices: '
+                f'{self._process_error(result)}')
+        # Parse PV names like "/dev/mapper/reefy-sda" -> "sda".
+        current_devs = set()
+        for line in result.stdout.strip().splitlines():
+            pv = line.strip()
+            prefix = '/dev/mapper/reefy-'
+            if pv.startswith(prefix):
+                current_devs.add(pv[len(prefix):])
+        return [d for d in desired_devices if d not in current_devs]
+
+    def _vg_mapper_sector_size(self):
+        result = subprocess.run(
+            ['pvs', '--noheadings', '-o', 'pv_name',
+             '-S', f'vg_name={self.STORAGE_VG}'],
+            capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f'Cannot inspect VG {self.STORAGE_VG} PVs: '
+                f'{self._process_error(result)}')
+        mapper_paths = [line.strip() for line in result.stdout.splitlines()
+                        if line.strip()]
+        if not mapper_paths:
+            raise RuntimeError(
+                f'VG {self.STORAGE_VG} has no PVs to establish LUKS '
+                f'sector size')
+        return self._require_common_mapper_sector_size(mapper_paths)
 
     def _extend_storage(self, new_disks):
         """Add new disks to existing VG and extend the LV + filesystem online."""
         key_part = self._find_reefy_key_partition()
         if not key_part:
-            log('reconciler', f'{'Cannot find reefy LUKS key partition'}')
-            return
+            raise RuntimeError('Cannot find reefy LUKS key partition')
 
-        luks_key_size = 44
-        new_pvs = []
+        targets = [(f'/dev/{dev_name}', f'reefy-{dev_name}')
+                   for dev_name in new_disks]
+        required_sector_size = self._vg_mapper_sector_size()
+        new_pvs = self._provision_luks_stack(
+            targets,
+            key_part,
+            _log=lambda message: log('reconciler', message),
+            sector_size=required_sector_size,
+            write_keyfile=False,
+        )
+        if len(new_pvs) != len(targets):
+            raise RuntimeError(
+                f'Prepared {len(new_pvs)} of {len(targets)} selected '
+                f'extension devices')
 
-        for dev_name in new_disks:
-            target = f'/dev/{dev_name}'
-            if not os.path.exists(target):
-                log('reconciler', f'{f'Storage device {target} not found'}')
-                continue
-
-            luks_name = f'reefy-{dev_name}'
-
-            # Wipe, LUKS format, open
-            self._force_wipe_device(target)
-            log('mqtt', f'LUKS formatting {target} (extending VG)')
+        for pv_path in new_pvs:
             result = subprocess.run(
-                ['cryptsetup', 'luksFormat', target,
-                 '--key-file', key_part, '--keyfile-size', str(luks_key_size),
-                 '--batch-mode'],
-                capture_output=True, text=True, timeout=600
-            )
+                ['pvcreate', '-ff', '-y', pv_path],
+                capture_output=True, text=True, timeout=15)
             if result.returncode != 0:
-                log('reconciler', f'{f'LUKS format failed on {target}: {result.stderr.strip()}'}')
-                continue
-
-            result = subprocess.run(
-                ['cryptsetup', 'luksOpen', target, luks_name,
-                 '--perf-submit_from_crypt_cpus',
-                 '--key-file', key_part, '--keyfile-size', str(luks_key_size)],
-                capture_output=True, text=True, timeout=120
-            )
-            if result.returncode != 0:
-                log('reconciler', f'{f'LUKS open failed on {target}: {result.stderr.strip()}'}')
-                continue
-
-            pv_path = f'/dev/mapper/{luks_name}'
-            subprocess.run(['pvcreate', '-ff', '-y', pv_path],
-                           capture_output=True, text=True, timeout=15)
-            new_pvs.append(pv_path)
-
-        if not new_pvs:
-            log('reconciler', f'{'No new storage devices could be prepared'}')
-            return
+                raise RuntimeError(
+                    f'PV create failed on {pv_path}: '
+                    f'{self._process_error(result)}')
 
         # Extend VG with new PVs
         result = subprocess.run(
@@ -888,8 +1107,8 @@ class Storage:
             capture_output=True, text=True, timeout=15
         )
         if result.returncode != 0:
-            log('mqtt', f'VG extend failed: {result.stderr}')
-            return
+            raise RuntimeError(
+                f'VG extend failed: {self._process_error(result)}')
 
         # Extend LV to use all free space
         lv_path = f'/dev/{self.STORAGE_VG}/{self.STORAGE_LV}'

@@ -3,3 +3,6 @@
 # under the reefy lib would be baked onto the device.
 __pycache__/
 *.pyc
+
+# Local operator instructions may contain private deployment context.
+/AGENTS.md

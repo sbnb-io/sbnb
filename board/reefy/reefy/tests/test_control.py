@@ -1,11 +1,13 @@
 """Regression tests for reefy.control.
 
-Source-level only: control imports paho at module top, so we inspect the
-file text via find_spec (which does NOT execute the module) to stay
-runnable in a paho-less env alongside the other tests."""
+Most tests inspect source via find_spec. Behavior tests load the module
+with a minimal paho stub so they also run in the paho-less test image."""
 
 import importlib.util
+import sys
+import types
 import unittest
+from unittest import mock
 
 import _bootstrap  # noqa: F401  (puts the reefy package on sys.path)
 
@@ -14,6 +16,32 @@ def _control_src():
     spec = importlib.util.find_spec('reefy.control')
     with open(spec.origin) as f:
         return f.read()
+
+
+def _load_control_module():
+    """Load reefy.control without requiring paho in the unit-test image."""
+    source_spec = importlib.util.find_spec('reefy.control')
+    module_spec = importlib.util.spec_from_file_location(
+        'reefy_control_behavior_test', source_spec.origin)
+    module = importlib.util.module_from_spec(module_spec)
+
+    paho = types.ModuleType('paho')
+    paho.__path__ = []
+    paho_mqtt = types.ModuleType('paho.mqtt')
+    paho_mqtt.__path__ = []
+    paho_client = types.ModuleType('paho.mqtt.client')
+    paho.mqtt = paho_mqtt
+    paho_mqtt.client = paho_client
+
+    modules = {
+        module_spec.name: module,
+        'paho': paho,
+        'paho.mqtt': paho_mqtt,
+        'paho.mqtt.client': paho_client,
+    }
+    with mock.patch.dict(sys.modules, modules):
+        module_spec.loader.exec_module(module)
+    return module
 
 
 class BootApplyRegressionTests(unittest.TestCase):
@@ -48,6 +76,16 @@ class StateOwnershipRegressionTests(unittest.TestCase):
         self.assertIn("_varlink_call('Reconcile')", src)
 
 
+class HardwareInventoryRegressionTests(unittest.TestCase):
+    def test_lsblk_collects_all_columns_without_changing_size_format(self):
+        # Full disk topology is needed to diagnose model, transport, and
+        # logical-sector incompatibilities from stored hw_info. Keep sizes
+        # human-readable because existing API consumers display them as-is.
+        src = _control_src()
+        self.assertIn("('lsblk', ['lsblk', '-J', '-O'])", src)
+        self.assertNotIn("['lsblk', '-J', '-b', '-O']", src)
+
+
 class VarlinkStartupRaceTests(unittest.TestCase):
     def test_varlink_call_waits_out_reconciler_startup(self):
         # reefy-control and reefy-reconciler start in parallel; control
@@ -65,6 +103,71 @@ class VarlinkStartupRaceTests(unittest.TestCase):
         self.assertIn('startup_grace_s', src)
         self.assertIn('FileNotFoundError', src)
         self.assertIn('not_ready', src)
+
+
+class DesiredStateErrorPropagationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.control = _load_control_module()
+
+    def _plane(self):
+        plane = self.control.ControlPlane()
+        plane.mode = 'device'
+        return plane
+
+    def test_apply_failure_publishes_exact_error_and_command_fails(self):
+        error = (
+            'No safe common LUKS sector size for selected devices '
+            'required=4096: /dev/sdb logical=512 physical=512')
+        plane = self._plane()
+        payload = {
+            'action': 'apply_state',
+            'state': {'storage': {'devices': ['sda', 'sdb']}},
+        }
+
+        with mock.patch.object(
+                plane, '_varlink_call',
+                return_value={'ok': False, 'error': error}), \
+                mock.patch.object(plane, '_publish_stage') as stage, \
+                mock.patch.object(plane, '_publish_status') as status, \
+                mock.patch.object(plane, '_publish_state_hash') as state_hash, \
+                mock.patch.object(plane, '_send_command_response') as response, \
+                mock.patch.object(
+                    self.control.shared, 'wait_for_tunnel_health') as wait, \
+                mock.patch.object(self.control, 'log'):
+            plane._run_command('_apply_state_command', payload, 'cmd-1')
+
+        self.assertEqual(stage.call_args_list, [
+            mock.call('applying', 'Applying desired state'),
+            mock.call('error', error),
+        ])
+        response.assert_called_once_with(
+            'cmd-1', status='error', error=error)
+        status.assert_not_called()
+        state_hash.assert_not_called()
+        wait.assert_not_called()
+        self.assertTrue(plane._apply_lock.acquire(blocking=False))
+        plane._apply_lock.release()
+
+    def test_reconcile_failure_stays_online_and_publishes_exact_error(self):
+        error = 'Selected storage device(s) not found: /dev/sdb'
+        plane = self._plane()
+
+        with mock.patch.object(
+                plane, '_varlink_call',
+                return_value={'ok': False, 'error': error}), \
+                mock.patch.object(plane, '_publish_stage') as stage, \
+                mock.patch.object(plane, '_publish_status') as status, \
+                mock.patch.object(plane, '_publish_state_hash') as state_hash, \
+                mock.patch.object(
+                    self.control.shared, 'wait_for_tunnel_health') as wait, \
+                mock.patch.object(self.control, 'log'):
+            plane._handle_device_connect(mock.sentinel.client)
+
+        status.assert_called_once_with('online', 'Device connected')
+        stage.assert_called_once_with('error', error)
+        state_hash.assert_not_called()
+        wait.assert_not_called()
 
 
 if __name__ == '__main__':

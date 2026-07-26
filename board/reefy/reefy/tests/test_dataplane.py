@@ -212,6 +212,28 @@ class ApplyPathTests(unittest.TestCase):
         m['dirs'].assert_called_once()                      # app dirs prepared
         m['compose'].assert_called_once()                   # compose applied
 
+    def test_storage_exception_is_preserved_in_varlink_error(self):
+        import tempfile
+        dp = _make_dp()
+        dp.DESIRED_STATE_PATH = os.path.join(
+            tempfile.mkdtemp(), 'desired-state.json')
+        state = dict(self.REPRESENTATIVE_STATE)
+        state['storage'] = {'devices': ['sda', 'sdb']}
+        error = (
+            'No safe common LUKS sector size for selected devices '
+            'required=4096: /dev/sdb logical=512 physical=512')
+
+        with mock.patch.object(dp, '_apply_wifi'), \
+                mock.patch.object(
+                    dp, '_apply_storage', side_effect=RuntimeError(error)), \
+                mock.patch.object(dp._storage, 'set_volume_caps'), \
+                mock.patch.object(shared, 'set_hostname'), \
+                mock.patch.object(
+                    shared, 'get_default_hostname', return_value='d'):
+            res = dp._dp_apply_state(json.dumps(state))
+
+        self.assertEqual(res, {'ok': False, 'error': error})
+
     def test_compose_failure_publishes_error_stage(self):
         import tempfile
         dp = _make_dp()
@@ -427,6 +449,208 @@ class DataSideBehaviorTests(unittest.TestCase):
         # No mqtt.conf on a dev box -> safe defaults, no crash on construct.
         self.assertEqual(self.dp.port, 443)
         self.assertEqual(self.dp.topic_prefix, 'reefy')
+
+
+class ApplyStorageTests(unittest.TestCase):
+    """Storage reconciliation must prepare the complete selected disk set
+    before handing any mapper to LVM."""
+
+    def setUp(self):
+        self.dp = _make_dp()
+
+    @staticmethod
+    def _result(returncode=0, stdout='', stderr=''):
+        return mock.Mock(
+            returncode=returncode, stdout=stdout, stderr=stderr)
+
+    def _unmounted_run(self, luks_devices=(), vg_exists=False):
+        luks_devices = set(luks_devices)
+
+        def run(cmd, **kwargs):
+            if cmd[0] == 'findmnt':
+                return self._result(stdout='')
+            if cmd[0] == 'vgs':
+                return self._result(returncode=0 if vg_exists else 1)
+            if cmd[:2] == ['cryptsetup', 'isLuks']:
+                return self._result(
+                    returncode=0 if cmd[2] in luks_devices else 1)
+            return self._result()
+
+        return run
+
+    def test_mounted_extension_failure_propagates(self):
+        mounted_source = f'/dev/{self.dp.STORAGE_VG}/{self.dp.STORAGE_LV}'
+        with mock.patch.object(
+                dataplane.subprocess, 'run',
+                return_value=self._result(stdout=mounted_source)), \
+                mock.patch.object(
+                    self.dp._storage, '_find_new_storage_disks',
+                    return_value=['sdb']), \
+                mock.patch.object(
+                    self.dp._storage, '_extend_storage',
+                    side_effect=RuntimeError('sector mismatch')) as extend:
+            with self.assertRaisesRegex(RuntimeError, 'sector mismatch'):
+                self.dp._apply_storage({'devices': ['sda', 'sdb']})
+
+        extend.assert_called_once_with(['sdb'])
+
+    def test_mounted_disk_discovery_failure_propagates(self):
+        mounted_source = f'/dev/{self.dp.STORAGE_VG}/{self.dp.STORAGE_LV}'
+        with mock.patch.object(
+                dataplane.subprocess, 'run',
+                return_value=self._result(stdout=mounted_source)), \
+                mock.patch.object(
+                    self.dp._storage, '_find_new_storage_disks',
+                    side_effect=RuntimeError('pvs failed')), \
+                mock.patch.object(
+                    self.dp._storage, '_extend_storage') as extend:
+            with self.assertRaisesRegex(RuntimeError, 'pvs failed'):
+                self.dp._apply_storage({'devices': ['sda', 'sdb']})
+
+        extend.assert_not_called()
+
+    def test_existing_mapper_constrains_batched_fresh_provisioning(self):
+        existing_mapper = '/dev/mapper/reefy-sda'
+        fresh_mappers = [
+            '/dev/mapper/reefy-sdb',
+            '/dev/mapper/reefy-sdc',
+        ]
+        all_mappers = [existing_mapper, *fresh_mappers]
+        existing_paths = {
+            '/dev/sda', existing_mapper,
+            '/dev/sdb', '/dev/sdc',
+        }
+
+        with mock.patch.object(
+                dataplane.subprocess, 'run',
+                side_effect=self._unmounted_run()) as run, \
+                mock.patch.object(
+                    dataplane.os.path, 'exists',
+                    side_effect=lambda path: path in existing_paths), \
+                mock.patch.object(dataplane.os, 'makedirs'), \
+                mock.patch.object(
+                    self.dp._storage, '_find_reefy_key_partition',
+                    return_value='/dev/reefy-key'), \
+                mock.patch.object(
+                    self.dp._storage, '_require_common_mapper_sector_size',
+                    side_effect=[512, 512]) as common_sector, \
+                mock.patch.object(
+                    self.dp._storage, '_provision_luks_stack',
+                    return_value=fresh_mappers) as provision, \
+                mock.patch.object(
+                    self.dp._storage, '_ensure_lvm_stack') as ensure_lvm, \
+                mock.patch.object(
+                    self.dp._storage, '_active_reefy_lv_path',
+                    return_value='/dev/reefy_vg/reefy_default'):
+            self.dp._apply_storage({'devices': ['sda', 'sdb', 'sdc']})
+
+        provision.assert_called_once()
+        self.assertEqual(
+            provision.call_args.args[:2],
+            ([('/dev/sdb', 'reefy-sdb'), ('/dev/sdc', 'reefy-sdc')],
+             '/dev/reefy-key'))
+        self.assertEqual(provision.call_args.kwargs['sector_size'], 512)
+        self.assertFalse(provision.call_args.kwargs['write_keyfile'])
+        common_sector.assert_has_calls([
+            mock.call([existing_mapper]),
+            mock.call(all_mappers),
+        ])
+        self.assertEqual(ensure_lvm.call_args.args[0], all_mappers)
+        self.assertTrue(any(call.args[0][0] == 'mount'
+                            for call in run.call_args_list))
+
+    def test_existing_vg_constrains_fresh_disk_without_selected_mapper(self):
+        fresh_mapper = '/dev/mapper/reefy-sdb'
+        with mock.patch.object(
+                dataplane.subprocess, 'run',
+                side_effect=self._unmounted_run(vg_exists=True)), \
+                mock.patch.object(
+                    dataplane.os.path, 'exists',
+                    side_effect=lambda path: path == '/dev/sdb'), \
+                mock.patch.object(dataplane.os, 'makedirs'), \
+                mock.patch.object(
+                    self.dp._storage, '_find_reefy_key_partition',
+                    return_value='/dev/reefy-key'), \
+                mock.patch.object(
+                    self.dp._storage, '_vg_mapper_sector_size',
+                    return_value=512) as vg_sector, \
+                mock.patch.object(
+                    self.dp._storage, '_require_common_mapper_sector_size',
+                    return_value=512), \
+                mock.patch.object(
+                    self.dp._storage, '_provision_luks_stack',
+                    return_value=[fresh_mapper]) as provision, \
+                mock.patch.object(
+                    self.dp._storage, '_ensure_lvm_stack'), \
+                mock.patch.object(
+                    self.dp._storage, '_active_reefy_lv_path',
+                    return_value='/dev/reefy/reefy_default'):
+            self.dp._apply_storage({'devices': ['sdb']})
+
+        vg_sector.assert_called_once_with()
+        self.assertEqual(provision.call_args.kwargs['sector_size'], 512)
+        self.assertFalse(provision.call_args.kwargs['write_keyfile'])
+
+    def test_partial_fresh_result_never_reaches_lvm(self):
+        existing_paths = {'/dev/sda', '/dev/sdb'}
+        with mock.patch.object(
+                dataplane.subprocess, 'run',
+                side_effect=self._unmounted_run()) as run, \
+                mock.patch.object(
+                    dataplane.os.path, 'exists',
+                    side_effect=lambda path: path in existing_paths), \
+                mock.patch.object(
+                    self.dp._storage, '_find_reefy_key_partition',
+                    return_value='/dev/reefy-key'), \
+                mock.patch.object(
+                    self.dp._storage, '_provision_luks_stack',
+                    return_value=['/dev/mapper/reefy-sda']) as provision, \
+                mock.patch.object(
+                    self.dp._storage, '_ensure_lvm_stack') as ensure_lvm:
+            with self.assertRaisesRegex(
+                    RuntimeError, 'Prepared 1 of 2 fresh storage devices'):
+                self.dp._apply_storage({'devices': ['sda', 'sdb']})
+
+        self.assertIsNone(provision.call_args.kwargs['sector_size'])
+        self.assertFalse(provision.call_args.kwargs['write_keyfile'])
+        ensure_lvm.assert_not_called()
+        run.assert_any_call(
+            ['cryptsetup', 'luksClose', 'reefy-sda'],
+            capture_output=True, timeout=30)
+
+    def test_incompatible_fresh_preflight_closes_new_existing_mapper(self):
+        existing_paths = {'/dev/sda', '/dev/sdb'}
+        preflight_error = RuntimeError(
+            'No compatible LUKS sector size for selected devices')
+
+        with mock.patch.object(
+                dataplane.subprocess, 'run',
+                side_effect=self._unmounted_run({'/dev/sda'})) as run, \
+                mock.patch.object(
+                    dataplane.os.path, 'exists',
+                    side_effect=lambda path: path in existing_paths), \
+                mock.patch.object(
+                    self.dp._storage, '_find_reefy_key_partition',
+                    return_value='/dev/reefy-key'), \
+                mock.patch.object(
+                    self.dp._storage, '_require_common_mapper_sector_size',
+                    return_value=4096) as common_sector, \
+                mock.patch.object(
+                    self.dp._storage, '_provision_luks_stack',
+                    side_effect=preflight_error) as provision, \
+                mock.patch.object(
+                    self.dp._storage, '_ensure_lvm_stack') as ensure_lvm:
+            with self.assertRaisesRegex(
+                    RuntimeError, 'No compatible LUKS sector size'):
+                self.dp._apply_storage({'devices': ['sda', 'sdb']})
+
+        common_sector.assert_called_once_with(['/dev/mapper/reefy-sda'])
+        self.assertEqual(provision.call_args.kwargs['sector_size'], 4096)
+        self.assertFalse(provision.call_args.kwargs['write_keyfile'])
+        ensure_lvm.assert_not_called()
+        run.assert_any_call(
+            ['cryptsetup', 'luksClose', 'reefy-sda'],
+            capture_output=True, timeout=30)
 
 
 class ReconcileTests(unittest.TestCase):

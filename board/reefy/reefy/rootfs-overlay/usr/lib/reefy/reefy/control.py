@@ -380,7 +380,14 @@ class ControlPlane:
                     hw[name] = f.read()
             except OSError:
                 pass
-        for name, cmd in [('lspci', ['lspci', '-nn']), ('lsblk', ['lsblk', '-J']),
+        # Request every lsblk column so the server has enough detail to
+        # diagnose storage compatibility issues without direct device access.
+        # In particular, -O includes model/serial/WWN, transport, topology,
+        # logical and physical sector sizes, discard capabilities, filesystem
+        # identifiers, and device-mapper relationships.  Keep lsblk's default
+        # human-readable sizes for compatibility with existing API consumers.
+        for name, cmd in [('lspci', ['lspci', '-nn']),
+                          ('lsblk', ['lsblk', '-J', '-O']),
                           ('ip_addr', ['ip', '-j', 'addr']), ('ip_route', ['ip', '-j', 'route']),
                           ('dmidecode_mem', ['dmidecode', '-t', '17']),
                           ('efibootmgr', ['efibootmgr', '-v'])]:
@@ -467,8 +474,10 @@ class ControlPlane:
         the backend's first apply_state) just go online."""
         res = self._varlink_call('Reconcile')
         if not res.get('ok'):
-            log('reconciler', f"reconcile on connect failed: {res.get('error')}")
+            error = res.get('error') or 'desired-state reconcile failed'
+            log('reconciler', f'reconcile on connect failed: {error}')
             self._publish_status('online', 'Device connected')
+            self._publish_stage('error', error)
             return
         self._publish_status('online', 'Device connected')
         if res.get('applied'):
@@ -1379,11 +1388,14 @@ class ControlPlane:
         prior file as old_state for diff-based cleanup - reclaim, static-IP
         removal). Control never touches that file. For a re-sync of the
         saved state (on connect/boot) use Reconcile, not this. Returns True
-        on success, False on failure."""
+        on success and raises with the data-plane error on failure."""
         res = self._varlink_call('ApplyState', state=json.dumps(state))
         if not res.get('ok'):
-            log('reconciler', f"apply failed: {res.get('error')}")
-        return bool(res.get('ok'))
+            error = res.get('error') or 'desired-state apply failed'
+            log('reconciler', f'apply failed: {error}')
+            self._publish_stage('error', error)
+            raise RuntimeError(error)
+        return True
 
     # Allow-list of host-path roots the `files` primitive is allowed
     # to write to. The backend is the trust boundary, but if a bug

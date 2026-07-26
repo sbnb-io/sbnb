@@ -907,15 +907,15 @@ class DataPlane:
             reefy_data_src = subprocess.run(
                 ['findmnt', '-n', '-o', 'SOURCE', self.REEFY_DATA_MNT],
                 capture_output=True, text=True, timeout=5).stdout.strip()
-            if reefy_data_src in acceptable_sources:
-                new_disks = self._storage._find_new_storage_disks(devices)
-                if not new_disks:
-                    log('mqtt', f'Internal storage already at {self.REEFY_DATA_MNT}')
-                    return
-                self._storage._extend_storage(new_disks)
-                return
         except Exception:
-            pass
+            reefy_data_src = ''
+        if reefy_data_src in acceptable_sources:
+            new_disks = self._storage._find_new_storage_disks(devices)
+            if not new_disks:
+                log('mqtt', f'Internal storage already at {self.REEFY_DATA_MNT}')
+                return
+            self._storage._extend_storage(new_disks)
+            return
 
         key_part = self._storage._find_reefy_key_partition()
         if not key_part:
@@ -930,14 +930,23 @@ class DataPlane:
             ['vgs', self.STORAGE_VG], capture_output=True
         ).returncode == 0
 
-        # Open existing LUKS on each storage device, or format if fresh.
+        # Classify the complete selected set before changing any fresh disk.
+        # Existing LUKS devices are opened first so their mapper geometry can
+        # constrain the one explicit sector size used for every fresh target.
         luks_pvs = []
+        existing_luks = []
+        fresh_targets = []
+        expected_pvs = 0
         for dev_name in devices:
             target = f'/dev/{dev_name}'
             if not os.path.exists(target):
                 if vg_exists:
-                    continue  # offline disk on a restore boot — skip
+                    log('reconciler',
+                        f'Storage device {target} is offline; continuing '
+                        f'with the existing VG in degraded mode')
+                    continue
                 raise RuntimeError(f'Storage device {target} not found')
+            expected_pvs += 1
             luks_name = f'reefy-{dev_name}'
             mapper_path = f'/dev/mapper/{luks_name}'
             if os.path.exists(mapper_path):
@@ -947,30 +956,74 @@ class DataPlane:
             is_luks = subprocess.run(
                 ['cryptsetup', 'isLuks', target],
                 capture_output=True, timeout=5).returncode == 0
-            if not is_luks:
-                # Fresh disk — wipe + format.
-                self._storage._force_wipe_device(target)
-                log('mqtt', f'LUKS formatting {target}')
+            if is_luks:
+                existing_luks.append((target, luks_name, mapper_path))
+            else:
+                fresh_targets.append((target, luks_name))
+
+        newly_opened_names = []
+        try:
+            for target, luks_name, mapper_path in existing_luks:
                 r = subprocess.run(
-                    ['cryptsetup', 'luksFormat', target,
-                     '--key-file', key_part, '--keyfile-size',
-                     str(luks_key_size), '--batch-mode'],
-                    capture_output=True, text=True, timeout=600)
+                    ['cryptsetup', 'luksOpen', target, luks_name,
+                     '--perf-submit_from_crypt_cpus',
+                     '--key-file', key_part,
+                     '--keyfile-size', str(luks_key_size)],
+                    capture_output=True, text=True, timeout=120)
                 if r.returncode != 0:
                     raise RuntimeError(
-                        f'LUKS format failed on {target}: {r.stderr}')
-            r = subprocess.run(
-                ['cryptsetup', 'luksOpen', target, luks_name,
-                 '--perf-submit_from_crypt_cpus',
-                 '--key-file', key_part, '--keyfile-size', str(luks_key_size)],
-                capture_output=True, text=True, timeout=120)
-            if r.returncode != 0:
-                raise RuntimeError(
-                    f'LUKS open failed on {target}: {r.stderr}')
-            luks_pvs.append(mapper_path)
+                        f'LUKS open failed on {target}: '
+                        f'{self._storage._process_error(r)}')
+                newly_opened_names.append(luks_name)
+                luks_pvs.append(mapper_path)
 
-        if not luks_pvs:
-            raise RuntimeError('No storage devices could be prepared')
+            if vg_exists:
+                required_sector_size = (
+                    self._storage._vg_mapper_sector_size())
+                if luks_pvs:
+                    self._storage._require_common_mapper_sector_size(
+                        list(luks_pvs),
+                        required_sector_size=required_sector_size,
+                    )
+            elif luks_pvs:
+                required_sector_size = (
+                    self._storage._require_common_mapper_sector_size(
+                        list(luks_pvs)))
+            else:
+                required_sector_size = None
+
+            if fresh_targets:
+                fresh_pvs = self._storage._provision_luks_stack(
+                    fresh_targets,
+                    key_part,
+                    _log=lambda message: log('reconciler', message),
+                    sector_size=required_sector_size,
+                    write_keyfile=False,
+                )
+                newly_opened_names.extend(
+                    os.path.basename(path) for path in fresh_pvs)
+                if len(fresh_pvs) != len(fresh_targets):
+                    raise RuntimeError(
+                        f'Prepared {len(fresh_pvs)} of '
+                        f'{len(fresh_targets)} fresh storage devices')
+                luks_pvs.extend(fresh_pvs)
+
+            if not luks_pvs:
+                raise RuntimeError('No storage devices could be prepared')
+            if len(luks_pvs) != expected_pvs:
+                raise RuntimeError(
+                    f'Prepared {len(luks_pvs)} of {expected_pvs} available '
+                    f'selected storage devices')
+            self._storage._require_common_mapper_sector_size(list(luks_pvs))
+        except Exception:
+            for mapper_name in reversed(newly_opened_names):
+                try:
+                    subprocess.run(
+                        ['cryptsetup', 'luksClose', mapper_name],
+                        capture_output=True, timeout=30)
+                except Exception:
+                    pass
+            raise
 
         # _ensure_lvm_stack handles fresh-VG-create, existing-VG-extend,
         # and the legacy-LV mount path uniformly.
