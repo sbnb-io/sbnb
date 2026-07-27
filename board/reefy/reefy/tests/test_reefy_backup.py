@@ -65,6 +65,14 @@ class SnapshotMountOptsTests(unittest.TestCase):
 
 
 class BorgReadinessTests(unittest.TestCase):
+    def test_repo_readiness_preserves_original_six_hour_tolerance(self):
+        self.assertEqual(reefy_backup.REPO_ACCESS_DEADLINE_S, 21600)
+        self.assertEqual(reefy_backup.REPO_INIT_DEADLINE_S, 21600)
+        self.assertEqual(reefy_backup.REPO_INFO_ATTEMPT_TIMEOUT_S, 21600)
+        self.assertEqual(reefy_backup.REPO_INIT_ATTEMPT_TIMEOUT_S, 21600)
+        self.assertEqual(reefy_backup.REPO_MAX_ATTEMPTS, 10)
+        self.assertEqual(reefy_backup.REPO_RETRY_DELAY_S, 60)
+
     def test_dns_recovers_then_missing_repo_is_initialized(self):
         repo = 'ssh://backup.invalid/./synthetic-repository'
         env = {'BORG_RSH': 'synthetic'}
@@ -78,7 +86,7 @@ class BorgReadinessTests(unittest.TestCase):
                 reefy_backup, 'run_borg', side_effect=responses) as run_borg, \
                 mock.patch.object(
                     reefy_backup.time, 'monotonic',
-                    side_effect=[0.0, 100.0, 100.0, 200.0, 299.0, 300.0]), \
+                    side_effect=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]), \
                 mock.patch.object(reefy_backup.time, 'sleep') as sleep, \
                 mock.patch.object(reefy_backup, 'publish_status') as publish:
             ready = reefy_backup.ensure_repo_ready(

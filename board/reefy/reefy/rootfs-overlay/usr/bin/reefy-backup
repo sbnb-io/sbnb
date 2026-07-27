@@ -43,11 +43,15 @@ STORAGE_POOL = 'reefy_pool'
 POOL_FILL_WARN_PCT = 80
 POOL_FILL_FAIL_PCT = 95
 
-REPO_ACCESS_DEADLINE_S = 300
-REPO_INIT_DEADLINE_S = 300
-REPO_INFO_ATTEMPT_TIMEOUT_S = 30
-REPO_INIT_ATTEMPT_TIMEOUT_S = 180
-REPO_RETRY_DELAY_S = 15
+# Repository operations scale with repository history and cache size. Keep the
+# original six-hour Borg command tolerance: a healthy large repository can take
+# substantially longer than a network-style readiness probe.
+REPO_ACCESS_DEADLINE_S = 21600
+REPO_INIT_DEADLINE_S = 21600
+REPO_INFO_ATTEMPT_TIMEOUT_S = 21600
+REPO_INIT_ATTEMPT_TIMEOUT_S = 21600
+REPO_MAX_ATTEMPTS = 10
+REPO_RETRY_DELAY_S = 60
 MAINTENANCE_DEADLINE_S = 300
 STATUS_PUBLISH_ATTEMPTS = 3
 STATUS_PUBLISH_RETRY_DELAY_S = 2
@@ -205,6 +209,9 @@ def ensure_repo_ready(repo_path, env, instance_uuid):
             attempt = 0
             continue
         if error_kind == 'fatal':
+            _publish_repo_error(instance_uuid, phase, stderr)
+            return False
+        if attempt >= REPO_MAX_ATTEMPTS:
             _publish_repo_error(instance_uuid, phase, stderr)
             return False
 
