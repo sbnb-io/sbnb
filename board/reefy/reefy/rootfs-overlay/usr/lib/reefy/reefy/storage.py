@@ -14,6 +14,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -1089,6 +1090,41 @@ class Storage:
             raise ExistingVolumeUnavailableError(
                 'New app volume could not be safely removed')
 
+    @staticmethod
+    def _same_block_device(first, second):
+        """Return True when two paths name the same block device.
+
+        Device-mapper aliases are not consistently represented as symlinks.
+        A valid /dev/mapper node may be a direct block-device node while the
+        corresponding /dev/<vg>/<lv> path resolves through /dev/dm-N. Path
+        string comparison therefore produces false mismatches. st_rdev is
+        the kernel device identity and is stable across both forms.
+        """
+        if not first or not second:
+            return False
+        try:
+            first_stat = os.stat(first)
+            second_stat = os.stat(second)
+        except (OSError, TypeError, ValueError):
+            return False
+        return (
+            stat.S_ISBLK(first_stat.st_mode)
+            and stat.S_ISBLK(second_stat.st_mode)
+            and first_stat.st_rdev == second_stat.st_rdev)
+
+    @classmethod
+    def _unexpected_mount_error(cls, path):
+        """Return a path-free, actionable error for an unsafe app mount."""
+        identity = cls._cap_warning_for_path(path)
+        label = (
+            f'{identity["instance_uuid"]}/{identity["volume"]}'
+            if identity else 'an app volume')
+        return ExistingVolumeUnavailableError(
+            f'Storage mapping conflict for {label}: the Reefy volume assigned '
+            'to this app is not mounted at its expected path. Setup stopped '
+            'to protect existing data. Do not format or delete storage. '
+            'Inspect the volume mapping, then Resync.')
+
     def _remove_mounted_new_volume(self, path, lv_name):
         """Unmount and remove a fresh LV before allowing default fallback."""
         lv_path = f'/dev/{self.STORAGE_VG}/{lv_name}'
@@ -1101,10 +1137,8 @@ class Storage:
                 'Cannot inspect a new app volume mount') from e
         if mounted.returncode == 0:
             source = mounted.stdout.strip()
-            if (not source or os.path.realpath(source)
-                    != os.path.realpath(lv_path)):
-                raise ExistingVolumeUnavailableError(
-                    'New app volume path is mounted from an unexpected device')
+            if not self._same_block_device(source, lv_path):
+                raise self._unexpected_mount_error(path)
             try:
                 unmounted = subprocess.run(
                     ['umount', path], capture_output=True,
@@ -1133,14 +1167,12 @@ class Storage:
                 'Cannot determine whether a new app volume was mounted') from e
         if mounted.returncode == 0:
             source = mounted.stdout.strip()
-            if (source and os.path.realpath(source)
-                    == os.path.realpath(lv_path)):
+            if self._same_block_device(source, lv_path):
                 if self._remember_owned_volume(path):
                     return True
                 self._remove_mounted_new_volume(path, lv_name)
                 return False
-            raise ExistingVolumeUnavailableError(
-                'New app volume path is mounted from an unexpected device')
+            raise self._unexpected_mount_error(path)
         if mounted.returncode != 1:
             raise ExistingVolumeUnavailableError(
                 'Cannot determine whether a new app volume was mounted')
@@ -1165,7 +1197,7 @@ class Storage:
         source = mounted.stdout.strip()
         if not source:
             return None
-        if os.path.realpath(source) != os.path.realpath(lv_path):
+        if not self._same_block_device(source, lv_path):
             return None
         return True
 
@@ -1209,14 +1241,11 @@ class Storage:
                         'Cannot inspect an owned app volume mount') from e
                 raise
             if r.returncode == 0 and r.stdout.strip():
-                expected_source = (
-                    os.path.realpath(r.stdout.strip())
-                    == os.path.realpath(lv_path))
+                expected_source = self._same_block_device(
+                    r.stdout.strip(), lv_path)
                 if not expected_source:
                     if expect_existing:
-                        raise ExistingVolumeUnavailableError(
-                            'Owned app path is mounted from an unexpected '
-                            'device')
+                        raise self._unexpected_mount_error(path)
                     if not capped and not allow_create:
                         return True
                     log('mqtt',

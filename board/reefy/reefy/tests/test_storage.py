@@ -96,6 +96,45 @@ class FsMountOptsTests(unittest.TestCase):
 
 
 class VolumeCapsTests(unittest.TestCase):
+    def test_block_device_aliases_compare_by_kernel_device_identity(self):
+        s = storage.Storage()
+        mapper = '/dev/mapper/reefy-synthetic'
+        vg_alias = '/dev/reefy/synthetic'
+        same_device = storage.os.makedev(253, 10)
+        records = {
+            mapper: types.SimpleNamespace(
+                st_mode=storage.stat.S_IFBLK, st_rdev=same_device),
+            vg_alias: types.SimpleNamespace(
+                st_mode=storage.stat.S_IFBLK, st_rdev=same_device),
+        }
+        with mock.patch.object(
+                storage.os, 'stat', side_effect=lambda path: records[path]):
+            self.assertTrue(s._same_block_device(mapper, vg_alias))
+
+    def test_different_block_devices_never_compare_equal(self):
+        records = {
+            '/dev/synthetic-a': types.SimpleNamespace(
+                st_mode=storage.stat.S_IFBLK,
+                st_rdev=storage.os.makedev(253, 10)),
+            '/dev/synthetic-b': types.SimpleNamespace(
+                st_mode=storage.stat.S_IFBLK,
+                st_rdev=storage.os.makedev(253, 11)),
+        }
+        with mock.patch.object(
+                storage.os, 'stat', side_effect=lambda path: records[path]):
+            self.assertFalse(storage.Storage._same_block_device(
+                '/dev/synthetic-a', '/dev/synthetic-b'))
+
+    def test_unexpected_mount_error_is_actionable_and_path_free(self):
+        path = '/mnt/reefy-data/apps/synthetic-instance/media'
+        error = storage.Storage._unexpected_mount_error(path)
+        message = str(error)
+        self.assertIn('synthetic-instance/media', message)
+        self.assertIn('Setup stopped to protect existing data', message)
+        self.assertIn('Do not format or delete storage', message)
+        self.assertIn('Inspect the volume mapping, then Resync', message)
+        self.assertNotIn('/mnt/reefy-data', message)
+
     def test_set_volume_caps(self):
         s = storage.Storage()
         s.set_volume_caps({'/mnt/reefy-data/apps/x/media': 90})
@@ -642,16 +681,40 @@ class VolumeCapsTests(unittest.TestCase):
         s = storage.Storage()
         lv_path = f'/dev/{s.STORAGE_VG}/{s._volume_lv_name(path)}'
         mounted = types.SimpleNamespace(
-            returncode=0, stdout=lv_path + '\n', stderr='')
+            returncode=0,
+            stdout='/dev/mapper/reefy-reefy_backup_direct\n', stderr='')
         with mock.patch.object(s, '_has_thin_pool', return_value=True), \
                 mock.patch.object(
                     s, '_volume_lock', return_value=contextlib.nullcontext()), \
+                mock.patch.object(
+                    s, '_same_block_device', return_value=True) as same_device, \
                 mock.patch.object(
                     storage.subprocess, 'run', return_value=mounted), \
                 mock.patch.object(
                     s, '_remember_owned_volume', return_value=False):
             self.assertTrue(s._ensure_volume_lv(
                 path, allow_create=False, expect_existing=True))
+        same_device.assert_called_once_with(mounted.stdout.strip(), lv_path)
+
+    def test_wrong_existing_volume_reports_app_and_operator_action(self):
+        import contextlib
+
+        path = '/mnt/reefy-data/apps/synthetic-instance/cache'
+        s = storage.Storage()
+        mounted = types.SimpleNamespace(
+            returncode=0, stdout='/dev/synthetic-wrong\n', stderr='')
+        with mock.patch.object(s, '_has_thin_pool', return_value=True), \
+                mock.patch.object(
+                    s, '_volume_lock', return_value=contextlib.nullcontext()), \
+                mock.patch.object(
+                    s, '_same_block_device', return_value=False), \
+                mock.patch.object(
+                    storage.subprocess, 'run', return_value=mounted):
+            with self.assertRaisesRegex(
+                    storage.ExistingVolumeUnavailableError,
+                    'synthetic-instance/cache.*Do not format.*Resync'):
+                s._ensure_volume_lv(
+                    path, allow_create=False, expect_existing=True)
 
     def test_uncapped_volume_exception_keeps_existing_failure_behavior(self):
         path = '/mnt/reefy-data/apps/synthetic/config'
