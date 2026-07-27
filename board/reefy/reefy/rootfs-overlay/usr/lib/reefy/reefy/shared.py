@@ -6,6 +6,8 @@ import os
 import subprocess
 import time
 
+from reefy.redaction import redact_log_message
+
 
 # --- Filesystem / storage layout (single source for all role modules) ---
 
@@ -58,8 +60,8 @@ def _part_dev(disk, partnum):
 
 
 def log(source, msg):
-    """Log a message to stdout (captured by journald → reefy-log-publisher → MQTT)."""
-    print(f"[{source}] {msg}")
+    """Log a redacted message to stdout for journald and MQTT forwarding."""
+    print(f"[{source}] {redact_log_message(msg)}")
 
 
 # --- Hostname / health helpers (used by control and data plane) ---

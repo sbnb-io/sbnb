@@ -21,9 +21,11 @@ import tarfile
 import tempfile
 import threading
 import time
+import uuid as uuid_mod
 from io import BytesIO
 
 from reefy import shared
+from reefy.apply_results import ApplyResultStore, TERMINAL_STATUSES
 from reefy.shared import _part_dev, log
 from reefy.storage import Storage
 
@@ -51,6 +53,32 @@ def _drop_absent_devices(compose, exists=os.path.exists):
     return skipped
 
 
+def _desired_state_log_summary(state):
+    """Return a value-free structural summary for desired-state logging."""
+    state = state if isinstance(state, dict) else {}
+    compose = state.get('compose')
+    services = compose.get('services') if isinstance(compose, dict) else None
+    backup = state.get('backup')
+    backup_instances = (
+        backup.get('instances') if isinstance(backup, dict) else None)
+    storage = state.get('storage')
+    storage_devices = (
+        storage.get('devices') if isinstance(storage, dict) else None)
+
+    def list_count(value):
+        return len(value) if isinstance(value, list) else 0
+
+    return (
+        'Saved desired state '
+        f'(instances={list_count(state.get("instances"))}, '
+        f'services={len(services) if isinstance(services, dict) else 0}, '
+        f'app_volumes={list_count(state.get("app_volumes"))}, '
+        f'files={list_count(state.get("files"))}, '
+        f'storage_devices={list_count(storage_devices)}, '
+        f'backup_instances={list_count(backup_instances)})'
+    )
+
+
 class DataPlane:
     # Shared constants (single source in reefy.shared).
     DESIRED_STATE_PATH = shared.DESIRED_STATE_PATH
@@ -66,6 +94,7 @@ class DataPlane:
     BACKUP_DIR = '/mnt/reefy-data/state/backup'
     BACKUP_CONFIG_PATH = '/mnt/reefy-data/state/backup/config.json'
     BACKUP_SERVICE = 'reefy-backup'
+    APPLY_RESULTS_DIR = '/mnt/reefy-data/state/apply-results'
     # Sticky terminal-failure guard: persisted signature of the last
     # compose that failed non-recoverably, so neither the reconcile loop
     # nor a reconciler restart / reboot re-pulls a doomed (multi-GB) image
@@ -81,8 +110,14 @@ class DataPlane:
         self._storage = storage
         # Same dict object Storage reads in _ensure_volume_lv / _prepare_app_dirs.
         self._volume_caps = storage._volume_caps
-        self._apply_lock = threading.Lock()
-        self._pending_state = None
+        self._job_condition = threading.Condition()
+        self._running_job = None
+        self._pending_job = None
+        self._last_apply_warnings = []
+        self._runtime_result_errors = {}
+        self._runtime_error_order = []
+        self._apply_results = ApplyResultStore(self.APPLY_RESULTS_DIR)
+        self._apply_results.fail_interrupted()
         # The data plane never runs control's setup(); load the MQTT
         # identity the backup config/timer need from the same files
         # reefy-mqtt-pub reads.
@@ -94,20 +129,159 @@ class DataPlane:
 
     # --- Event publishing (no MQTT client; shell out to reefy-mqtt-pub) ---
 
+    def _result_response(self, record):
+        if record is None:
+            return {
+                'found': False,
+                'request_id': '',
+                'status': '',
+                'error': '',
+                'warnings': [],
+                'applied': False,
+            }
+        return {
+            'found': True,
+            'request_id': record['request_id'],
+            'status': record['status'],
+            'error': self._runtime_result_errors.get(
+                record['request_id'], record.get('error') or ''),
+            'warnings': record.get('warnings') or [],
+            'applied': bool(record.get('applied', False)),
+        }
+
+    def _remember_runtime_error(self, request_id, error):
+        if not error:
+            return
+        self._runtime_result_errors[request_id] = error
+        self._runtime_error_order.append(request_id)
+        while len(self._runtime_error_order) > 34:
+            expired = self._runtime_error_order.pop(0)
+            self._runtime_result_errors.pop(expired, None)
+
+    def _submit_apply_job(self, kind, state=None):
+        """Persist and enqueue one apply, replacing only the pending job."""
+        request_id = str(uuid_mod.uuid4())
+        job = {'request_id': request_id, 'kind': kind, 'state': state}
+        with self._job_condition:
+            if not self._apply_results.create(request_id, kind):
+                return {
+                    'ok': False,
+                    'request_id': '',
+                    'error': 'cannot persist apply request',
+                }
+            if self._running_job is None:
+                self._running_job = job
+                try:
+                    threading.Thread(
+                        target=self._apply_job_worker,
+                        args=(job,),
+                        daemon=True,
+                    ).start()
+                except Exception:
+                    self._running_job = None
+                    self._apply_results.update(
+                        request_id,
+                        'failed',
+                        error='cannot start apply worker',
+                    )
+                    self._job_condition.notify_all()
+                    return {
+                        'ok': False,
+                        'request_id': request_id,
+                        'error': 'cannot start apply worker',
+                    }
+            else:
+                if self._pending_job is not None:
+                    self._apply_results.update(
+                        self._pending_job['request_id'], 'superseded')
+                self._pending_job = job
+            self._job_condition.notify_all()
+        return {'ok': True, 'request_id': request_id, 'error': ''}
+
+    def _apply_job_worker(self, job):
+        """Finish the running job, then the latest pending job, serially."""
+        while job is not None:
+            request_id = job['request_id']
+            self._apply_results.update(request_id, 'running')
+            self._last_apply_warnings = []
+            applied = False
+            error = ''
+            persistent_error = ''
+            try:
+                if job['kind'] == 'apply':
+                    applied = True
+                    ok = self._apply_state({'state': job['state']})
+                else:
+                    applied = os.path.exists(self.DESIRED_STATE_PATH)
+                    ok = self._apply_desired_state()
+                warnings = list(self._last_apply_warnings)
+                if ok is False:
+                    status = 'failed'
+                    error = 'desired-state apply failed'
+                    persistent_error = error
+                elif warnings:
+                    status = 'succeeded_with_warnings'
+                else:
+                    status = 'succeeded'
+            except Exception as exception:
+                status = 'failed'
+                warnings = list(self._last_apply_warnings)
+                error = shared.redact_log_message(exception)[:500]
+                persistent_error = (
+                    f'desired-state apply failed '
+                    f'({type(exception).__name__})')
+                log('mqtt',
+                    f'[data-plane] apply job failed '
+                    f'({type(exception).__name__}): {error}')
+            self._remember_runtime_error(request_id, error)
+            self._apply_results.update(
+                request_id,
+                status,
+                error=persistent_error,
+                warnings=warnings,
+                applied=applied,
+            )
+            with self._job_condition:
+                self._job_condition.notify_all()
+                if self._pending_job is None:
+                    self._running_job = None
+                    job = None
+                else:
+                    job = self._pending_job
+                    self._pending_job = None
+                    self._running_job = job
+
+    def _get_apply_result(self, request_id):
+        return self._result_response(self._apply_results.get(request_id))
+
+    def _wait_apply_result(self, request_id):
+        with self._job_condition:
+            while True:
+                record = self._apply_results.get(request_id)
+                if record is None or record['status'] in TERMINAL_STATUSES:
+                    return self._result_response(record)
+                self._job_condition.wait()
+
     def _publish_event(self, topic_suffix, payload):
         """Publish one MQTT event via reefy-mqtt-pub (device certs).
         Non-fatal: a publish failure must never abort apply/restore work."""
         try:
             subprocess.run(['reefy-mqtt-pub', topic_suffix, json.dumps(payload)],
                            capture_output=True, timeout=20)
+        except subprocess.TimeoutExpired:
+            log('mqtt', f'[data-plane] event publish timed out ({topic_suffix})')
         except Exception as e:
-            log('mqtt', f'[data-plane] event publish failed ({topic_suffix}): {e}')
+            log('mqtt',
+                f'[data-plane] event publish failed ({topic_suffix}) '
+                f'({type(e).__name__})')
 
     def _publish_stage(self, stage, message=''):
+        message = shared.redact_log_message(message)
         self._publish_event('stage', {'stage': stage, 'message': message,
                                       'timestamp': time.time()})
 
     def _publish_status(self, status, message=''):
+        message = shared.redact_log_message(message)
         self._publish_event('status', {'status': status, 'message': message,
                                        'timestamp': time.time()})
 
@@ -120,13 +294,13 @@ class DataPlane:
     def _publish_restore_status(self, iuuid, status, archive, error=None):
         extra = {'archive': archive}
         if error:
-            extra['error'] = (error or '')[:500]
+            extra['error'] = shared.redact_log_message(error)[:500]
         self._publish_instance_event(iuuid, 'restore', status, extra=extra)
 
     def _publish_health_status(self, iuuid, status, message=None, image=None):
         extra = {}
         if message:
-            extra['message'] = (message or '')[:500]
+            extra['message'] = shared.redact_log_message(message)[:500]
         if image:
             # Running image, reported on 'running' so the server can show
             # the version actually on the device (vs the desired one).
@@ -139,24 +313,13 @@ class DataPlane:
         return
 
     def _apply_state_command(self, payload, cmd_id=None):
-        """Apply desired state with serialization (only one at a time).
-        Data plane: does the real mount/compose work directly. The
-        control process owns bootstrap-mode gating and publishes the
-        applying/ready stages around its Varlink call."""
-        if not self._apply_lock.acquire(blocking=False):
-            self._pending_state = payload
-            print("[mqtt] apply_state already running, queued pending state")
-            return "Queued"
-        try:
-            applied = self._apply_state(payload)
-            while self._pending_state is not None:
-                pending = self._pending_state
-                self._pending_state = None
-                print("[mqtt] Applying queued pending state")
-                applied = self._apply_state(pending)
-            return bool(applied)
-        finally:
-            self._apply_lock.release()
+        """Compatibility wrapper around the request/result scheduler."""
+        submission = self._submit_apply_job(
+            'apply', state=payload.get('state'))
+        if not submission['ok']:
+            return False
+        result = self._wait_apply_result(submission['request_id'])
+        return result['status'] in ('succeeded', 'succeeded_with_warnings')
 
     def _backup_now(self, payload, cmd_id=None):
         """Trigger immediate backup for a specific instance via reefy-backup."""
@@ -258,7 +421,7 @@ class DataPlane:
         try:
             with open(self.DESIRED_STATE_PATH, 'w') as f:
                 json.dump(state, f)
-            log('mqtt', f'Saved desired state: {state}')
+            log('mqtt', _desired_state_log_summary(state))
         except OSError as e:
             log('mqtt', f'ERROR: Failed to save desired state: {e}')
             return False
@@ -272,6 +435,7 @@ class DataPlane:
         If no desired state exists, reset hostname to MAC-based default.
         old_state: previous desired state for diff-based cleanup (None on boot).
         Returns True on success, False on failure."""
+        self._last_apply_warnings = []
         if not os.path.exists(self.DESIRED_STATE_PATH):
             shared.set_hostname(shared.get_default_hostname())
             return True
@@ -335,7 +499,10 @@ class DataPlane:
         # Prepare app data directories (host path mounts with correct ownership)
         app_volumes = state.get('app_volumes', [])
         if app_volumes:
-            self._storage._prepare_app_dirs(app_volumes, backup_paths=backup_paths)
+            warnings = self._storage._prepare_app_dirs(
+                app_volumes, backup_paths=backup_paths)
+            if isinstance(warnings, list):
+                self._last_apply_warnings = warnings
 
         # Apply backup config (SSH keys, config, systemd timer)
         if backup:
@@ -423,8 +590,11 @@ class DataPlane:
         # (uuid absent from the whole new state), NOT merely a path leaving
         # the backup set - a volume that only un-backup-flags keeps live
         # data and must never be reclaimed. e2e covers both directions.
-        if old_state is not None:
-            self._storage._reclaim_deleted_instance_lvs(old_state, state, backup_paths)
+        # Always inspect self-identifying managed LVs. Their LVM tags survive
+        # reboot, so a prior busy unmount/lvremove gets another reclaim
+        # attempt even when old_state is unavailable or unchanged.
+        self._storage._reclaim_deleted_instance_lvs(
+            old_state or {}, state, backup_paths)
 
         return True
 
@@ -501,9 +671,12 @@ class DataPlane:
                     if result.returncode == 0:
                         print("[mqtt] WiFi configured successfully")
                     else:
-                        log('mqtt', f'WiFi setup failed: {result.stdout}')
+                        log('mqtt',
+                            f'WiFi setup failed (exit {result.returncode})')
+                except subprocess.TimeoutExpired:
+                    log('mqtt', 'WiFi setup timed out')
                 except Exception as e:
-                    log('mqtt', f'WiFi setup error: {e}')
+                    log('mqtt', f'WiFi setup error ({type(e).__name__})')
         elif old_ssid:
             # WiFi was configured but now removed — disconnect
             log('mqtt', f'Disconnecting WiFi (was: {old_ssid})')
@@ -600,9 +773,9 @@ class DataPlane:
     def _boot_apply(self):
         """Apply persisted desired state once on startup (thread target).
         The data plane owns boot reconcile (control just calls home); same
-        code path as the on-reconnect Reconcile so the two never diverge.
-        Running under the apply lock means a state control forwards while
-        the data plane is still booting serializes behind this."""
+        request scheduler as on-reconnect reconcile, so a state forwarded
+        while the data plane is still booting becomes the latest pending
+        request instead of running concurrently."""
         self._dp_reconcile()
 
     def run_data_plane(self):
@@ -622,6 +795,18 @@ class DataPlane:
 
         @service.interface('io.reefy.Reconciler')
         class _Reconciler:
+            def SubmitApply(self, state, _more=False):
+                return recon._dp_submit_apply(state)
+
+            def SubmitReconcile(self, _more=False):
+                return recon._dp_submit_reconcile()
+
+            def GetApply(self, request_id, _more=False):
+                return recon._get_apply_result(request_id)
+
+            def WaitApply(self, request_id, _more=False):
+                return recon._wait_apply_result(request_id)
+
             def ApplyState(self, state, _more=False):
                 return recon._dp_apply_state(state)
 
@@ -655,8 +840,9 @@ class DataPlane:
         # call home) and forwards state on connect; previously the socket
         # only opened after this boot apply finished its docker compose up,
         # so control's forward raced a missing socket ("data plane
-        # unreachable"). _boot_apply holds the apply lock, so a forwarded
-        # apply serializes behind it rather than running concurrently.
+        # unreachable"). The boot request uses the same scheduler, so a
+        # forwarded apply enters the pending slot instead of running
+        # concurrently.
         threading.Thread(target=self._boot_apply, daemon=True).start()
 
         log('mqtt', f'[data-plane] serving Varlink at {self.VARLINK_ADDRESS}')
@@ -664,64 +850,64 @@ class DataPlane:
             server.serve_forever()
 
     def _dp_apply_state(self, state):
+        """Backward-compatible synchronous wrapper for older controls."""
+        submission = self._dp_submit_apply(state)
+        if not submission['ok']:
+            return {'ok': False, 'error': submission['error']}
+        result = self._wait_apply_result(submission['request_id'])
+        ok = result['status'] in (
+            'succeeded', 'succeeded_with_warnings', 'superseded')
+        return {'ok': ok, 'error': '' if ok else result['error']}
+
+    def _dp_submit_apply(self, state):
         try:
-            result = self._apply_state_command({'state': json.loads(state)})
-            if result is False:
-                return {
-                    'ok': False,
-                    'error': 'desired-state apply failed',
-                }
-            return {'ok': True, 'error': ''}
+            decoded = json.loads(state)
+            if not isinstance(decoded, dict) or not decoded:
+                raise ValueError('desired state must be a non-empty object')
+            return self._submit_apply_job('apply', state=decoded)
         except Exception as e:
-            log('mqtt', f'[data-plane] ApplyState failed: {e}')
-            return {'ok': False, 'error': str(e)[:500]}
+            error = shared.redact_log_message(e)[:500]
+            log('mqtt', f'[data-plane] SubmitApply failed: {error}')
+            return {'ok': False, 'request_id': '', 'error': error}
+
+    def _dp_submit_reconcile(self):
+        return self._submit_apply_job('reconcile')
 
     def _dp_reconcile(self):
-        """Re-apply the data plane's own saved desired state (re-sync).
-        The data plane owns desired-state.json; control calls this on
-        reconnect instead of reading the file. Runs under the apply lock
-        (serializes with command applies); drains any state queued while
-        held. `applied` is False when there was no saved state - the apply
-        then just resets the hostname to its default."""
-        had_state = os.path.exists(self.DESIRED_STATE_PATH)
-        if not self._apply_lock.acquire(blocking=False):
-            # A command apply is already running; it covers current state.
-            return {'ok': True, 'applied': had_state, 'error': ''}
-        try:
-            applied_ok = self._apply_desired_state()
-            # No saved state resets the hostname and returns True.
-            while self._pending_state is not None:
-                pending = self._pending_state
-                self._pending_state = None
-                applied_ok = self._apply_state(pending)
-            if applied_ok is False:
-                return {
-                    'ok': False,
-                    'applied': had_state,
-                    'error': 'desired-state reconcile failed',
-                }
-        except Exception as e:
-            log('mqtt', f'[data-plane] reconcile failed: {e}')
-            return {'ok': False, 'applied': had_state, 'error': str(e)[:500]}
-        finally:
-            self._apply_lock.release()
-        return {'ok': True, 'applied': had_state, 'error': ''}
+        """Backward-compatible synchronous wrapper for older controls."""
+        submission = self._dp_submit_reconcile()
+        if not submission['ok']:
+            return {
+                'ok': False,
+                'applied': False,
+                'error': submission['error'],
+            }
+        result = self._wait_apply_result(submission['request_id'])
+        ok = result['status'] in (
+            'succeeded', 'succeeded_with_warnings', 'superseded')
+        return {
+            'ok': ok,
+            'applied': result['applied'],
+            'error': '' if ok else result['error'],
+        }
 
     def _dp_backup_now(self, instance_uuid):
         try:
             self._backup_now({'instance_uuid': instance_uuid}, cmd_id=None)
             return {'ok': True, 'message': 'backup started', 'error': ''}
         except Exception as e:
-            log('mqtt', f'[data-plane] BackupNow failed: {e}')
-            return {'ok': False, 'message': '', 'error': str(e)[:500]}
+            error = shared.redact_log_message(e)[:500]
+            log('mqtt', f'[data-plane] BackupNow failed: {error}')
+            return {'ok': False, 'message': '', 'error': error}
 
     def _dp_restart_instance(self, instance_uuid):
         try:
             self._restart_instance({'instance_uuid': instance_uuid}, cmd_id=None)
             return {'ok': True, 'error': ''}
         except Exception as e:
-            log('mqtt', f'[data-plane] RestartInstance failed: {e}')
-            return {'ok': False, 'error': str(e)[:500]}
+            error = shared.redact_log_message(e)[:500]
+            log('mqtt', f'[data-plane] RestartInstance failed: {error}')
+            return {'ok': False, 'error': error}
 
     def _apply_user_ssh_keys(self, keys):
         """Rewrite /etc/ssh/authorized_keys.d/reefy atomically.
@@ -1578,8 +1764,8 @@ def main_data_plane():
     except KeyboardInterrupt:
         sys.exit(0)
     except Exception as e:
-        log('mqtt', f'[data-plane] fatal: {e}')
-        import traceback
-        traceback.print_exc()
+        error = shared.redact_log_message(e)
+        log('mqtt',
+            f'[data-plane] fatal ({type(e).__name__}): {error}')
         sys.exit(1)
     sys.exit(0)

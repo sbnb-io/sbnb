@@ -17,7 +17,6 @@ import shutil
 import subprocess
 import sys
 import threading
-import traceback
 import tarfile
 import tempfile
 import time
@@ -65,8 +64,8 @@ class ControlPlane:
     def __init__(self):
         self.config = {}
         self.client = None
-        self._apply_lock = threading.Lock()
-        self._pending_state = None  # queued apply_state payload when lock is held
+        self._latest_apply_lock = threading.Lock()
+        self._latest_apply_request_id = None
         self._subscribe_confirmed = threading.Event()
         # path -> fair-share cap (% of pool) for contained volumes. Set
         # from desired-state on each apply / boot-mount; consumed by
@@ -466,24 +465,50 @@ class ControlPlane:
     # ── Compose path ──
     COMPOSE_PATH = shared.COMPOSE_PATH
 
+    @staticmethod
+    def _ready_stage_message(warnings=None):
+        warnings = warnings or []
+        affected = [
+            f'{warning.get("instance_uuid")}/{warning.get("volume")}'
+            for warning in warnings
+            if warning.get('code') == 'storage.cap_not_enforced'
+            and warning.get('instance_uuid')
+            and warning.get('volume')
+        ]
+        if affected:
+            noun = 'cap' if len(affected) == 1 else 'caps'
+            return (
+                f'Device ready with warnings: storage {noun} not enforced '
+                f'for {", ".join(affected)}')
+        return 'Device ready'
+
     def _handle_device_connect(self, client):
         """Device mode (subscribe already done in on_connect): ask the data
         plane to re-apply its own saved state (re-sync). The data plane
         owns desired-state.json - control never reads it. Publish ready
         when state was applied; if there's none yet (first adoption, before
         the backend's first apply_state) just go online."""
-        res = self._varlink_call('Reconcile')
-        if not res.get('ok'):
-            error = res.get('error') or 'desired-state reconcile failed'
+        try:
+            res = self._submit_and_wait_apply('SubmitReconcile')
+        except Exception as exception:
+            error = shared.redact_log_message(exception)
             log('reconciler', f'reconcile on connect failed: {error}')
             self._publish_status('online', 'Device connected')
             self._publish_stage('error', error)
             return
         self._publish_status('online', 'Device connected')
+        if res['status'] == 'superseded' or not self._is_latest_apply(res):
+            return
+        if res['status'] == 'failed':
+            error = res.get('error') or 'desired-state reconcile failed'
+            log('reconciler', f'reconcile on connect failed: {error}')
+            self._publish_stage('error', error)
+            return
         if res.get('applied'):
             self._publish_state_hash()
             shared.wait_for_tunnel_health()
-            self._publish_stage('ready', 'Device ready')
+            self._publish_stage(
+                'ready', self._ready_stage_message(res.get('warnings')))
 
     def on_message(self, client, userdata, msg):
         try:
@@ -492,9 +517,9 @@ class ControlPlane:
             log('mqtt', f'Received command: {action} on {msg.topic}')
             self._handle_command(payload)
         except Exception as e:
-            log('mqtt', f'Error handling message: {e}')
-            import traceback
-            traceback.print_exc()
+            error = shared.redact_log_message(e)
+            log('mqtt',
+                f'Error handling message ({type(e).__name__}): {error}')
 
     def _handle_provision(self, payload, cmd_id=None):
         """Provision device: save identity, set up storage, restart in device mode."""
@@ -729,14 +754,14 @@ class ControlPlane:
 
     def _download_and_run_bootstrap(self, bundle_url, uuid):
         """Download and execute bootstrap bundle"""
-        log('mqtt', f'Downloading bootstrap from {bundle_url}')
+        log('mqtt', 'Downloading bootstrap bundle')
 
         try:
             subprocess.run([
                 'curl', '-f', '-o', '/tmp/bootstrap.tar.gz',
                 '-H', f'X-Device-UUID: {uuid}',
                 bundle_url
-            ], check=True)
+            ], check=True, capture_output=True, text=True)
 
             os.makedirs('/tmp/bootstrap', exist_ok=True)
             subprocess.run([
@@ -755,8 +780,12 @@ class ControlPlane:
                 subprocess.run(['systemctl', 'restart', 'reefy-control.service'])
             else:
                 log('mqtt', f'Bootstrap failed: {result.returncode}')
+        except subprocess.CalledProcessError as e:
+            log('mqtt', f'Bootstrap command failed (exit {e.returncode})')
+        except subprocess.TimeoutExpired:
+            log('mqtt', 'Bootstrap command timed out')
         except Exception as e:
-            log('mqtt', f'Bootstrap error: {e}')
+            log('mqtt', f'Bootstrap error ({type(e).__name__})')
 
     # Command dispatch table — add new commands here
     # Unified command dispatch — works in both bootstrap and device modes.
@@ -788,9 +817,9 @@ class ControlPlane:
             return  # old server, no response expected
         response = {'id': cmd_id, 'status': status}
         if message:
-            response['message'] = message
+            response['message'] = shared.redact_log_message(message)
         if error:
-            response['error'] = error
+            response['error'] = shared.redact_log_message(error)
         topic = f"{self.topic_prefix}/devices/{self.current_uuid}/commands/response"
         self.client.publish(topic, json.dumps(response), qos=1)
 
@@ -830,31 +859,14 @@ class ControlPlane:
         ).start()
 
     def _apply_state_command(self, payload, cmd_id=None):
-        """Apply desired state with serialization (only one at a time).
-        Ignored in bootstrap mode — device will apply state after restart.
-
-        Control vs data plane is handled one level down in
-        _apply_desired_state: in control it forwards to the data plane
-        over Varlink; in the data plane it does the mount/compose work.
-        _apply_and_publish (which runs here, in control, for command
-        applies) still publishes the applying/ready stages."""
+        """Submit desired state and wait in this MQTT command thread."""
         if self.mode == 'bootstrap':
             print("[mqtt] apply_state ignored in bootstrap mode (will apply after restart)")
             return "Ignored (bootstrap mode)"
-        if not self._apply_lock.acquire(blocking=False):
-            self._pending_state = payload
-            print("[mqtt] apply_state already running, queued pending state")
-            return "Queued"
-        try:
-            self._apply_state(payload)
-            while self._pending_state is not None:
-                pending = self._pending_state
-                self._pending_state = None
-                print("[mqtt] Applying queued pending state")
-                self._apply_state(pending)
-            return "State applied"
-        finally:
-            self._apply_lock.release()
+        result = self._apply_state(payload)
+        if result and result.get('status') == 'superseded':
+            return 'Desired state superseded by a newer request'
+        return 'State applied'
 
     def _backup_now(self, payload, cmd_id=None):
         """Trigger immediate backup for an instance; forwards to the data
@@ -951,15 +963,27 @@ class ControlPlane:
             # we hit in prod after ~86% of a 2 GB download.
             self._publish_stage('downloading', f'Downloading firmware ({expected_size // 1048576} MB)')
             log('mqtt', f'Downloading image to {download_path}')
-            result = subprocess.run(
-                ['curl', '-fSL',
-                 '--retry', '5',
-                 '--retry-all-errors',
-                 '--retry-delay', '5',
-                 '-o', download_path, image_url],
-                capture_output=True, text=True, timeout=3600)
+            try:
+                result = subprocess.run(
+                    ['curl', '-fSL',
+                     '--retry', '5',
+                     '--retry-all-errors',
+                     '--retry-delay', '5',
+                     '-o', download_path, image_url],
+                    capture_output=True, text=True, timeout=3600)
+            except subprocess.TimeoutExpired:
+                log('mqtt', 'Reflash download timed out')
+                self._publish_stage('error', 'Reflash download timed out')
+                return
+            except Exception as e:
+                log('mqtt',
+                    f'Reflash download error ({type(e).__name__})')
+                self._publish_stage('error', 'Reflash download failed')
+                return
             if result.returncode != 0:
-                log('mqtt', f'Reflash download failed: {result.stderr}')
+                log('mqtt',
+                    f'Reflash download failed (curl exit '
+                    f'{result.returncode})')
                 self._publish_stage('error', 'Reflash download failed')
                 return
             if expected_size and os.path.getsize(download_path) != expected_size:
@@ -1032,7 +1056,7 @@ class ControlPlane:
                 'curl', '-f', '-o', bundle_path,
                 '-H', f'X-Device-UUID: {self.device_uuid}',
                 bundle_url
-            ], check=True)
+            ], check=True, capture_output=True, text=True)
 
             extract_dir = f'/mnt/reefy-data/cache/customer-{version}'
             os.makedirs(extract_dir, exist_ok=True)
@@ -1051,8 +1075,17 @@ class ControlPlane:
             else:
                 error = result.stderr.decode()
                 self._publish_status('error', f'Failed: {error}')
+        except subprocess.CalledProcessError as e:
+            message = f'Configuration command failed (exit {e.returncode})'
+            log('mqtt', message)
+            self._publish_status('error', message)
+        except subprocess.TimeoutExpired:
+            log('mqtt', 'Configuration command timed out')
+            self._publish_status('error', 'Configuration command timed out')
         except Exception as e:
-            self._publish_status('error', str(e))
+            message = f'Configuration error ({type(e).__name__})'
+            log('mqtt', message)
+            self._publish_status('error', message)
 
     def _run_playbook(self, payload, cmd_id=None):
         """Run ansible playbook delivered inline via MQTT message"""
@@ -1256,14 +1289,23 @@ class ControlPlane:
         os.chmod(pw_file, 0o600)
 
         # Apply to system users
-        result = subprocess.run(
-            ['mkpasswd', password], capture_output=True, text=True, timeout=5)
-        if result.returncode == 0:
+        try:
+            result = subprocess.run(
+                ['mkpasswd', password],
+                capture_output=True, text=True, timeout=5)
+            if result.returncode != 0 or not result.stdout.strip():
+                raise RuntimeError('password hash generation failed')
             pw_hash = result.stdout.strip()
             for user in self.DEVICE_USERS:
-                subprocess.run(
-                    ['sed', '-i', f's|^{user}:[^:]*:|{user}:{pw_hash}:|', '/etc/shadow'],
+                result = subprocess.run(
+                    ['sed', '-i',
+                     f's|^{user}:[^:]*:|{user}:{pw_hash}:|',
+                     '/etc/shadow'],
                     capture_output=True, timeout=5)
+                if result.returncode != 0:
+                    raise RuntimeError('shadow update failed')
+        except (subprocess.SubprocessError, OSError, RuntimeError):
+            raise RuntimeError('Password rotation command failed') from None
 
         # Publish new password to server
         self._publish_status('online', 'Password rotated')
@@ -1288,7 +1330,7 @@ class ControlPlane:
         os.makedirs('/mnt/reefy-data/cache', exist_ok=True)
         try:
             self._publish_stage('updating', f'Downloading firmware {version}')
-            log('mqtt', f'Downloading firmware {version} from {url}')
+            log('mqtt', f'Downloading firmware {version}')
 
             # Drop any stale partial from a previous update attempt so
             # `-C -` doesn't try to append-after a different-URL's bytes.
@@ -1307,7 +1349,7 @@ class ControlPlane:
                 capture_output=True, text=True, timeout=900,
             )
             if result.returncode != 0:
-                msg = f'Firmware download failed: {result.stderr.strip()}'
+                msg = f'Firmware download failed (curl exit {result.returncode})'
                 self._publish_stage('error', msg)
                 log('mqtt', f'{msg}')
                 return
@@ -1346,12 +1388,11 @@ class ControlPlane:
             subprocess.run(['reboot'])
 
         except subprocess.TimeoutExpired as e:
-            cmd_name = ' '.join(e.cmd) if isinstance(e.cmd, list) else str(e.cmd)
-            msg = f'Firmware update timed out ({e.timeout}s) during: {cmd_name}'
+            msg = f'Firmware update timed out after {e.timeout}s'
             self._publish_stage('error', msg)
             log('mqtt', msg)
         except Exception as e:
-            msg = f'Firmware update error: {e}'
+            msg = f'Firmware update error ({type(e).__name__})'
             self._publish_stage('error', msg)
             log('mqtt', f'{msg}')
         finally:
@@ -1379,23 +1420,26 @@ class ControlPlane:
         state = payload.get('state', {})
         if not state:
             print("[mqtt] ERROR: Empty state in apply_state")
-            return
-        self._apply_and_publish('Applying desired state', state=state)
+            return None
+        return self._apply_and_publish(
+            'Applying desired state', state=state)
 
     def _apply_desired_state(self, state):
         """Forward an MQTT command apply to the data plane (it owns
         mount/compose/restore and persists desired-state.json, reading the
         prior file as old_state for diff-based cleanup - reclaim, static-IP
         removal). Control never touches that file. For a re-sync of the
-        saved state (on connect/boot) use Reconcile, not this. Returns True
-        on success and raises with the data-plane error on failure."""
-        res = self._varlink_call('ApplyState', state=json.dumps(state))
-        if not res.get('ok'):
+        saved state (on connect/boot) use SubmitReconcile, not this. Returns
+        the terminal result and raises with the data-plane error on failure."""
+        res = self._submit_and_wait_apply(
+            'SubmitApply', state=json.dumps(state))
+        if res['status'] == 'failed':
             error = res.get('error') or 'desired-state apply failed'
             log('reconciler', f'apply failed: {error}')
-            self._publish_stage('error', error)
+            if self._is_latest_apply(res):
+                self._publish_stage('error', error)
             raise RuntimeError(error)
-        return True
+        return res
 
     # Allow-list of host-path roots the `files` primitive is allowed
     # to write to. The backend is the trust boundary, but if a bug
@@ -1435,6 +1479,32 @@ class ControlPlane:
 
 
     # --- Control <-> data-plane Varlink IPC ---
+
+    def _submit_and_wait_apply(self, submit_method, **kwargs):
+        """Submit one request and wait from a non-MQTT-loop thread."""
+        with self._latest_apply_lock:
+            # Keep submit order and the local "latest" marker atomic. Wait
+            # happens after releasing this lock, so long applies never block
+            # another MQTT command from submitting a newer pending state.
+            submission = self._varlink_call(submit_method, **kwargs)
+            if not submission.get('ok'):
+                raise RuntimeError(
+                    submission.get('error')
+                    or 'desired-state submit failed')
+            request_id = submission.get('request_id') or ''
+            if not request_id:
+                raise RuntimeError(
+                    'data plane returned no apply request id')
+            self._latest_apply_request_id = request_id
+        result = self._varlink_call('WaitApply', request_id=request_id)
+        if not result.get('found'):
+            error = result.get('error') or 'desired-state result unavailable'
+            raise RuntimeError(error)
+        return result
+
+    def _is_latest_apply(self, result):
+        with self._latest_apply_lock:
+            return result.get('request_id') == self._latest_apply_request_id
 
     def _varlink_call(self, method, retries=3, startup_grace_s=30, **kwargs):
         """Control-side: invoke a data-plane Varlink method over the unix
@@ -1604,13 +1674,17 @@ class ControlPlane:
             log('mqtt', f'sidecar publish -> {suffix}')
             return {'ok': True, 'error': ''}
         except Exception as e:
-            return {'ok': False, 'error': str(e)}
+            return {
+                'ok': False,
+                'error': shared.redact_log_message(e),
+            }
 
     def _publish_status(self, status, message=''):
         """Publish device connectivity status. Includes hw_info on 'online' (boot)."""
         if self.mode != 'device':
             return
 
+        message = shared.redact_log_message(message)
         topic = f"{self.topic_prefix}/devices/{self.device_uuid}/status"
         data = {
             "status": status,
@@ -1631,6 +1705,7 @@ class ControlPlane:
         if self.mode != 'device':
             return
 
+        message = shared.redact_log_message(message)
         topic = f"{self.topic_prefix}/devices/{self.device_uuid}/stage"
         data = {
             "stage": stage,
@@ -1663,7 +1738,7 @@ class ControlPlane:
         progress on the dashboard activity strip."""
         extra = {'archive': archive}
         if error:
-            extra['error'] = (error or '')[:500]
+            extra['error'] = shared.redact_log_message(error)[:500]
         self._publish_instance_event(iuuid, 'restore', status, extra=extra)
 
     def _publish_health_status(self, iuuid, status, message=None):
@@ -1679,7 +1754,7 @@ class ControlPlane:
         spinner, 'failed' shows a sticky orange badge."""
         extra = {}
         if message:
-            extra['message'] = (message or '')[:500]
+            extra['message'] = shared.redact_log_message(message)[:500]
         self._publish_instance_event(iuuid, 'health', status, extra=extra)
 
 
@@ -1692,41 +1767,30 @@ class ControlPlane:
         an MQTT command apply passes the new desired state to forward."""
         self._publish_stage('applying', label)
         log('reconciler', f'{label}')
-        if not self._apply_desired_state(state=state):
-            return
+        result = self._apply_desired_state(state=state)
+        if (result.get('status') == 'superseded'
+                or not self._is_latest_apply(result)):
+            return result
         self._publish_status('online', 'Device connected')
         self._publish_state_hash()
         shared.wait_for_tunnel_health()
-        self._publish_stage('ready', 'Device ready')
-        log('reconciler', f'{'Device ready'}')
+        ready_message = self._ready_stage_message(result.get('warnings'))
+        self._publish_stage('ready', ready_message)
+        log('reconciler', ready_message)
+        return result
 
-    def _run_in_background(self, target, args=(), skip_msg="apply already running"):
-        """Run target in a background thread with _apply_lock.
-        Used by offline apply, on-connect apply, and MQTT command apply.
-
-        Drains `_pending_state` before releasing the lock so an
-        apply_state command that arrived while `target` held the lock
-        still runs. Without this the first adoption race strands the
-        queued payload (on_connect wins the lock, server's apply_state
-        queues, on_connect finishes and nobody drains -> stage stuck
-        on 'applying')."""
+    def _run_in_background(self, target, args=(), skip_msg=None):
+        """Run a potentially long control operation outside the MQTT loop."""
         def _wrapper():
-            if not self._apply_lock.acquire(blocking=False):
-                log('mqtt', f'{skip_msg}')
-                return
             try:
                 target(*args)
-                while self._pending_state is not None:
-                    pending = self._pending_state
-                    self._pending_state = None
-                    log('mqtt', 'Applying queued pending state')
-                    self._apply_state(pending)
             except Exception as e:
-                log('mqtt', f'ERROR in background task: {e}')
-                traceback.print_exc()
-                log('reconciler', f'{f'ERROR: {e}'}')
-            finally:
-                self._apply_lock.release()
+                error = shared.redact_log_message(e)
+                message = (
+                    f'ERROR in background task ({type(e).__name__}): '
+                    f'{error}')
+                log('mqtt', message)
+                log('reconciler', message)
         threading.Thread(target=_wrapper, daemon=True).start()
 
     def _start_connection_watchdog(self):
@@ -1884,8 +1948,8 @@ def main_control():
         print("\n[mqtt] Shutting down")
         sys.exit(0)
     except Exception as e:
-        log('mqtt', f'Fatal error: {e}')
-        traceback.print_exc()
+        error = shared.redact_log_message(e)
+        log('mqtt', f'Fatal error ({type(e).__name__}): {error}')
         sys.exit(1)
 
 

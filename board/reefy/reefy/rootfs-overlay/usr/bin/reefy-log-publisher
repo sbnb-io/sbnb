@@ -19,6 +19,9 @@ import sys
 import threading
 import time
 
+sys.path.insert(0, '/usr/lib/reefy')
+from reefy.redaction import redact_log_message
+
 try:
     import paho.mqtt.client as mqtt
 except ImportError:
@@ -129,6 +132,26 @@ def create_mqtt_client(config, control_topic):
     return client
 
 
+def journal_entry_payload(entry, now=None):
+    """Build the outbound log payload with a final redaction pass."""
+    raw_message = entry.get('MESSAGE', '')
+    if not raw_message:
+        return None
+    msg = redact_log_message(raw_message)
+    unit = entry.get('_SYSTEMD_UNIT', '')
+    if unit == 'reefy-log-publisher.service':
+        return None
+    try:
+        priority = int(entry.get('PRIORITY', 6))
+    except (TypeError, ValueError, OverflowError):
+        priority = 6
+    source = unit.replace('.service', '') if unit else 'system'
+    if priority <= 3:
+        source = 'error'
+    now = now or time.time
+    return {'source': source, 'msg': msg, 'ts': now()}
+
+
 def tail_journal(units, client, log_topic):
     cmd = ['journalctl', '-f', '--no-pager', '-o', 'json']
     for unit in units:
@@ -145,27 +168,10 @@ def tail_journal(units, client, log_topic):
 
                 try:
                     entry = json.loads(line)
-                    msg = entry.get('MESSAGE', '')
-                    if not msg:
+                    outbound = journal_entry_payload(entry)
+                    if outbound is None:
                         continue
-
-                    unit = entry.get('_SYSTEMD_UNIT', '')
-                    priority = int(entry.get('PRIORITY', 6))
-
-                    # Skip our own log lines to avoid feedback loop
-                    if unit == 'reefy-log-publisher.service':
-                        continue
-
-                    # Source from unit name
-                    source = unit.replace('.service', '') if unit else 'system'
-                    if priority <= 3:
-                        source = 'error'
-
-                    payload = json.dumps({
-                        'source': source,
-                        'msg': msg,
-                        'ts': time.time(),
-                    })
+                    payload = json.dumps(outbound)
 
                     if client.is_connected():
                         client.publish(log_topic, payload, qos=0, retain=False)
@@ -174,7 +180,8 @@ def tail_journal(units, client, log_topic):
                     continue
 
         except Exception as e:
-            print(f"[log-publisher] journalctl error: {e}")
+            error = redact_log_message(e)
+            print(f"[log-publisher] journalctl error: {error}")
             time.sleep(5)
 
 
@@ -232,7 +239,10 @@ def main():
             client = create_mqtt_client(config, control_topic)
             break
         except Exception as e:
-            print(f"[log-publisher] MQTT connect failed: {e}, retrying in 10s")
+            error = redact_log_message(e)
+            print(
+                f"[log-publisher] MQTT connect failed: {error}, "
+                "retrying in 10s")
             time.sleep(10)
 
     # Tail and publish

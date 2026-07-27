@@ -5,7 +5,11 @@ non-fatally) and the data-side behavior of the split methods."""
 
 import json
 import os
+import tempfile
+import threading
+import types
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import _bootstrap  # noqa: F401  (puts the reefy package on sys.path)
@@ -16,7 +20,10 @@ from reefy.storage import Storage
 def _make_dp():
     # __init__ reads mqtt.conf/device-uuid which don't exist on a dev box;
     # load_mqtt_config returns {} -> safe defaults, device_uuid None.
-    return dataplane.DataPlane(Storage())
+    result_dir = os.path.join(tempfile.mkdtemp(), 'apply-results')
+    with mock.patch.object(
+            dataplane.DataPlane, 'APPLY_RESULTS_DIR', result_dir):
+        return dataplane.DataPlane(Storage())
 
 
 class ImportIsolationTests(unittest.TestCase):
@@ -28,6 +35,7 @@ class ImportIsolationTests(unittest.TestCase):
         src = open(dataplane.__file__).read()
         self.assertNotIn('_is_data_plane', src)
         self.assertNotIn('_varlink_call', src)
+        self.assertNotIn('traceback.print_exc()', src)
 
     def test_reclaim_runs_after_compose_up(self):
         # lvremove of a deleted instance's volume must happen AFTER docker
@@ -91,6 +99,68 @@ class EventPublishingTests(unittest.TestCase):
         # cmd_id is always None over Varlink; must be a no-op (no client).
         self.assertIsNone(self.dp._send_command_response(None, status='running'))
 
+    def test_stage_message_is_redacted_before_publish(self):
+        secret = 'synthetic-stage-secret'
+        with mock.patch.object(self.dp, '_publish_event') as publish:
+            self.dp._publish_stage('error', f'password={secret}')
+        payload = publish.call_args.args[1]
+        self.assertNotIn(secret, payload['message'])
+        self.assertIn('[REDACTED]', payload['message'])
+
+
+class SensitiveFailureLoggingTests(unittest.TestCase):
+    def setUp(self):
+        self.dp = _make_dp()
+
+    def test_wifi_timeout_does_not_log_password_from_command_argv(self):
+        secret = 'synthetic-wifi-password'
+        failure = dataplane.subprocess.TimeoutExpired(
+            ['wifi-setup', 'sample-network', secret], 30)
+        messages = []
+        with mock.patch.object(
+                dataplane.subprocess, 'run', side_effect=failure), \
+                mock.patch.object(
+                    dataplane, 'log',
+                    side_effect=lambda source, message: messages.append(message)):
+            self.dp._apply_wifi({
+                'ssid': 'sample-network',
+                'password': secret,
+            })
+
+        rendered = '\n'.join(messages)
+        self.assertNotIn(secret, rendered)
+        self.assertIn('WiFi setup timed out', rendered)
+
+    def test_wifi_failure_does_not_log_command_output(self):
+        secret = 'synthetic-wifi-output-secret'
+        failure = types.SimpleNamespace(
+            returncode=17, stdout=f'unlabelled {secret}', stderr='')
+        messages = []
+        with mock.patch.object(
+                dataplane.subprocess, 'run', return_value=failure), \
+                mock.patch.object(
+                    dataplane, 'log',
+                    side_effect=lambda source, message: messages.append(message)):
+            self.dp._apply_wifi({
+                'ssid': 'sample-network',
+                'password': 'synthetic-password',
+            })
+
+        rendered = '\n'.join(messages)
+        self.assertNotIn(secret, rendered)
+        self.assertIn('WiFi setup failed (exit 17)', rendered)
+
+    def test_varlink_error_is_redacted_before_return(self):
+        secret = 'synthetic-varlink-secret'
+        with mock.patch.object(
+                self.dp, '_submit_apply_job',
+                side_effect=RuntimeError(f'access_token={secret}')):
+            result = self.dp._dp_submit_apply('{"synthetic": true}')
+
+        self.assertFalse(result['ok'])
+        self.assertNotIn(secret, result['error'])
+        self.assertIn('[REDACTED]', result['error'])
+
 
 class RunDataPlaneWiringTests(unittest.TestCase):
     """Regression for the Varlink handler binding: a class body cannot see
@@ -149,10 +219,21 @@ class RunDataPlaneWiringTests(unittest.TestCase):
         # The handler must carry the service (the bug NameError'd before this).
         self.assertIs(served['handler'].service.__class__, _FakeService)
 
+    def test_varlink_contract_keeps_legacy_and_async_methods(self):
+        usr_dir = Path(dataplane.__file__).parents[3]
+        interface = (
+            usr_dir / 'share' / 'varlink' / 'io.reefy.Reconciler.varlink'
+        ).read_text()
+        for method in (
+                'SubmitApply', 'SubmitReconcile', 'GetApply', 'WaitApply',
+                'ApplyState', 'Reconcile'):
+            self.assertIn(f'method {method}', interface)
+        self.assertIn('warnings: []ApplyWarning', interface)
+
 
 class ApplyPathTests(unittest.TestCase):
-    """Drive the full data-side apply path (the Varlink ApplyState entry)
-    through _apply_state_command -> _apply_state -> _apply_desired_state
+    """Drive the full data-side submit/result path
+    through the scheduler -> _apply_state -> _apply_desired_state
     with workers + syscalls mocked. This is the local stand-in for the
     e2e golden_path's reconcile step: it executes the exact orchestration
     that crashed at runtime before (mode check, class-scope, dispatch),
@@ -173,10 +254,94 @@ class ApplyPathTests(unittest.TestCase):
         'volume_caps': {'/mnt/reefy-data/apps/i1/media': 90},
     }
 
-    def _apply(self, dp):
-        """Run an ApplyState with every worker/storage/host call mocked,
+    def test_running_apply_finishes_and_only_latest_pending_state_runs(self):
+        dp = _make_dp()
+        started = threading.Event()
+        release = threading.Event()
+        applied = []
+
+        def apply(payload):
+            sequence = payload['state']['sequence']
+            applied.append(sequence)
+            if sequence == 'active':
+                started.set()
+                self.assertTrue(release.wait(timeout=5))
+            return True
+
+        with mock.patch.object(dp, '_apply_state', side_effect=apply):
+            active = dp._submit_apply_job(
+                'apply', state={'sequence': 'active'})
+            self.assertTrue(started.wait(timeout=5))
+            obsolete = dp._submit_apply_job(
+                'apply', state={'sequence': 'obsolete'})
+            latest = dp._submit_apply_job(
+                'apply', state={'sequence': 'latest'})
+            obsolete_result = dp._wait_apply_result(obsolete['request_id'])
+            self.assertEqual(obsolete_result['status'], 'superseded')
+            release.set()
+            active_result = dp._wait_apply_result(active['request_id'])
+            latest_result = dp._wait_apply_result(latest['request_id'])
+
+        self.assertEqual(active_result['status'], 'succeeded')
+        self.assertEqual(latest_result['status'], 'succeeded')
+        self.assertEqual(applied, ['active', 'latest'])
+
+    def test_pending_state_runs_after_active_state_fails(self):
+        dp = _make_dp()
+        started = threading.Event()
+        release = threading.Event()
+        applied = []
+
+        def apply(payload):
+            sequence = payload['state']['sequence']
+            applied.append(sequence)
+            if sequence == 'active':
+                started.set()
+                self.assertTrue(release.wait(timeout=5))
+                return False
+            return True
+
+        with mock.patch.object(dp, '_apply_state', side_effect=apply):
+            active = dp._submit_apply_job(
+                'apply', state={'sequence': 'active'})
+            self.assertTrue(started.wait(timeout=5))
+            pending = dp._submit_apply_job(
+                'apply', state={'sequence': 'pending'})
+            release.set()
+            active_result = dp._wait_apply_result(active['request_id'])
+            pending_result = dp._wait_apply_result(pending['request_id'])
+
+        self.assertEqual(active_result['status'], 'failed')
+        self.assertEqual(pending_result['status'], 'succeeded')
+        self.assertEqual(applied, ['active', 'pending'])
+
+    def test_unknown_result_returns_found_false_without_waiting(self):
+        dp = _make_dp()
+        expected = {
+            'found': False,
+            'request_id': '',
+            'status': '',
+            'error': '',
+            'warnings': [],
+            'applied': False,
+        }
+        self.assertEqual(dp._get_apply_result('synthetic-missing'), expected)
+        self.assertEqual(dp._wait_apply_result('synthetic-missing'), expected)
+
+    def test_submit_rejects_request_when_initial_record_cannot_persist(self):
+        dp = _make_dp()
+        with mock.patch.object(
+                dp._apply_results, 'create', return_value=False), \
+                mock.patch.object(threading, 'Thread') as thread:
+            result = dp._submit_apply_job(
+                'apply', state={'sequence': 'synthetic'})
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['request_id'], '')
+        thread.assert_not_called()
+
+    def _apply(self, dp, warnings=None):
+        """Submit an apply with every worker/storage/host call mocked,
         a temp desired-state path, and return (result, mocks)."""
-        import tempfile
         tmpdir = tempfile.mkdtemp()
         dp.DESIRED_STATE_PATH = os.path.join(tmpdir, 'desired-state.json')
         patches = {
@@ -189,22 +354,28 @@ class ApplyPathTests(unittest.TestCase):
                 mock.patch.object(dp, '_restore_instances', return_value=set()), \
                 mock.patch.object(dp, '_apply_compose', return_value=True) as m_compose, \
                 mock.patch.object(dp._storage, 'set_volume_caps') as m_caps, \
-                mock.patch.object(dp._storage, '_prepare_app_dirs') as m_dirs, \
+                mock.patch.object(
+                    dp._storage, '_prepare_app_dirs',
+                    return_value=warnings or []) as m_dirs, \
+                mock.patch.object(
+                    dp._storage, '_reclaim_deleted_instance_lvs') as m_reclaim, \
                 mock.patch.object(shared, 'set_hostname') as m_host, \
-                mock.patch.object(shared, 'get_default_hostname', return_value='def-host'):
-            res = dp._dp_apply_state(json.dumps(self.REPRESENTATIVE_STATE))
+                mock.patch.object(shared, 'get_default_hostname',
+                                  return_value='def-host'):
+            submission = dp._dp_submit_apply(
+                json.dumps(self.REPRESENTATIVE_STATE))
+            res = dp._wait_apply_result(submission['request_id'])
         return res, {**m, 'compose': m_compose, 'caps': m_caps,
-                     'dirs': m_dirs, 'host': m_host}
+                     'dirs': m_dirs, 'host': m_host,
+                     'reclaim': m_reclaim}
 
     def test_apply_state_succeeds_end_to_end(self):
         res, _ = self._apply(_make_dp())
-        # Returns the Varlink success shape - no NameError/AttributeError/
-        # mode crash anywhere in the dispatch.
-        self.assertEqual(res, {'ok': True, 'error': ''})
+        self.assertEqual(res['status'], 'succeeded')
 
     def test_apply_dispatches_each_section(self):
         res, m = self._apply(_make_dp())
-        self.assertEqual(res['ok'], True)
+        self.assertEqual(res['status'], 'succeeded')
         m['host'].assert_called_with('reefy-test')          # hostname applied
         m['caps'].assert_called()                           # caps pushed to storage
         m['_apply_user_ssh_keys'].assert_called_once_with(['ssh-ed25519 AAAAC3Nz'])
@@ -212,7 +383,81 @@ class ApplyPathTests(unittest.TestCase):
         m['dirs'].assert_called_once()                      # app dirs prepared
         m['compose'].assert_called_once()                   # compose applied
 
-    def test_storage_exception_is_preserved_in_varlink_error(self):
+    def test_cap_warnings_are_returned_with_affected_volumes(self):
+        warnings = [
+            {
+                'code': 'storage.cap_not_enforced',
+                'instance_uuid': 'synthetic-app',
+                'volume': 'media',
+            },
+        ]
+        res, mocks = self._apply(_make_dp(), warnings=warnings)
+        self.assertEqual(res['status'], 'succeeded_with_warnings')
+        self.assertEqual(res['warnings'], warnings)
+        mocks['compose'].assert_called_once()
+
+    def test_desired_state_log_contains_only_allowlisted_counts(self):
+        import tempfile
+
+        dp = _make_dp()
+        dp.DESIRED_STATE_PATH = os.path.join(
+            tempfile.mkdtemp(), 'desired-state.json')
+        canaries = [
+            'opaque-env-value-synthetic',
+            'wifi-passphrase-synthetic',
+            'backup-secret-synthetic',
+            'file-content-synthetic',
+        ]
+        state = {
+            'hostname': 'sample-node',
+            'wifi': {'password': canaries[1]},
+            'instances': [{'instance_uuid': 'sample-instance'}],
+            'app_volumes': [{'path': '/mnt/reefy-data/apps/sample/data'}],
+            'backup': {'passphrase': canaries[2], 'instances': [{}]},
+            'files': [{'content_b64': canaries[3]}],
+            'storage': {'devices': ['sample-disk']},
+            'compose': {'services': {
+                'sample-instance': {
+                    'environment': {'PLANET_COLOR': canaries[0]},
+                },
+            }},
+            'synthetic_extension': {'nested': canaries[0]},
+        }
+        messages = []
+        with mock.patch.object(
+                dp, '_apply_desired_state', return_value=True), \
+                mock.patch.object(
+                    dataplane, 'log',
+                    side_effect=lambda source, message: messages.append(message)):
+            self.assertTrue(dp._apply_state({'state': state}))
+
+        with open(dp.DESIRED_STATE_PATH) as handle:
+            self.assertEqual(json.load(handle), state)
+        joined = '\n'.join(messages)
+        self.assertIn(
+            'Saved desired state (instances=1, services=1, app_volumes=1, '
+            'files=1, storage_devices=1, backup_instances=1)', joined)
+        self.assertFalse(
+            any(canary in joined for canary in canaries),
+            'desired-state summary exposed a synthetic secret value')
+        self.assertNotIn('sample-node', joined)
+        self.assertNotIn('/mnt/reefy-data/apps/sample/data', joined)
+
+    def test_desired_state_summary_tolerates_wrong_optional_types(self):
+        summary = dataplane._desired_state_log_summary({
+            'instances': {},
+            'app_volumes': 'wrong',
+            'files': None,
+            'storage': {'devices': 'wrong'},
+            'backup': [],
+            'compose': {'services': []},
+        })
+        self.assertEqual(
+            summary,
+            'Saved desired state (instances=0, services=0, app_volumes=0, '
+            'files=0, storage_devices=0, backup_instances=0)')
+
+    def test_storage_exception_is_live_but_persistent_record_is_generic(self):
         import tempfile
         dp = _make_dp()
         dp.DESIRED_STATE_PATH = os.path.join(
@@ -232,7 +477,15 @@ class ApplyPathTests(unittest.TestCase):
                     shared, 'get_default_hostname', return_value='d'):
             res = dp._dp_apply_state(json.dumps(state))
 
-        self.assertEqual(res, {'ok': False, 'error': error})
+        self.assertFalse(res['ok'])
+        self.assertEqual(res['error'], error)
+        result_files = os.listdir(dp._apply_results.directory)
+        self.assertEqual(len(result_files), 1)
+        with open(os.path.join(
+                dp._apply_results.directory, result_files[0])) as handle:
+            persisted = json.load(handle)
+        self.assertNotIn('/dev/sdb', json.dumps(persisted))
+        self.assertNotIn('sda', json.dumps(persisted))
 
     def test_compose_failure_publishes_error_stage(self):
         import tempfile
@@ -248,6 +501,8 @@ class ApplyPathTests(unittest.TestCase):
                 mock.patch.object(dp, '_publish_event') as m_emit, \
                 mock.patch.object(dp._storage, 'set_volume_caps'), \
                 mock.patch.object(dp._storage, '_prepare_app_dirs'), \
+                mock.patch.object(
+                    dp._storage, '_reclaim_deleted_instance_lvs'), \
                 mock.patch.object(shared, 'set_hostname'), \
                 mock.patch.object(shared, 'get_default_hostname', return_value='d'):
             res = dp._dp_apply_state(json.dumps(self.REPRESENTATIVE_STATE))
@@ -276,6 +531,8 @@ class ApplyPathTests(unittest.TestCase):
                 mock.patch.object(dp, '_publish_event') as m_emit, \
                 mock.patch.object(dp._storage, 'set_volume_caps'), \
                 mock.patch.object(dp._storage, '_prepare_app_dirs'), \
+                mock.patch.object(
+                    dp._storage, '_reclaim_deleted_instance_lvs'), \
                 mock.patch.object(shared, 'set_hostname'), \
                 mock.patch.object(shared, 'get_default_hostname', return_value='d'):
             res = dp._dp_apply_state(json.dumps(state))
@@ -657,79 +914,57 @@ class ReconcileTests(unittest.TestCase):
     """_dp_reconcile: re-apply the data plane's own saved state (re-sync).
     Control calls this on connect instead of reading desired-state.json
     (the data plane is the sole reader+writer); _boot_apply uses the same
-    path at startup. Runs under the apply lock and reports `applied`."""
+    request scheduler and reports `applied`."""
 
     def setUp(self):
         self.dp = _make_dp()
 
     def test_reports_applied_when_state_exists(self):
         with mock.patch.object(dataplane.os.path, 'exists', return_value=True), \
-                mock.patch.object(self.dp, '_apply_desired_state') as ad:
-            res = self.dp._dp_reconcile()
-        self.assertEqual(res, {'ok': True, 'applied': True, 'error': ''})
+                mock.patch.object(
+                    self.dp, '_apply_desired_state', return_value=True) as ad:
+            submission = self.dp._dp_submit_reconcile()
+            res = self.dp._wait_apply_result(submission['request_id'])
+        self.assertEqual(res['status'], 'succeeded')
+        self.assertTrue(res['applied'])
         ad.assert_called_once()
-        self.assertTrue(self.dp._apply_lock.acquire(blocking=False),
-                        'apply lock not released after reconcile')
 
     def test_reports_not_applied_when_no_state(self):
         # No saved state -> applied False, but _apply_desired_state still
         # runs (it resets the hostname to the MAC-based default).
         with mock.patch.object(dataplane.os.path, 'exists', return_value=False), \
-                mock.patch.object(self.dp, '_apply_desired_state') as ad:
-            res = self.dp._dp_reconcile()
-        self.assertEqual(res, {'ok': True, 'applied': False, 'error': ''})
+                mock.patch.object(
+                    self.dp, '_apply_desired_state', return_value=True) as ad:
+            submission = self.dp._dp_submit_reconcile()
+            res = self.dp._wait_apply_result(submission['request_id'])
+        self.assertEqual(res['status'], 'succeeded')
+        self.assertFalse(res['applied'])
         ad.assert_called_once()
 
-    def test_skips_apply_when_lock_held(self):
-        # A command apply already holds the lock -> reconcile must not run
-        # _apply_desired_state concurrently (it would race the same work).
-        self.dp._apply_lock.acquire()
-        try:
-            with mock.patch.object(dataplane.os.path, 'exists',
-                                   return_value=True), \
-                    mock.patch.object(self.dp, '_apply_desired_state') as ad:
-                res = self.dp._dp_reconcile()
-            ad.assert_not_called()
-            self.assertEqual(res, {'ok': True, 'applied': True, 'error': ''})
-        finally:
-            self.dp._apply_lock.release()
-
-    def test_drains_state_queued_during_reconcile(self):
-        # State control forwarded while reconcile held the lock must be
-        # applied after, not dropped.
-        forwarded = {'forwarded': True}
-
-        def queue_during(*a, **k):
-            self.dp._pending_state = forwarded
-
-        with mock.patch.object(dataplane.os.path, 'exists', return_value=True), \
-                mock.patch.object(self.dp, '_apply_desired_state',
-                                  side_effect=queue_during), \
-                mock.patch.object(self.dp, '_apply_state') as as_:
-            res = self.dp._dp_reconcile()
-        as_.assert_called_once_with(forwarded)
-        self.assertIsNone(self.dp._pending_state)
-        self.assertTrue(res['ok'])
-
-    def test_failure_returns_error_and_releases_lock(self):
+    def test_exception_returns_redacted_failed_result(self):
         with mock.patch.object(dataplane.os.path, 'exists', return_value=True), \
                 mock.patch.object(self.dp, '_apply_desired_state',
                                   side_effect=RuntimeError('boom')):
-            res = self.dp._dp_reconcile()
-        self.assertFalse(res['ok'])
+            submission = self.dp._dp_submit_reconcile()
+            res = self.dp._wait_apply_result(submission['request_id'])
+        self.assertEqual(res['status'], 'failed')
         self.assertIn('boom', res['error'])
-        self.assertTrue(self.dp._apply_lock.acquire(blocking=False),
-                        'apply lock not released after a failed reconcile')
 
-    def test_false_apply_result_returns_error_and_releases_lock(self):
+    def test_false_apply_result_returns_failed_result(self):
         with mock.patch.object(dataplane.os.path, 'exists', return_value=True), \
                 mock.patch.object(self.dp, '_apply_desired_state',
                                   return_value=False):
+            submission = self.dp._dp_submit_reconcile()
+            res = self.dp._wait_apply_result(submission['request_id'])
+        self.assertEqual(res['status'], 'failed')
+        self.assertIn('apply failed', res['error'])
+
+    def test_legacy_reconcile_method_keeps_original_shape(self):
+        with mock.patch.object(dataplane.os.path, 'exists', return_value=True), \
+                mock.patch.object(
+                    self.dp, '_apply_desired_state', return_value=True):
             res = self.dp._dp_reconcile()
-        self.assertFalse(res['ok'])
-        self.assertIn('reconcile failed', res['error'])
-        self.assertTrue(self.dp._apply_lock.acquire(blocking=False),
-                        'apply lock not released after a false reconcile')
+        self.assertEqual(res, {'ok': True, 'applied': True, 'error': ''})
 
     def test_boot_apply_delegates_to_reconcile(self):
         with mock.patch.object(self.dp, '_dp_reconcile') as rec:

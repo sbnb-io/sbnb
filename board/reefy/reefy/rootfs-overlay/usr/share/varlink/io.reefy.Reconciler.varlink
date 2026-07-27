@@ -4,14 +4,50 @@
 # process so a crash/OOM/hang in that work cannot take down control.
 interface io.reefy.Reconciler
 
+type ApplyWarning (
+    code: string,
+    instance_uuid: string,
+    volume: string
+)
+
+# Persist a queued request before returning. The running request always
+# finishes; only the single pending request may be superseded.
+method SubmitApply(state: string) -> (ok: bool, request_id: string, error: string)
+
+# Queue a re-apply of the data plane's persisted desired state.
+method SubmitReconcile() -> (ok: bool, request_id: string, error: string)
+
+# Return immediately with the current result, or found=false when the bounded
+# result history no longer contains the request.
+method GetApply(request_id: string) -> (
+    found: bool,
+    request_id: string,
+    status: string,
+    error: string,
+    warnings: []ApplyWarning,
+    applied: bool
+)
+
+# Wait for a terminal result without blocking the MQTT loop. Control invokes
+# this from its existing background command/connect threads.
+method WaitApply(request_id: string) -> (
+    found: bool,
+    request_id: string,
+    status: string,
+    error: string,
+    warnings: []ApplyWarning,
+    applied: bool
+)
+
 # Save + apply desired state (mount per-app volumes, docker compose up,
-# restore). `state` is the desired-state JSON as a string.
+# restore). Retained as a synchronous compatibility wrapper.
 method ApplyState(state: string) -> (ok: bool, error: string)
 
 # Re-apply the data plane's own saved desired state (re-sync on control
 # reconnect). The data plane owns desired-state.json - control calls this
 # instead of reading the file. `applied` is false when there is no saved
-# state yet (the apply just reset the hostname to its default).
+# state yet (the apply just reset the hostname to its default). Retained as a
+# synchronous compatibility wrapper.
 method Reconcile() -> (ok: bool, applied: bool, error: string)
 
 # Snapshot + borg-archive one instance's backup volumes.

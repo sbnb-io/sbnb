@@ -57,5 +57,14 @@ class ImportIsolationTests(unittest.TestCase):
         importlib.import_module('reefy.shared')
 
 
+class SharedLoggingTests(unittest.TestCase):
+    def test_log_redacts_before_writing_to_journald(self):
+        with mock.patch('builtins.print') as output:
+            shared.log('synthetic', 'password=sample-secret-value')
+        rendered = output.call_args.args[0]
+        self.assertEqual(
+            rendered, '[synthetic] password=[REDACTED]')
+
+
 if __name__ == '__main__':
     unittest.main()

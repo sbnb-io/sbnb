@@ -10,6 +10,7 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -19,10 +20,15 @@ import tarfile
 import tempfile
 import time
 import uuid as uuid_mod
+from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 from io import BytesIO
 
 from reefy import shared
 from reefy.shared import _part_dev, log
+
+
+class ExistingVolumeUnavailableError(RuntimeError):
+    """An owned data LV exists but cannot safely back its app path."""
 
 
 class Storage:
@@ -35,6 +41,9 @@ class Storage:
     LEGACY_STORAGE_LV = shared.LEGACY_STORAGE_LV
     REEFY_DATA_MOUNT_OPTS = shared.REEFY_DATA_MOUNT_OPTS
     DESIRED_STATE_PATH = shared.DESIRED_STATE_PATH
+    MANAGED_VOLUME_TAG = 'reefy_managed_app_volume'
+    OWNER_TAG_PREFIX = 'reefy_owner_'
+    MANAGED_VOLUME_RE = re.compile(r'^reefy_backup_[0-9a-f]{12}$')
     LUKS_SECTOR_SIZES = (4096, 2048, 1024, 512)
 
     def __init__(self, volume_caps=None):
@@ -71,8 +80,8 @@ class Storage:
                 f'Failed to generate LUKS key: {self._process_error(result)}')
         passphrase = result.stdout.strip()
         result = subprocess.run(
-            ['sh', '-c', f'echo -n "{passphrase}" | dd of={key_part} conv=notrunc'],
-            capture_output=True, timeout=10)
+            ['dd', f'of={key_part}', 'conv=notrunc'],
+            input=passphrase.encode(), capture_output=True, timeout=10)
         if result.returncode != 0:
             raise RuntimeError(
                 f'Failed to write LUKS key partition {key_part}: '
@@ -810,10 +819,13 @@ class Storage:
         """True if the LVM thin pool is available (i.e. this device is
         on the new storage layout, not legacy flat-LV). Backup snapshot
         path requires this; legacy devices skip backups gracefully."""
-        return subprocess.run(
-            ['lvs', f'{self.STORAGE_VG}/{self.STORAGE_POOL}'],
-            capture_output=True
-        ).returncode == 0
+        try:
+            result = subprocess.run(
+                ['lvs', f'{self.STORAGE_VG}/{self.STORAGE_POOL}'],
+                capture_output=True, timeout=10)
+        except (subprocess.SubprocessError, OSError):
+            return False
+        return result.returncode == 0
 
     def _volume_lv_name(self, path):
         """Stable per-volume thin LV name. Hash of the absolute path
@@ -853,88 +865,535 @@ class Storage:
             return 'noatime,discard'
         return self.REEFY_DATA_MOUNT_OPTS
 
-    def _ensure_volume_lv(self, path):
+    @staticmethod
+    def _valid_owned_volume_path(path):
+        if not isinstance(path, str):
+            return False
+        normalized = os.path.normpath(path)
+        prefix = f'{shared.REEFY_DATA_MNT}/apps/'
+        if normalized != path or not normalized.startswith(prefix):
+            return False
+        # Registry entries are volume roots, never arbitrary descendants:
+        # /mnt/reefy-data/apps/<instance>/<volume>.
+        relative = normalized[len(prefix):]
+        return len(relative.split('/')) == 2 and all(
+            segment not in ('', '.', '..')
+            for segment in relative.split('/'))
+
+    @classmethod
+    def _owner_tag_for_instance(cls, instance_id):
+        if not isinstance(instance_id, str) or not instance_id:
+            return None
+        token = hashlib.sha256(instance_id.encode()).hexdigest()[:20]
+        return f'{cls.OWNER_TAG_PREFIX}{token}'
+
+    @classmethod
+    def _owner_tag_for_path(cls, path):
+        """Return a stable, non-identifying LVM owner tag for an app path."""
+        if not cls._valid_owned_volume_path(path):
+            return None
+        prefix = f'{shared.REEFY_DATA_MNT}/apps/'
+        instance_id = path[len(prefix):].split('/', 1)[0]
+        return cls._owner_tag_for_instance(instance_id)
+
+    @classmethod
+    def _cap_warning_for_path(cls, path):
+        """Return a path-free warning that identifies the affected volume."""
+        if not cls._valid_owned_volume_path(path):
+            return None
+        prefix = f'{shared.REEFY_DATA_MNT}/apps/'
+        instance_uuid, volume = path[len(prefix):].split('/', 1)
+        return {
+            'code': 'storage.cap_not_enforced',
+            'instance_uuid': instance_uuid,
+            'volume': volume,
+        }
+
+    def _volume_tags(self, lv_name):
+        """Return an LV's tags, or None when LVM cannot be inspected."""
+        try:
+            result = subprocess.run(
+                ['lvs', '--noheadings', '-o', 'lv_tags',
+                 f'{self.STORAGE_VG}/{lv_name}'],
+                capture_output=True, text=True, timeout=10)
+        except (subprocess.SubprocessError, OSError):
+            return None
+        if result.returncode != 0:
+            return None
+        return {tag.strip() for tag in result.stdout.strip().split(',')
+                if tag.strip()}
+
+    def _remember_owned_volume(self, path):
+        """Attach ownership to the LV itself instead of a sidecar registry.
+
+        Existing provisioned devices are adopted lazily when their current or
+        previous desired-state path resolves to the deterministic LV name.
+        Unknown untagged legacy LVs are never reclaimed.
+        """
+        owner_tag = self._owner_tag_for_path(path)
+        if owner_tag is None:
+            return False
+        lv_name = self._volume_lv_name(path)
+        tags = self._volume_tags(lv_name)
+        if tags is None:
+            return False
+        missing = [tag for tag in (self.MANAGED_VOLUME_TAG, owner_tag)
+                   if tag not in tags]
+        if not missing:
+            return True
+        command = ['lvchange']
+        for tag in missing:
+            command.extend(['--addtag', tag])
+        command.append(f'{self.STORAGE_VG}/{lv_name}')
+        try:
+            result = subprocess.run(
+                command, capture_output=True, text=True, timeout=15)
+        except (subprocess.SubprocessError, OSError):
+            return False
+        if result.returncode != 0:
+            log('mqtt', 'Cannot attach ownership to dedicated app volume')
+            return False
+        return True
+
+    @staticmethod
+    def _capped_virtual_size(pool_size, cap_pct, sector_size,
+                             allocation_size=None):
+        """Return cap bytes rounded down to mapper and LVM alignment."""
+        try:
+            pool_bytes = int(Decimal(str(pool_size)))
+            pct = Decimal(str(cap_pct))
+            sector_bytes = int(sector_size)
+            allocation_bytes = int(
+                sector_bytes if allocation_size is None else allocation_size)
+        except (InvalidOperation, TypeError, ValueError, OverflowError) as e:
+            raise ValueError('invalid volume cap inputs') from e
+        if (pool_bytes <= 0 or sector_bytes <= 0 or allocation_bytes <= 0
+                or not pct.is_finite() or pct <= 0 or pct > 100):
+            raise ValueError('volume cap inputs are outside safe bounds')
+        alignment = math.lcm(sector_bytes, allocation_bytes)
+        raw_bytes = int(
+            (Decimal(pool_bytes) * pct / Decimal(100)).to_integral_value(
+                rounding=ROUND_FLOOR))
+        aligned_bytes = raw_bytes - raw_bytes % alignment
+        if aligned_bytes <= 0 or aligned_bytes > pool_bytes:
+            raise ValueError('volume cap is too small for LVM alignment')
+        return aligned_bytes
+
+    def _lv_virtual_size(self, lv_ref):
+        """Return an LV's virtual size in bytes, or None if unconfirmed."""
+        try:
+            result = subprocess.run(
+                ['lvs', '--noheadings', '--nosuffix', '--units', 'b',
+                 '-o', 'lv_size', lv_ref],
+                capture_output=True, text=True, timeout=10)
+        except (subprocess.SubprocessError, OSError):
+            return None
+        raw_size = result.stdout.strip().lstrip('<>')
+        if result.returncode != 0 or not raw_size:
+            return None
+        try:
+            return int(Decimal(raw_size))
+        except (InvalidOperation, TypeError, ValueError, OverflowError):
+            return None
+
+    def _lv_metadata_names(self):
+        """Return all VG LV names, or None on inspection error."""
+        try:
+            result = subprocess.run(
+                ['lvs', '--noheadings', '-o', 'lv_name', self.STORAGE_VG],
+                capture_output=True, text=True, timeout=10)
+        except (subprocess.SubprocessError, OSError):
+            return None
+        if result.returncode != 0:
+            return None
+        return {line.strip() for line in result.stdout.splitlines()
+                if line.strip()}
+
+    def _lv_metadata_with_tags(self):
+        """Return {lv_name: {tags}}, or None on inspection failure."""
+        try:
+            result = subprocess.run(
+                ['lvs', '--noheadings', '--separator', '|',
+                 '-o', 'lv_name,lv_tags', self.STORAGE_VG],
+                capture_output=True, text=True, timeout=10)
+        except (subprocess.SubprocessError, OSError):
+            return None
+        if result.returncode != 0:
+            return None
+        records = {}
+        for line in result.stdout.splitlines():
+            fields = line.strip().split('|', 1)
+            if not fields or not fields[0].strip():
+                continue
+            records[fields[0].strip()] = {
+                tag.strip()
+                for tag in (fields[1] if len(fields) > 1 else '').split(',')
+                if tag.strip()
+            }
+        return records
+
+    def _lv_metadata_exists(self, lv_name):
+        """Return LV existence from LVM metadata, or None on inspection error."""
+        names = self._lv_metadata_names()
+        return None if names is None else lv_name in names
+
+    def _desired_volume_size(self, path):
+        """Return the requested virtual size for a new or capped LV."""
+        pool_ref = f'{self.STORAGE_VG}/{self.STORAGE_POOL}'
+        pool_size = self._lv_virtual_size(pool_ref)
+        if pool_size is None:
+            log('mqtt',
+                'Cannot read thin-pool size for per-volume storage')
+            return None
+        if path not in self._volume_caps:
+            return pool_size
+        try:
+            return self._capped_virtual_size(
+                pool_size, self._volume_caps[path],
+                self._vg_mapper_sector_size(), self._vg_extent_size())
+        except (RuntimeError, ValueError,
+                subprocess.SubprocessError, OSError) as e:
+            log('mqtt', f'Cannot calculate safe capped volume size: {e}')
+            return None
+
+    def _remove_new_volume_lv(self, lv_ref):
+        """Best-effort cleanup after this invocation created a bad LV."""
+        lv_name = lv_ref.rsplit('/', 1)[-1]
+        present = self._lv_metadata_exists(lv_name)
+        if present is False:
+            return True
+        if present is None:
+            log('mqtt',
+                'Cannot verify newly-created per-volume LV for cleanup; '
+                'manual inspection is required')
+            return False
+        try:
+            subprocess.run(
+                ['lvremove', '-f', lv_ref], capture_output=True,
+                text=True, timeout=15)
+        except (subprocess.SubprocessError, OSError):
+            # The command may have committed metadata before its client
+            # timed out. The authoritative post-state below decides.
+            pass
+        remaining = self._lv_metadata_exists(lv_name)
+        if remaining is False:
+            return True
+        log('mqtt',
+            'Unable to clean up newly-created per-volume LV; '
+            'manual inspection is required')
+        return False
+
+    def _require_new_volume_cleanup(self, lv_ref):
+        """Confirm a failed fresh LV is absent before default fallback."""
+        if not self._remove_new_volume_lv(lv_ref):
+            raise ExistingVolumeUnavailableError(
+                'New app volume could not be safely removed')
+
+    def _remove_mounted_new_volume(self, path, lv_name):
+        """Unmount and remove a fresh LV before allowing default fallback."""
+        lv_path = f'/dev/{self.STORAGE_VG}/{lv_name}'
+        try:
+            mounted = subprocess.run(
+                ['findmnt', '-n', '-o', 'SOURCE', path],
+                capture_output=True, text=True, timeout=5)
+        except (subprocess.SubprocessError, OSError) as e:
+            raise ExistingVolumeUnavailableError(
+                'Cannot inspect a new app volume mount') from e
+        if mounted.returncode == 0:
+            source = mounted.stdout.strip()
+            if (not source or os.path.realpath(source)
+                    != os.path.realpath(lv_path)):
+                raise ExistingVolumeUnavailableError(
+                    'New app volume path is mounted from an unexpected device')
+            try:
+                unmounted = subprocess.run(
+                    ['umount', path], capture_output=True,
+                    text=True, timeout=30)
+            except (subprocess.SubprocessError, OSError) as e:
+                raise ExistingVolumeUnavailableError(
+                    'New app volume could not be unmounted') from e
+            if unmounted.returncode != 0:
+                raise ExistingVolumeUnavailableError(
+                    'New app volume could not be unmounted')
+        elif mounted.returncode != 1:
+            raise ExistingVolumeUnavailableError(
+                'Cannot determine whether a new app volume is mounted')
+        self._require_new_volume_cleanup(
+            f'{self.STORAGE_VG}/{lv_name}')
+
+    def _resolve_new_volume_mount_failure(self, path, lv_name):
+        """Return True if mount actually succeeded, False if LV was removed."""
+        lv_path = f'/dev/{self.STORAGE_VG}/{lv_name}'
+        try:
+            mounted = subprocess.run(
+                ['findmnt', '-n', '-o', 'SOURCE', path],
+                capture_output=True, text=True, timeout=5)
+        except (subprocess.SubprocessError, OSError) as e:
+            raise ExistingVolumeUnavailableError(
+                'Cannot determine whether a new app volume was mounted') from e
+        if mounted.returncode == 0:
+            source = mounted.stdout.strip()
+            if (source and os.path.realpath(source)
+                    == os.path.realpath(lv_path)):
+                if self._remember_owned_volume(path):
+                    return True
+                self._remove_mounted_new_volume(path, lv_name)
+                return False
+            raise ExistingVolumeUnavailableError(
+                'New app volume path is mounted from an unexpected device')
+        if mounted.returncode != 1:
+            raise ExistingVolumeUnavailableError(
+                'Cannot determine whether a new app volume was mounted')
+        self._require_new_volume_cleanup(
+            f'{self.STORAGE_VG}/{lv_name}')
+        return False
+
+    def _dedicated_volume_mount_status(self, path):
+        """Return True for the expected LV, False if absent, else None."""
+        lv_path = (
+            f'/dev/{self.STORAGE_VG}/{self._volume_lv_name(path)}')
+        try:
+            mounted = subprocess.run(
+                ['findmnt', '-n', '-o', 'SOURCE', path],
+                capture_output=True, text=True, timeout=5)
+        except (subprocess.SubprocessError, OSError):
+            return None
+        if mounted.returncode == 1:
+            return False
+        if mounted.returncode != 0:
+            return None
+        source = mounted.stdout.strip()
+        if not source:
+            return None
+        if os.path.realpath(source) != os.path.realpath(lv_path):
+            return None
+        return True
+
+    def _ensure_volume_lv(self, path, allow_create=True,
+                          expect_existing=False):
         """Provision + mount a per-volume thin LV at `path` if not
         already in place. No-op if:
           - the device has no thin pool (legacy storage), OR
           - the path is already a mount point (idempotent), OR
           - the path already exists with files on the default LV
-            (legacy install — leave as plain dir to avoid hiding data).
+            (legacy install - leave as plain dir to avoid hiding data).
 
         Concurrency-safe + idempotent: the boot oneshot and the running
         reconciler may both call this; the flock serializes them and the
         mountpoint re-check inside the lock makes a lost race a no-op.
+        Returns True when the path is on its dedicated LV and any requested
+        cap is confirmed. Returns False when callers must use default app
+        storage, or when an existing data-bearing LV must be preserved but
+        its requested cap cannot be confirmed.
         """
         if not self._has_thin_pool():
-            return  # legacy storage; backups are disabled anyway
+            if expect_existing:
+                raise ExistingVolumeUnavailableError(
+                    'Cannot access the thin pool for an owned app volume')
+            return False  # legacy storage; backups are disabled anyway
 
         with self._volume_lock():
-            # Re-check INSIDE the lock: another process may have mounted
-            # it while we waited on the flock.
-            r = subprocess.run(
-                ['findmnt', '-n', '-o', 'SOURCE', path],
-                capture_output=True, text=True, timeout=5)
-            if r.returncode == 0 and r.stdout.strip():
-                return
-
-            # Existing dir with files on the default LV → legacy install,
-            # don't mount over the data. (Migration path: factory-reset.)
-            if os.path.isdir(path) and os.listdir(path):
-                log('mqtt', f'Legacy data at {path}, skipping per-volume LV mount')
-                return
-
             lv_name = self._volume_lv_name(path)
             lv_path = f'/dev/{self.STORAGE_VG}/{lv_name}'
+            capped = path in self._volume_caps
 
-            if not os.path.exists(lv_path):
-                pool_size = subprocess.run(
-                    ['lvs', '--noheadings', '--nosuffix', '--units', 'b',
-                     '-o', 'lv_size', f'{self.STORAGE_VG}/{self.STORAGE_POOL}'],
-                    capture_output=True, text=True, timeout=10).stdout.strip()
+            # Re-check INSIDE the lock: another process may have mounted
+            # it while we waited on the flock.
+            try:
+                r = subprocess.run(
+                    ['findmnt', '-n', '-o', 'SOURCE', path],
+                    capture_output=True, text=True, timeout=5)
+            except (subprocess.SubprocessError, OSError) as e:
+                if expect_existing:
+                    raise ExistingVolumeUnavailableError(
+                        'Cannot inspect an owned app volume mount') from e
+                raise
+            if r.returncode == 0 and r.stdout.strip():
+                expected_source = (
+                    os.path.realpath(r.stdout.strip())
+                    == os.path.realpath(lv_path))
+                if not expected_source:
+                    if expect_existing:
+                        raise ExistingVolumeUnavailableError(
+                            'Owned app path is mounted from an unexpected '
+                            'device')
+                    if not capped and not allow_create:
+                        return True
+                    log('mqtt',
+                        'Dedicated-volume path is mounted from an unexpected '
+                        'device; leaving it mounted without claiming success')
+                    return False
+                if not self._remember_owned_volume(path):
+                    # Compatibility for already-provisioned devices: an
+                    # untagged deterministic LV remains usable and is never
+                    # eligible for automatic reclaim. A later reconcile can
+                    # retry attaching the tags.
+                    log('mqtt',
+                        'Cannot attach ownership metadata to existing app '
+                        'volume; preserving it without automatic reclaim')
+                if not capped:
+                    return True
+                desired_size = self._desired_volume_size(path)
+                actual_size = self._lv_virtual_size(
+                    f'{self.STORAGE_VG}/{lv_name}')
+                if (desired_size is None or actual_size is None
+                        or actual_size > desired_size):
+                    log('mqtt',
+                        'Existing volume exceeds or cannot confirm its cap; '
+                        'leaving it mounted without claiming enforcement')
+                    return False
+                return True
+            if r.returncode != 1:
+                if expect_existing:
+                    raise ExistingVolumeUnavailableError(
+                        'Cannot inspect an owned app volume mount')
+                log('mqtt',
+                    'Cannot inspect per-volume mount; '
+                    'using default app storage')
+                return False
+
+            # The /dev symlink is not authoritative: an inactive LV can be
+            # present in LVM metadata without a device node. Authoritative
+            # pre-create state is also what makes ambiguous timeout cleanup
+            # safe - we only remove an LV proven absent before our command.
+            lv_exists = self._lv_metadata_exists(lv_name)
+            if lv_exists is None:
+                if expect_existing:
+                    raise ExistingVolumeUnavailableError(
+                        'Cannot inspect an owned app volume')
+                log('mqtt',
+                    'Cannot inspect per-volume LV metadata; '
+                    'using default app storage')
+                return False
+
+            if expect_existing and not lv_exists:
+                raise ExistingVolumeUnavailableError(
+                    'Owned app volume is missing from LVM metadata')
+
+            # Existing dir with files on the default LV -> legacy install.
+            # Never hide divergent default-LV data with an owned LV.
+            if os.path.isdir(path) and os.listdir(path):
+                if lv_exists:
+                    raise ExistingVolumeUnavailableError(
+                        'Owned app volume conflicts with data at its mount path')
+                log('mqtt',
+                    f'Legacy data at {path}, skipping per-volume LV mount')
+                return False
+
+            if not lv_exists and not allow_create:
+                return False
+
+            desired_size = None
+            cap_enforced = True
+            if not lv_exists:
+                desired_size = self._desired_volume_size(path)
+                if desired_size is None:
+                    return False
+            elif capped:
+                desired_size = self._desired_volume_size(path)
+                actual_size = (
+                    self._lv_virtual_size(f'{self.STORAGE_VG}/{lv_name}')
+                    if desired_size is not None else None)
+                if (desired_size is None or actual_size is None
+                        or actual_size > desired_size):
+                    cap_enforced = False
+                    log('mqtt',
+                        'Existing volume exceeds or cannot confirm its cap; '
+                        'preserving its data and reporting a warning')
+
+            created_here = False
+            if not lv_exists:
                 # Fair-share containment: a capped volume's thin LV gets a
                 # virtualsize of pct% of the pool. A thin LV can't map more
                 # physical blocks than its virtualsize, so this guarantees a
                 # (100-pct)% pool margin and ENOSPC lands only on this
                 # volume - no quota machinery needed. Uncapped -> full pool.
-                vsize = pool_size
-                cap_pct = self._volume_caps.get(path)
-                if cap_pct:
-                    try:
-                        vsize = str(int(int(pool_size) * float(cap_pct) / 100))
-                    except (ValueError, TypeError):
-                        vsize = pool_size
-                r = subprocess.run(
-                    ['lvcreate', '--thin', '--virtualsize', f'{vsize}B',
-                     '-n', lv_name, f'{self.STORAGE_VG}/{self.STORAGE_POOL}'],
-                    capture_output=True, text=True, timeout=15)
+                lv_ref = f'{self.STORAGE_VG}/{lv_name}'
+                try:
+                    r = subprocess.run(
+                        ['lvcreate', '--thin', '--virtualsize',
+                         f'{desired_size}B', '-n', lv_name,
+                         f'{self.STORAGE_VG}/{self.STORAGE_POOL}'],
+                        capture_output=True, text=True, timeout=15)
+                except (subprocess.SubprocessError, OSError):
+                    # A timed-out lvcreate may have completed in LVM before
+                    # its client was killed. This LV was confirmed absent
+                    # immediately above, so it is safe to attempt removal.
+                    self._require_new_volume_cleanup(lv_ref)
+                    raise
                 if r.returncode != 0:
                     log('mqtt', f'per-volume LV create failed for {path}: {r.stderr}')
-                    return
+                    self._require_new_volume_cleanup(lv_ref)
+                    return False
+                if capped:
+                    actual_size = self._lv_virtual_size(lv_ref)
+                    if actual_size is None or actual_size > desired_size:
+                        log('mqtt',
+                            'Created volume size cannot safely enforce cap; '
+                            'removing it and using default app storage')
+                        self._require_new_volume_cleanup(lv_ref)
+                        return False
                 # XFS for new volumes: dynamic inode allocation -> no
                 # ~58 GiB upfront inode-table tax that ext4 paid on these
                 # full-pool-size LVs. (No -L: the LV name exceeds XFS's
                 # 12-char label limit; the dm path identifies it anyway.)
                 # Existing ext4 LVs are untouched - we only mkfs on create.
-                r = subprocess.run(
-                    ['mkfs.xfs', '-q', lv_path],
-                    capture_output=True, text=True, timeout=60)
+                try:
+                    r = subprocess.run(
+                        ['mkfs.xfs', '-q', lv_path],
+                        capture_output=True, text=True, timeout=60)
+                except (subprocess.SubprocessError, OSError):
+                    self._require_new_volume_cleanup(lv_ref)
+                    raise
                 if r.returncode != 0:
                     log('mqtt', f'mkfs.xfs failed on {lv_path}: {r.stderr}')
-                    return
+                    # Do not strand an unformatted LV. Removing only the LV
+                    # created in this invocation makes the next reconcile a
+                    # clean retry without ever formatting a pre-existing LV.
+                    self._require_new_volume_cleanup(lv_ref)
+                    return False
+                created_here = True
                 log('mqtt', f'Created per-volume LV {lv_name} (xfs) for {path}')
 
-            os.makedirs(path, mode=0o755, exist_ok=True)
-            # mount can stall on thin-pool metadata ops when the pool's
-            # under load (Frigate-class write pressure, restore, big
-            # docker pull). 60s gives the kernel enough headroom; the
-            # whole state-apply retries on failure anyway.
-            r = subprocess.run(
-                ['mount', '-o', self._fs_mount_opts(lv_path), lv_path, path],
-                capture_output=True, text=True, timeout=60)
+            try:
+                os.makedirs(path, mode=0o755, exist_ok=True)
+                # Mount can stall on thin-pool metadata ops when the pool is
+                # under load. 60s gives the kernel enough headroom.
+                mount_opts = self._fs_mount_opts(lv_path)
+                r = subprocess.run(
+                    ['mount', '-o', mount_opts, lv_path, path],
+                    capture_output=True, text=True, timeout=60)
+            except (subprocess.SubprocessError, OSError) as e:
+                if created_here:
+                    mounted = self._resolve_new_volume_mount_failure(
+                        path, lv_name)
+                    if mounted:
+                        return cap_enforced
+                    return False
+                raise ExistingVolumeUnavailableError(
+                    'Owned app volume mount preparation failed') from e
             if r.returncode != 0:
                 log('mqtt', f'mount {lv_path} -> {path} failed: {r.stderr}')
-                return
+                if created_here:
+                    mounted = self._resolve_new_volume_mount_failure(
+                        path, lv_name)
+                    if mounted:
+                        return cap_enforced
+                    return False
+                raise ExistingVolumeUnavailableError(
+                    'Owned app volume could not be mounted')
             log('mqtt', f'Mounted {lv_name} at {path}')
+            if not self._remember_owned_volume(path):
+                if created_here:
+                    self._remove_mounted_new_volume(path, lv_name)
+                    return False
+                # Never make an existing device unavailable just because an
+                # upgrade could not attach new metadata. Untagged LVs are
+                # deliberately excluded from reclaim, so this fails safe.
+                log('mqtt',
+                    'Cannot attach ownership metadata to existing app '
+                    'volume; preserving it without automatic reclaim')
+            return cap_enforced
 
     def boot_mount(self):
         """Mount all per-app volumes from persisted desired-state, before
@@ -944,7 +1403,12 @@ class Storage:
         config). No MQTT, no network: reads the cached desired-state.json
         and reuses the shared flock'd mount primitive. Idempotent - the
         running reconciler re-applies the same paths for runtime
-        add/remove."""
+        add/remove.
+
+        Keep this fast boot path limited to mounting live volumes. Reclaim,
+        pruning, migration, and other housekeeping belong to normal runtime
+        reconciliation and must not delay container startup.
+        """
         if not os.path.exists(self.DESIRED_STATE_PATH):
             log('mqtt', '[boot-mount] no desired-state.json; nothing to mount')
             return
@@ -959,41 +1423,79 @@ class Storage:
         # Mount backup-flagged paths AND fair-share-capped paths (e.g.
         # Frigate media) - both get a per-volume LV that must be mounted
         # before docker.
-        paths = list(self._volume_caps.keys())
+        backup_paths = set()
         for inst in backup.get('instances', []):
-            paths.extend(inst.get('paths', []))
+            backup_paths.update(inst.get('paths', []))
+        managed_paths = set(self._volume_caps.keys()) | backup_paths
+        app_paths = {
+            volume.get('path')
+            for volume in state.get('app_volumes', [])
+            if isinstance(volume, dict) and volume.get('path')
+        }
+        metadata_names = self._lv_metadata_names()
+        metadata_available = metadata_names is not None
+        if not metadata_available:
+            log('mqtt',
+                '[boot-mount] cannot inventory dedicated app volumes; '
+                'attempting existing volumes independently')
+        thin_pool_available = (
+            metadata_available and self.STORAGE_POOL in metadata_names)
+        paths = managed_paths | app_paths
         seen = set()
-        for p in paths:
+        for p in sorted(paths):
             if not p or p in seen:
                 continue
             seen.add(p)
+            managed = p in managed_paths
+            existing_lv = (
+                self._volume_lv_name(p) in metadata_names
+                if metadata_available else False)
+            if metadata_available and not managed and not existing_lv:
+                continue
             try:
-                self._ensure_volume_lv(p)
+                # A successful inventory authorizes normal boot preparation,
+                # including creation for currently managed paths. If the
+                # inventory failed, only attempt to discover and mount an
+                # existing LV. Never create or delete storage from uncertain
+                # metadata, and isolate each failure to its own app path.
+                prepared = self._ensure_volume_lv(
+                    p, allow_create=managed and metadata_available,
+                    expect_existing=(
+                        existing_lv if metadata_available else False))
+                if (not prepared and p in backup_paths
+                        and thin_pool_available
+                        and self._dedicated_volume_mount_status(p) is not True):
+                    raise ExistingVolumeUnavailableError(
+                        'Dedicated backup volume is unavailable at boot')
+                if not prepared and p in self._volume_caps:
+                    log('mqtt',
+                        '[boot-mount] storage cap not enforced; '
+                        'using default app storage')
             except Exception as e:
                 log('mqtt', f'[boot-mount] {p} failed: {e}')
         log('mqtt', f'[boot-mount] processed {len(seen)} volume(s) before docker')
 
     def _reclaim_deleted_instance_lvs(self, old_state, new_state,
                                        new_backup_paths):
-        """lvremove per-volume LVs whose owning app instance is gone from
-        desired-state, so a deleted app frees its pool space instead of
-        leaking an orphaned LV.
+        """Retry removal of Reefy-tagged LVs after their whole app is gone.
 
-        Conservative by design (this deletes data): derive the set of
-        'live' instance uuids from EVERY apps/<uuid>/ path anywhere in the
-        new state (backup paths + app_volumes + instances, scanned
-        recursively, schema-agnostic). Only reclaim a removed backup path
-        whose uuid is in NONE of them - i.e. the whole instance is gone.
-        A volume that merely un-backup-flags keeps its uuid live elsewhere
-        in the state, so it is never reclaimed."""
+        Active and previous desired-state paths lazily tag deterministic LVs,
+        which adopts already-provisioned devices without a sidecar registry.
+        Unknown or untagged legacy LVs are always preserved. A failed removal
+        retains its LVM tags and is naturally retried on the next reconcile.
+        """
         if not self._has_thin_pool():
             return
+        old_state = old_state or {}
+        new_state = new_state or {}
+
         old_paths = set()
         for inst in (old_state.get('backup') or {}).get('instances', []):
             old_paths.update(inst.get('paths', []))
-        removed = old_paths - new_backup_paths
-        if not removed:
-            return
+        old_paths.update((old_state.get('volume_caps') or {}).keys())
+        new_managed_paths = (
+            set(new_backup_paths or set())
+            | set((new_state.get('volume_caps') or {}).keys()))
 
         def _collect_uuids(obj, acc):
             if isinstance(obj, str):
@@ -1008,31 +1510,105 @@ class Storage:
                     _collect_uuids(v, acc)
 
         live = set()
-        for p in new_backup_paths:
+        for p in new_managed_paths:
             _collect_uuids(p, live)
         _collect_uuids(new_state.get('app_volumes', []), live)
-        _collect_uuids(new_state.get('instances', []), live)
+        for instance in new_state.get('instances', []):
+            if isinstance(instance, dict):
+                for key in ('instance_uuid', 'uuid', 'instance_name'):
+                    identifier = instance.get(key)
+                    if identifier:
+                        live.add(str(identifier))
+            _collect_uuids(instance, live)
 
         with self._volume_lock():
-            for path in removed:
-                m = re.search(r'/apps/([^/]+)/', path)
-                uuid = m.group(1) if m else None
-                if not uuid or uuid in live:
-                    continue  # instance still present (or unparseable) - keep
+            metadata = self._lv_metadata_with_tags()
+            if metadata is None:
+                log('mqtt',
+                    'Skipping volume reclaim while LVM metadata is '
+                    'unavailable')
+                return
+
+            # Backward compatibility: adopt deterministic LVs referenced by
+            # either side of the desired-state transition. An unmatched
+            # untagged LV from an older device is preserved indefinitely.
+            seed_paths = old_paths | new_managed_paths
+            for volume in old_state.get('app_volumes', []):
+                if isinstance(volume, dict) and volume.get('path'):
+                    seed_paths.add(volume['path'])
+            for volume in new_state.get('app_volumes', []):
+                if isinstance(volume, dict) and volume.get('path'):
+                    seed_paths.add(volume['path'])
+            for path in sorted(seed_paths):
                 lv_name = self._volume_lv_name(path)
-                if subprocess.run(
-                        ['lvs', f'{self.STORAGE_VG}/{lv_name}'],
-                        capture_output=True).returncode != 0:
-                    continue  # LV already gone
-                subprocess.run(['umount', path],
-                               capture_output=True, text=True, timeout=30)
-                r = subprocess.run(
-                    ['lvremove', '-f', f'{self.STORAGE_VG}/{lv_name}'],
-                    capture_output=True, text=True, timeout=30)
-                if r.returncode == 0:
-                    log('mqtt', f'Reclaimed LV {lv_name} (instance {uuid} deleted)')
+                if (lv_name in metadata
+                        and self._valid_owned_volume_path(path)):
+                    self._remember_owned_volume(path)
+
+            metadata = self._lv_metadata_with_tags()
+            if metadata is None:
+                return
+            live_owner_tags = {
+                tag for tag in (
+                    self._owner_tag_for_instance(identifier)
+                    for identifier in live)
+                if tag
+            }
+
+            for lv_name, tags in sorted(metadata.items()):
+                if (not self.MANAGED_VOLUME_RE.fullmatch(lv_name)
+                        or self.MANAGED_VOLUME_TAG not in tags):
+                    continue
+                owner_tags = {
+                    tag for tag in tags
+                    if tag.startswith(self.OWNER_TAG_PREFIX)
+                }
+                if not owner_tags or owner_tags & live_owner_tags:
+                    continue
+                lv_path = f'/dev/{self.STORAGE_VG}/{lv_name}'
+                try:
+                    find_mount = subprocess.run(
+                        ['findmnt', '-n', '-o', 'TARGET', '--source', lv_path],
+                        capture_output=True, text=True, timeout=5)
+                except (subprocess.SubprocessError, OSError):
+                    log('mqtt',
+                        f'Cannot reclaim {lv_name}: mount inspection failed')
+                    continue
+                if find_mount.returncode == 0:
+                    targets = [target.strip()
+                               for target in find_mount.stdout.splitlines()
+                               if target.strip()]
+                    failed = False
+                    for target in targets:
+                        try:
+                            unmount = subprocess.run(
+                                ['umount', target], capture_output=True,
+                                text=True, timeout=30)
+                        except (subprocess.SubprocessError, OSError):
+                            failed = True
+                            break
+                        if unmount.returncode != 0:
+                            failed = True
+                            break
+                    if failed:
+                        log('mqtt',
+                            f'Cannot reclaim {lv_name}: unmount failed')
+                        continue
+                elif find_mount.returncode != 1:
+                    log('mqtt',
+                        f'Cannot reclaim {lv_name}: mount inspection failed')
+                    continue
+                try:
+                    subprocess.run(
+                        ['lvremove', '-f', f'{self.STORAGE_VG}/{lv_name}'],
+                        capture_output=True, text=True, timeout=30)
+                except (subprocess.SubprocessError, OSError):
+                    pass
+                present = self._lv_metadata_exists(lv_name)
+                if present is False:
+                    log('mqtt', f'Reclaimed orphaned app LV {lv_name}')
                 else:
-                    log('mqtt', f'lvremove {lv_name} failed: {r.stderr}')
+                    log('mqtt', f'lvremove {lv_name} did not remove metadata')
 
     def _find_new_storage_disks(self, desired_devices):
         """Compare desired device list against current VG PVs to find new disks."""
@@ -1070,6 +1646,26 @@ class Storage:
                 f'VG {self.STORAGE_VG} has no PVs to establish LUKS '
                 f'sector size')
         return self._require_common_mapper_sector_size(mapper_paths)
+
+    def _vg_extent_size(self):
+        """Return the VG allocation extent in bytes."""
+        result = subprocess.run(
+            ['vgs', '--noheadings', '--nosuffix', '--units', 'b',
+             '-o', 'vg_extent_size', self.STORAGE_VG],
+            capture_output=True, text=True, timeout=10)
+        raw_size = result.stdout.strip().lstrip('<>')
+        if result.returncode != 0 or not raw_size:
+            raise RuntimeError(
+                f'Cannot inspect VG {self.STORAGE_VG} extent size')
+        try:
+            extent_size = int(Decimal(raw_size))
+        except (InvalidOperation, TypeError, ValueError, OverflowError) as e:
+            raise RuntimeError(
+                f'Invalid VG {self.STORAGE_VG} extent size') from e
+        if extent_size <= 0:
+            raise RuntimeError(
+                f'Invalid VG {self.STORAGE_VG} extent size')
+        return extent_size
 
     def _extend_storage(self, new_disks):
         """Add new disks to existing VG and extend the LV + filesystem online."""
@@ -1295,8 +1891,17 @@ class Storage:
         thin pool is absent (legacy storage layout) or if the path
         already has data on the default LV (legacy install). See
         PLAN-backup.md §"Storage Layout".
+
+        Returns path-free warning details for capped paths that fell back to
+        default storage.
         """
         backup_paths = backup_paths or set()
+        cap_warnings = {}
+        metadata_names = self._lv_metadata_names()
+        if metadata_names is None:
+            raise ExistingVolumeUnavailableError(
+                'Cannot inspect dedicated app volumes')
+        thin_pool_available = self.STORAGE_POOL in metadata_names
         for vol in app_volumes:
             path = vol.get('path', '')
             uid = vol.get('uid', 0)
@@ -1306,8 +1911,39 @@ class Storage:
             # snapshot them) AND for fair-share-capped paths (so a cap
             # can be enforced via the LV's virtualsize - e.g. Frigate
             # media, which isn't backed up but must not eat the pool).
-            if path in backup_paths or path in self._volume_caps:
-                self._ensure_volume_lv(path)
+            managed = path in backup_paths or path in self._volume_caps
+            capped = path in self._volume_caps
+            existing_lv = self._volume_lv_name(path) in metadata_names
+            prepared = False
+            expected = existing_lv
+            if managed or existing_lv:
+                try:
+                    prepared = self._ensure_volume_lv(
+                        path, allow_create=managed,
+                        expect_existing=expected)
+                except ExistingVolumeUnavailableError:
+                    raise
+                except (RuntimeError, ValueError,
+                        subprocess.SubprocessError, OSError) as e:
+                    if expected:
+                        raise ExistingVolumeUnavailableError(
+                            'Owned app volume preparation failed') from e
+                    if not capped or path in backup_paths:
+                        raise
+                    prepared = False
+                    log('mqtt',
+                        'Capped volume preparation failed; '
+                        'using default app storage')
+            if (not prepared and path in backup_paths
+                    and thin_pool_available
+                    and self._dedicated_volume_mount_status(path) is not True):
+                raise RuntimeError(
+                    'Dedicated backup volume preparation failed')
+            if capped and not prepared:
+                warning = self._cap_warning_for_path(path)
+                if warning:
+                    cap_warnings[(warning['instance_uuid'], warning['volume'])] = (
+                        warning)
             if not os.path.exists(path):
                 os.makedirs(path, mode=0o755, exist_ok=True)
                 log('mqtt', f'Created app dir: {path} (uid={uid})')
@@ -1332,14 +1968,22 @@ class Storage:
                     continue
                 os.makedirs(os.path.dirname(file_path), exist_ok=True)
                 try:
-                    log('mqtt', f'Downloading {f['url']} -> {file_path}')
+                    log('mqtt', f'Downloading app file -> {file_path}')
                     subprocess.run(
                         ['curl', '-fSL', '-o', file_path, f['url']],
                         capture_output=True, timeout=600, check=True
                     )
                     log('mqtt', f'Downloaded: {file_path}')
+                except subprocess.CalledProcessError as e:
+                    log('mqtt',
+                        f'Download failed for {file_path} '
+                        f'(curl exit {e.returncode})')
+                except subprocess.TimeoutExpired:
+                    log('mqtt', f'Download timed out for {file_path}')
                 except Exception as e:
-                    log('mqtt', f'Download failed for {f['url']}: {e}')
+                    log('mqtt',
+                        f'Download failed for {file_path} '
+                        f'({type(e).__name__})')
 
             # Ensure correct ownership (only chown top-level dir to avoid
             # timeout on large directories like frigate media)
@@ -1351,6 +1995,8 @@ class Storage:
             except Exception:
                 subprocess.run(['chown', f'{uid}:{uid}', path],
                                capture_output=True, timeout=10)
+
+        return [cap_warnings[key] for key in sorted(cap_warnings)]
 
 
 def main_boot_mount():
