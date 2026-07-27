@@ -81,6 +81,11 @@ def get_device_uuid():
     return None
 
 
+def mqtt_client_id(device_uuid):
+    """Stable per-device identity that cannot collide across machines."""
+    return f'reefy-terminal-{device_uuid}'
+
+
 def _get_container_shell(container):
     """Read APP_SHELL env var from the container (set by desired-state
     from app.json "shell" field). Returns the shell command or None."""
@@ -348,7 +353,7 @@ def main():
 
     client = mqtt.Client(
         callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-        client_id=f'reefy-terminal-{os.getpid()}',
+        client_id=mqtt_client_id(uuid),
         transport=transport,
     )
 

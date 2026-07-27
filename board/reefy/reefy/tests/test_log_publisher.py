@@ -97,3 +97,13 @@ class JournalPayloadTests(unittest.TestCase):
             '_SYSTEMD_UNIT': 'reefy-log-publisher.service',
         }))
         self.assertIsNone(self.publisher.journal_entry_payload({'MESSAGE': ''}))
+
+    def test_mqtt_client_id_is_unique_per_device(self):
+        first = self.publisher.mqtt_client_id(
+            '11111111-1111-4111-8111-111111111111')
+        second = self.publisher.mqtt_client_id(
+            '22222222-2222-4222-8222-222222222222')
+
+        self.assertEqual(
+            first, 'reefy-log-11111111-1111-4111-8111-111111111111')
+        self.assertNotEqual(first, second)

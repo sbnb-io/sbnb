@@ -1069,7 +1069,12 @@ def run_cycle(executor: cf.ThreadPoolExecutor) -> list[dict]:
 
 # ── MQTT plumbing ─────────────────────────────────────────────────
 
-def create_mqtt_client(config: dict) -> mqtt.Client:
+def mqtt_client_id(device_uuid: str) -> str:
+    """Stable per-device identity that cannot collide across machines."""
+    return f'reefy-metrics-{device_uuid}'
+
+
+def create_mqtt_client(config: dict, device_uuid: str) -> mqtt.Client:
     # Defaults match prod; per-deployment values come from
     # /mnt/reefy/mqtt/mqtt.conf which the reconciler writes early in
     # boot. These fallbacks only fire if the conf file is empty.
@@ -1083,7 +1088,7 @@ def create_mqtt_client(config: dict) -> mqtt.Client:
 
     client = mqtt.Client(
         callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-        client_id=f'reefy-metrics-publisher-{os.getpid()}',
+        client_id=mqtt_client_id(device_uuid),
         transport=transport,
     )
     client.tls_set(
@@ -1145,7 +1150,7 @@ def main():
 
     while True:
         try:
-            client = create_mqtt_client(config)
+            client = create_mqtt_client(config, device_uuid)
             break
         except Exception as e:
             print(f'[metrics-publisher] MQTT connect failed: {e}; retrying in 10s')

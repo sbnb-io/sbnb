@@ -52,6 +52,16 @@ class TerminalBridgeSubscriberTests(unittest.TestCase):
         self.assertEqual(session['subscribers'], {'tab-a': True})
         self.assertEqual(session['last_activity'], 20)
 
+    def test_mqtt_client_id_is_unique_per_device(self):
+        first = bridge.mqtt_client_id(
+            '11111111-1111-4111-8111-111111111111')
+        second = bridge.mqtt_client_id(
+            '22222222-2222-4222-8222-222222222222')
+
+        self.assertEqual(
+            first, 'reefy-terminal-11111111-1111-4111-8111-111111111111')
+        self.assertNotEqual(first, second)
+
     def test_multiple_client_ids_count_as_multiple_viewers(self):
         self.assertEqual(
             bridge.subscribe_session('app1', {'client_id': 'tab-a'}, now=10),

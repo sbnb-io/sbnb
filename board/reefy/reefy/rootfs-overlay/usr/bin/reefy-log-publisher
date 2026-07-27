@@ -84,7 +84,12 @@ def handle_control(payload):
             print(f"[log-publisher] Unsubscribe (active={_subscribers})")
 
 
-def create_mqtt_client(config, control_topic):
+def mqtt_client_id(device_uuid):
+    """Stable per-device identity that cannot collide across machines."""
+    return f'reefy-log-{device_uuid}'
+
+
+def create_mqtt_client(config, control_topic, device_uuid):
     broker = config.get('MQTT_BROKER', 'mqtt.reefy.ai')
     port = int(config.get('MQTT_PORT', '443'))
     transport = config.get('MQTT_TRANSPORT', 'websockets')
@@ -95,7 +100,7 @@ def create_mqtt_client(config, control_topic):
 
     client = mqtt.Client(
         callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-        client_id=f'reefy-log-publisher-{os.getpid()}',
+        client_id=mqtt_client_id(device_uuid),
         transport=transport,
     )
 
@@ -236,7 +241,7 @@ def main():
     # Connect MQTT
     while True:
         try:
-            client = create_mqtt_client(config, control_topic)
+            client = create_mqtt_client(config, control_topic, device_uuid)
             break
         except Exception as e:
             error = redact_log_message(e)

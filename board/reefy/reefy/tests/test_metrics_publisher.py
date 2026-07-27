@@ -15,6 +15,21 @@ PUBLISHER_PATH = os.path.join(os.path.dirname(__file__), '..',
                               'reefy-metrics-publisher')
 
 
+class MqttIdentityTests(unittest.TestCase):
+    def setUp(self):
+        self.publisher = _load_publisher()
+
+    def test_mqtt_client_id_is_unique_per_device(self):
+        first = self.publisher.mqtt_client_id(
+            '11111111-1111-4111-8111-111111111111')
+        second = self.publisher.mqtt_client_id(
+            '22222222-2222-4222-8222-222222222222')
+
+        self.assertEqual(
+            first, 'reefy-metrics-11111111-1111-4111-8111-111111111111')
+        self.assertNotEqual(first, second)
+
+
 def _load_publisher():
     fake_paho = types.ModuleType('paho')
     fake_mqtt_pkg = types.ModuleType('paho.mqtt')
