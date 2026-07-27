@@ -43,6 +43,15 @@ STORAGE_POOL = 'reefy_pool'
 POOL_FILL_WARN_PCT = 80
 POOL_FILL_FAIL_PCT = 95
 
+REPO_ACCESS_DEADLINE_S = 300
+REPO_INIT_DEADLINE_S = 300
+REPO_INFO_ATTEMPT_TIMEOUT_S = 30
+REPO_INIT_ATTEMPT_TIMEOUT_S = 180
+REPO_RETRY_DELAY_S = 15
+MAINTENANCE_DEADLINE_S = 300
+STATUS_PUBLISH_ATTEMPTS = 3
+STATUS_PUBLISH_RETRY_DELAY_S = 2
+
 
 def publish_status(payload):
     """Report backup status via MQTT on the unified instance/status
@@ -51,13 +60,25 @@ def publish_status(payload):
     device.backup.completed SSE event."""
     payload = dict(payload)
     payload.setdefault('action', 'backup')
-    try:
-        subprocess.run(
-            ['reefy-mqtt-pub', 'instance/status', json.dumps(payload)],
-            capture_output=True, timeout=15
-        )
-    except Exception:
-        pass
+    for attempt in range(1, STATUS_PUBLISH_ATTEMPTS + 1):
+        try:
+            result = subprocess.run(
+                ['reefy-mqtt-pub', 'instance/status', json.dumps(payload)],
+                capture_output=True, timeout=15
+            )
+        except Exception:
+            result = None
+        if result is not None and result.returncode == 0:
+            return True
+        if result is None:
+            reason = 'command error'
+        else:
+            reason = f'exit {result.returncode}'
+        print(f'[backup] Status publish failed '
+              f'(attempt {attempt}/{STATUS_PUBLISH_ATTEMPTS}, {reason})')
+        if attempt < STATUS_PUBLISH_ATTEMPTS:
+            time.sleep(STATUS_PUBLISH_RETRY_DELAY_S)
+    return False
 
 
 def run_borg(args, env, timeout=21600, retries=10, retry_delay=60, cwd=None):
@@ -72,11 +93,23 @@ def run_borg(args, env, timeout=21600, retries=10, retry_delay=60, cwd=None):
         'not a valid repository', 'repository does not exist',
     )
     for attempt in range(retries):
-        result = subprocess.run(
-            ['borg'] + args,
-            capture_output=True, text=True,
-            timeout=timeout, env=env, cwd=cwd
-        )
+        try:
+            result = subprocess.run(
+                ['borg'] + args,
+                capture_output=True, text=True,
+                timeout=timeout, env=env, cwd=cwd
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout or ''
+            stderr = exc.stderr or ''
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode(errors='replace')
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode(errors='replace')
+            timeout_error = f'borg {args[0]} timed out after {timeout}s'
+            stderr = f'{stderr.rstrip()}\n{timeout_error}'.lstrip()
+            print(f'[backup] {timeout_error}')
+            return False, stdout, stderr
         if result.returncode == 0:
             return True, result.stdout, result.stderr
         err_lower = (result.stderr or '').lower()
@@ -87,6 +120,122 @@ def run_borg(args, env, timeout=21600, retries=10, retry_delay=60, cwd=None):
             print(f"[backup] borg {args[0]} failed (attempt {attempt + 1}/{retries}), retrying in {retry_delay}s: {result.stderr.strip()[:100]}")
             time.sleep(retry_delay)
     return False, result.stdout, result.stderr
+
+
+def _repo_error_kind(stderr):
+    """Classify a failed repo readiness command without exposing a new
+    external status contract."""
+    err_lower = (stderr or '').lower()
+    if ('not a valid repository' in err_lower
+            or ('repository' in err_lower and 'does not exist' in err_lower)):
+        return 'missing'
+    if 'repository already exists' in err_lower:
+        return 'exists'
+    if any(pattern in err_lower for pattern in (
+            'invalid passphrase', 'wrong passphrase',
+            'passphrase supplied', 'incorrect passphrase',
+            'quota exceeded', 'no space left',
+            'invalid location', 'repository path not allowed',
+            'identity file', 'load key', 'bad permissions')):
+        return 'fatal'
+    return 'transient'
+
+
+def _publish_repo_error(instance_uuid, phase, stderr):
+    if phase == 'init':
+        message = 'repo init failed'
+        print(f'[backup] Failed to init repo: {(stderr or "").strip()[:200]}')
+    else:
+        message = 'repo access failed'
+        print('[backup] Cannot access repo before readiness deadline: '
+              f'{(stderr or "").strip()[:200]}')
+    publish_status({
+        'instance_uuid': instance_uuid,
+        'status': 'error',
+        'message': message,
+    })
+
+
+def ensure_repo_ready(repo_path, env, instance_uuid):
+    """Wait for remote repo access and initialize a missing repository.
+
+    DNS, routing, and newly registered SSH keys may take a short time to
+    become usable during adoption. Access probing and initialization each get
+    a bounded readiness window, with shorter per-command limits inside them.
+    """
+    deadline = time.monotonic() + REPO_ACCESS_DEADLINE_S
+    phase = 'info'
+    init_deadline_started = False
+    attempt = 0
+    stderr = ''
+
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _publish_repo_error(instance_uuid, phase, stderr)
+            return False
+
+        attempt += 1
+        if phase == 'info':
+            args = ['info', repo_path]
+            command_timeout = REPO_INFO_ATTEMPT_TIMEOUT_S
+        else:
+            args = ['init', '--encryption=repokey-blake2', repo_path]
+            command_timeout = REPO_INIT_ATTEMPT_TIMEOUT_S
+            print(f'[backup] Initializing borg repo for {instance_uuid} '
+                  f'(attempt {attempt})')
+
+        attempt_timeout = max(1, min(command_timeout, int(remaining)))
+        ok, _, stderr = run_borg(
+            args, env, timeout=attempt_timeout, retries=1
+        )
+        if ok:
+            return True
+
+        error_kind = _repo_error_kind(stderr)
+        if phase == 'info' and error_kind == 'missing':
+            phase = 'init'
+            attempt = 0
+            if not init_deadline_started:
+                deadline = time.monotonic() + REPO_INIT_DEADLINE_S
+                init_deadline_started = True
+            continue
+        if phase == 'init' and error_kind == 'exists':
+            phase = 'info'
+            attempt = 0
+            continue
+        if error_kind == 'fatal':
+            _publish_repo_error(instance_uuid, phase, stderr)
+            return False
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _publish_repo_error(instance_uuid, phase, stderr)
+            return False
+        delay = min(REPO_RETRY_DELAY_S, remaining)
+        print(f'[backup] borg {phase} not ready; retrying in '
+              f'{int(delay)}s')
+        time.sleep(delay)
+
+
+def run_maintenance_borg(args, env, timeout, deadline):
+    """Run one best-effort maintenance command within a shared deadline."""
+    remaining = int(deadline - time.monotonic())
+    if remaining <= 0:
+        print(f'[backup] Maintenance deadline reached; skipping {args[0]}')
+        return False, '', 'maintenance deadline reached'
+    timeout = max(1, min(timeout, remaining))
+    try:
+        ok, stdout, stderr = run_borg(
+            args, env, timeout=timeout, retries=1
+        )
+    except Exception as exc:
+        print(f'[backup] Maintenance borg {args[0]} failed: {exc}')
+        return False, '', str(exc)
+    if not ok:
+        print(f'[backup] Maintenance borg {args[0]} failed: '
+              f'{(stderr or "").strip()[:200]}')
+    return ok, stdout, stderr
 
 
 def thin_pool_present():
@@ -227,15 +376,55 @@ def snapshot_volume(path, instance_uuid, ts):
     return snap_name, snap_mnt
 
 
+def _snapshot_lv_absent(snap_name):
+    """Confirm through LVM that a snapshot LV no longer exists."""
+    try:
+        result = subprocess.run(
+            ['lvs', '--noheadings', '-o', 'lv_name',
+             '--select', f'lv_name={snap_name}', STORAGE_VG],
+            capture_output=True, text=True, timeout=5)
+    except Exception as exc:
+        print(f'[backup] Could not verify snapshot {snap_name}: {exc}')
+        return False
+    if result.returncode != 0:
+        print(f'[backup] Could not verify snapshot {snap_name}: '
+              f'{(result.stderr or "").strip()[:200]}')
+        return False
+    return snap_name not in {
+        line.strip() for line in result.stdout.splitlines() if line.strip()
+    }
+
+
 def release_snapshot(snap_name, snap_mnt):
     """Idempotent snapshot teardown - safe to call multiple times.
     Also rmdirs the per-instance parent dir if no sibling volumes
     remain (snap_mnt is /snapshots/{ts}_{iuuid}/{volname})."""
     if not snap_name:
-        return
-    subprocess.run(['umount', snap_mnt], capture_output=True, timeout=15)
-    subprocess.run(['lvremove', '-f', f'{STORAGE_VG}/{snap_name}'],
-                   capture_output=True, timeout=15)
+        return True
+    try:
+        unmount = subprocess.run(
+            ['umount', snap_mnt], capture_output=True, text=True, timeout=15)
+        if unmount.returncode != 0:
+            print(f'[backup] Snapshot unmount failed for {snap_name}: '
+                  f'{(unmount.stderr or "").strip()[:200]}')
+    except Exception as exc:
+        print(f'[backup] Snapshot unmount failed for {snap_name}: {exc}')
+
+    removed = False
+    try:
+        lvremove = subprocess.run(
+            ['lvremove', '-f', f'{STORAGE_VG}/{snap_name}'],
+            capture_output=True, text=True, timeout=15)
+        removed = lvremove.returncode == 0
+        if not removed:
+            print(f'[backup] Snapshot LV removal failed for {snap_name}: '
+                  f'{(lvremove.stderr or "").strip()[:200]}')
+    except Exception as exc:
+        print(f'[backup] Snapshot LV removal failed for {snap_name}: {exc}')
+
+    if not removed:
+        removed = _snapshot_lv_absent(snap_name)
+
     parent = os.path.dirname(snap_mnt)
     if os.path.isdir(snap_mnt):
         try:
@@ -247,6 +436,7 @@ def release_snapshot(snap_name, snap_mnt):
             os.rmdir(parent)
         except OSError:
             pass
+    return removed
 
 
 def backup_instance(inst, keep_last):
@@ -261,65 +451,37 @@ def backup_instance(inst, keep_last):
     key_path = os.path.join(BACKUP_DIR, iuuid, 'id_ed25519')
     if not os.path.exists(key_path):
         print(f"[backup] No SSH key for {iuuid}, skipping")
+        publish_status({
+            'instance_uuid': iuuid,
+            'status': 'error',
+            'message': 'backup SSH key missing',
+        })
         return False
 
     env = os.environ.copy()
     env['BORG_PASSPHRASE'] = passphrase
-    env['BORG_RSH'] = f'ssh -i {key_path} -o StrictHostKeyChecking=accept-new -o BatchMode=yes'
+    env['BORG_RSH'] = (
+        f'ssh -i {key_path} '
+        '-o StrictHostKeyChecking=accept-new '
+        '-o BatchMode=yes '
+        '-o ConnectTimeout=15 '
+        '-o ConnectionAttempts=1 '
+        '-o ServerAliveInterval=15 '
+        '-o ServerAliveCountMax=2'
+    )
     env['BORG_RELOCATED_REPO_ACCESS_IS_OK'] = 'yes'
     env['BORG_LOCK_WAIT'] = '21600'
 
     archive_name = f"{archive_prefix}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
     start_time = time.monotonic()
 
-    # Repo init if needed.
-    ok, _, stderr = run_borg(['info', repo_path], env)
-    if not ok:
-        if 'not a valid repository' in stderr or 'does not exist' in stderr or 'Repository' not in stderr:
-            # First-attempt borg init for a fresh repo can hit
-            # "Permission denied (publickey)" or "Connection closed by
-            # remote host" if BorgBase's SSH server hasn't picked up
-            # the just-registered key yet (server side does its own
-            # pre-flight via get_repo, but the GraphQL ack and SSH
-            # server propagation aren't atomic). Try a couple of times
-            # with backoff before giving up - these errors are normally
-            # in FATAL_PATTERNS so run_borg won't retry on its own.
-            init_attempts = 3
-            for attempt in range(1, init_attempts + 1):
-                print(f"[backup] Initializing borg repo for {iuuid} "
-                      f"(attempt {attempt}/{init_attempts})")
-                ok, _, stderr = run_borg(
-                    ['init', '--encryption=repokey-blake2', repo_path], env
-                )
-                if ok:
-                    break
-                err_lower = (stderr or '').lower()
-                transient = (
-                    'permission denied' in err_lower
-                    or 'connection closed' in err_lower
-                )
-                if not transient or attempt == init_attempts:
-                    print(f"[backup] Failed to init repo: {stderr}")
-                    publish_status({
-                        'instance_uuid': iuuid, 'status': 'error',
-                        'message': 'repo init failed',
-                    })
-                    return False
-                delay = 30 * attempt
-                print(f"[backup] init transient ({stderr.strip()[:80]}); "
-                      f"retrying in {delay}s")
-                time.sleep(delay)
-        else:
-            print(f"[backup] Cannot access repo after retries: {stderr.strip()[:200]}")
-            publish_status({
-                'instance_uuid': iuuid, 'status': 'error',
-                'message': 'repo access failed',
-            })
-            return False
+    if not ensure_repo_ready(repo_path, env, iuuid):
+        return False
 
     # Snapshot every volume, then borg-create from the snapshot mounts.
     # Held in a list so we can release in a single finally block.
     snapshots = []  # [(snap_name, snap_mnt, original_path)]
+    snapshots_released = True
     try:
         try:
             # One ts per backup run, shared across every volume of this
@@ -389,34 +551,28 @@ def backup_instance(inst, keep_last):
         # Release every snapshot we took, regardless of borg outcome.
         # CoW deltas die here so the pool gets its space back.
         for snap_name, snap_mnt, _ in snapshots:
-            release_snapshot(snap_name, snap_mnt)
+            try:
+                if not release_snapshot(snap_name, snap_mnt):
+                    snapshots_released = False
+            except Exception as exc:
+                snapshots_released = False
+                print(f'[backup] Snapshot release failed for {snap_name}: '
+                      f'{exc}')
+
+    if not snapshots_released:
+        publish_status({
+            'instance_uuid': iuuid,
+            'status': 'error',
+            'message': 'snapshot release failed',
+        })
+        return False
 
     print(f"[backup] Archive created: {archive_name}")
 
-    # Prune old archives, skipping pinned ones.
-    pinned = set(inst.get('pinned_archives', []))
-    if pinned:
-        print(f"[backup] Pruning (keep-last={keep_last}, {len(pinned)} pinned)")
-        ok, stdout, _ = run_borg(
-            ['list', '--prefix', f'{archive_prefix}-', '--format', '{name}{NL}', repo_path],
-            env, timeout=120
-        )
-        if ok and stdout.strip():
-            all_archives = sorted(stdout.strip().split('\n'))
-            unpinned = [a for a in all_archives if a not in pinned]
-            to_delete = unpinned[:-keep_last] if len(unpinned) > keep_last else []
-            for old_archive in to_delete:
-                print(f"[backup] Deleting {old_archive}")
-                run_borg(['delete', f'{repo_path}::{old_archive}'], env, timeout=120)
-    else:
-        print(f"[backup] Pruning (keep-last={keep_last})")
-        run_borg(
-            ['prune', '--prefix', f'{archive_prefix}-', '--keep-last', str(keep_last), repo_path],
-            env, timeout=300
-        )
-
-    run_borg(['compact', repo_path], env, timeout=300)
-
+    # The durable archive is the user-visible completion point. Report it
+    # after every snapshot has been released, before optional repository
+    # maintenance. A slow or failed prune/compact must not hide an archive
+    # that is already available for restore.
     duration = int(time.monotonic() - start_time)
     timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
     print(f"[backup] Complete: {iuuid} ({duration}s, size={archive_size})")
@@ -429,7 +585,46 @@ def backup_instance(inst, keep_last):
     }
     if archive_size is not None:
         payload['size_bytes'] = archive_size
-    publish_status(payload)
+    status_published = publish_status(payload)
+    if not status_published:
+        print('[backup] Archive is durable, but completion status could not '
+              'be published')
+        # The backend cannot reconcile its archive rows until it receives this
+        # event. Preserve every existing archive rather than pruning remote
+        # history while the service still believes those archives are valid.
+        return False
+
+    # Prune old archives, skipping pinned ones.
+    maintenance_deadline = time.monotonic() + MAINTENANCE_DEADLINE_S
+    pinned = set(inst.get('pinned_archives', []))
+    if pinned:
+        print(f"[backup] Pruning (keep-last={keep_last}, {len(pinned)} pinned)")
+        ok, stdout, _ = run_maintenance_borg(
+            ['list', '--prefix', f'{archive_prefix}-', '--format', '{name}{NL}', repo_path],
+            env, timeout=120, deadline=maintenance_deadline
+        )
+        if ok and stdout.strip():
+            all_archives = sorted(stdout.strip().split('\n'))
+            unpinned = [a for a in all_archives if a not in pinned]
+            to_delete = unpinned[:-keep_last] if len(unpinned) > keep_last else []
+            for old_archive in to_delete:
+                print(f"[backup] Deleting {old_archive}")
+                run_maintenance_borg(
+                    ['delete', f'{repo_path}::{old_archive}'], env,
+                    timeout=120, deadline=maintenance_deadline
+                )
+    else:
+        print(f"[backup] Pruning (keep-last={keep_last})")
+        run_maintenance_borg(
+            ['prune', '--prefix', f'{archive_prefix}-', '--keep-last', str(keep_last), repo_path],
+            env, timeout=300, deadline=maintenance_deadline
+        )
+
+    run_maintenance_borg(
+        ['compact', repo_path], env, timeout=300,
+        deadline=maintenance_deadline
+    )
+
     return True
 
 

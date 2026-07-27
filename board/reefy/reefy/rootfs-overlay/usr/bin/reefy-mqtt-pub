@@ -39,6 +39,15 @@ def load_config():
     return config
 
 
+def publish_confirmed(client, topic, payload, timeout=10):
+    """Publish QoS 1 and fail unless the broker acknowledges receipt."""
+    info = client.publish(topic, payload, qos=1)
+    info.wait_for_publish(timeout=timeout)
+    if not info.is_published():
+        raise TimeoutError(
+            f'MQTT broker did not confirm publish within {timeout}s')
+
+
 def main():
     if len(sys.argv) < 3:
         print(f"Usage: {sys.argv[0]} <topic_suffix> <json_payload>", file=sys.stderr)
@@ -97,10 +106,11 @@ def main():
 
     client.connect(broker, port, 60)
     client.loop_start()
-    info = client.publish(topic, payload, qos=1)
-    info.wait_for_publish(timeout=10)
-    client.disconnect()
-    client.loop_stop()
+    try:
+        publish_confirmed(client, topic, payload)
+    finally:
+        client.disconnect()
+        client.loop_stop()
 
     print(f"Published to {topic}")
 
