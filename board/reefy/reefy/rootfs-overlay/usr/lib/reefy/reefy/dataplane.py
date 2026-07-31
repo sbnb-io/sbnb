@@ -111,6 +111,10 @@ class DataPlane:
         # Same dict object Storage reads in _ensure_volume_lv / _prepare_app_dirs.
         self._volume_caps = storage._volume_caps
         self._job_condition = threading.Condition()
+        # The Varlink server dispatches each request in its own thread, so an
+        # app restart can otherwise race the apply worker while both mutate
+        # the same Compose project and container names.
+        self._compose_mutation_lock = threading.Lock()
         self._running_job = None
         self._pending_job = None
         self._last_apply_warnings = []
@@ -382,21 +386,25 @@ class DataPlane:
         if not instance_uuid:
             raise ValueError('missing instance_uuid')
 
-        compose_file = '/mnt/reefy-data/state/docker-compose.json'
-        if not os.path.exists(compose_file):
-            raise RuntimeError('No docker-compose.json found')
-
         svc_id = instance_uuid
         self._send_command_response(cmd_id, status='running',
                                     message=f'Restarting {svc_id}...')
-        log('mqtt', f'Recreating instance {svc_id} with current compose config')
 
-        result = subprocess.run(
-            ['docker', 'compose', '-f', compose_file, '-p', 'state',
-             'up', '-d', '--force-recreate', '--no-deps', svc_id],
-            capture_output=True, text=True, timeout=180)
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or f'docker compose up --force-recreate failed (exit {result.returncode})')
+        with self._compose_mutation_lock:
+            if not os.path.exists(self.COMPOSE_PATH):
+                raise RuntimeError('No docker-compose.json found')
+            log('mqtt',
+                f'Recreating instance {svc_id} with current compose config')
+
+            result = subprocess.run(
+                ['docker', 'compose', '-f', self.COMPOSE_PATH, '-p', 'state',
+                 'up', '-d', '--force-recreate', '--no-deps', svc_id],
+                capture_output=True, text=True, timeout=180)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    result.stderr.strip()
+                    or 'docker compose up --force-recreate failed '
+                       f'(exit {result.returncode})')
 
         log('mqtt', f'Instance {svc_id} recreated')
         return f'Instance {svc_id} restarted'
@@ -1533,8 +1541,14 @@ Environment=MQTT_PORT={self.port}
         return failed
 
     def _apply_compose(self, compose):
+        """Serialize full-project Compose apply against app restarts."""
+        with self._compose_mutation_lock:
+            return self._apply_compose_locked(compose)
+
+    def _apply_compose_locked(self, compose):
         """Write compose JSON and run docker compose up, streaming output to logs.
-        Returns True on success, False on failure."""
+        Caller must hold _compose_mutation_lock. Returns True on success,
+        False on failure."""
         os.makedirs(os.path.dirname(self.COMPOSE_PATH), exist_ok=True)
 
         # Diagnostic: log which services' config changed vs current

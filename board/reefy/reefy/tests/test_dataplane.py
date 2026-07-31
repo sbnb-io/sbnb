@@ -694,6 +694,96 @@ class ComposeRetryPolicyTests(unittest.TestCase):
                          "running event must carry the instance's image")
 
 
+class ComposeMutationLockTests(unittest.TestCase):
+    def setUp(self):
+        self.dp = _make_dp()
+        state_dir = tempfile.mkdtemp()
+        self.dp.COMPOSE_PATH = os.path.join(
+            state_dir, 'docker-compose.json')
+        Path(self.dp.COMPOSE_PATH).write_text('{}')
+
+    @staticmethod
+    def _result(returncode=0, stderr=''):
+        return mock.Mock(returncode=returncode, stderr=stderr)
+
+    def test_restart_waits_for_inflight_compose_apply(self):
+        apply_entered = threading.Event()
+        release_apply = threading.Event()
+        restart_entered = threading.Event()
+        compose_run = threading.Event()
+        errors = []
+
+        def blocking_apply(_compose):
+            apply_entered.set()
+            if not release_apply.wait(timeout=2):
+                raise TimeoutError('test did not release compose apply')
+            return True
+
+        def run_apply():
+            try:
+                self.dp._apply_compose({'services': {}})
+            except Exception as error:
+                errors.append(error)
+
+        def fake_run(*_args, **_kwargs):
+            compose_run.set()
+            return self._result()
+
+        def run_restart():
+            restart_entered.set()
+            try:
+                self.dp._restart_instance(
+                    {'instance_uuid': 'synthetic-app'}, cmd_id=None)
+            except Exception as error:
+                errors.append(error)
+
+        with mock.patch.object(
+                self.dp, '_apply_compose_locked',
+                side_effect=blocking_apply), \
+                mock.patch.object(
+                    dataplane.subprocess, 'run', side_effect=fake_run):
+            apply_thread = threading.Thread(target=run_apply, daemon=True)
+            apply_thread.start()
+            self.assertTrue(apply_entered.wait(timeout=1))
+
+            restart_thread = threading.Thread(
+                target=run_restart, daemon=True)
+            restart_thread.start()
+            self.assertTrue(restart_entered.wait(timeout=1))
+            self.assertFalse(
+                compose_run.wait(timeout=0.1),
+                'restart must not enter Compose while apply owns the lock')
+
+            release_apply.set()
+            self.assertTrue(compose_run.wait(timeout=1))
+            apply_thread.join(timeout=1)
+            restart_thread.join(timeout=1)
+
+        self.assertFalse(apply_thread.is_alive())
+        self.assertFalse(restart_thread.is_alive())
+        self.assertEqual(errors, [])
+
+    def test_lock_released_after_restart_failure(self):
+        with mock.patch.object(
+                dataplane.subprocess, 'run',
+                return_value=self._result(1, 'synthetic compose failure')):
+            with self.assertRaisesRegex(
+                    RuntimeError, 'synthetic compose failure'):
+                self.dp._restart_instance(
+                    {'instance_uuid': 'synthetic-app'}, cmd_id=None)
+
+        self.assertFalse(self.dp._compose_mutation_lock.locked())
+
+    def test_lock_released_after_apply_failure(self):
+        with mock.patch.object(
+                self.dp, '_apply_compose_locked',
+                side_effect=RuntimeError('synthetic apply failure')):
+            with self.assertRaisesRegex(RuntimeError, 'synthetic apply failure'):
+                self.dp._apply_compose({'services': {}})
+
+        self.assertFalse(self.dp._compose_mutation_lock.locked())
+
+
 class DataSideBehaviorTests(unittest.TestCase):
     def setUp(self):
         self.dp = _make_dp()
