@@ -46,6 +46,8 @@ if [ -z "${APP_CONTAINER:-}" ]; then
     [ -f "$state" ] || { echo "no desired-state on this device" >&2; exit 1; }
     APP_INFO=$(STATE="$state" SLUG="$slug" python3 -c '
 import json, os, sys
+sys.path.insert(0, "/usr/lib/reefy")
+from reefy.containers import resolve_app_container
 s = json.load(open(os.environ["STATE"]))
 for i in s.get("instances", []):
     if i.get("instance_name") == os.environ["SLUG"]:
@@ -55,10 +57,11 @@ for i in s.get("instances", []):
             app = next((a for a in s.get("apps", [])
                         if a.get("instance_uuid") == uuid), {})
             project = app.get("project_name")
-            service = app.get("primary_service", "app")
             if not project:
                 sys.exit(1)
-            print(f"{project}-{service}-1 {uid}")
+            container = resolve_app_container(
+                s, uuid, f"state-{uuid}-1")
+            print(f"{container} {uid}")
         else:
             print(f"state-{uuid}-1 {uid}")
         sys.exit(0)

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import json
 import sys
+import tempfile
 import types
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -101,6 +104,23 @@ class TerminalBridgeSubscriberTests(unittest.TestCase):
         session = bridge.get_session('app1')
         self.assertEqual(session['container'], 'state-app1-1')
         self.assertEqual(session['name'], 'Dev')
+
+    def test_v2_resolution_uses_live_container_resolver(self):
+        state = {'schema_version': 2, 'apps': []}
+        with tempfile.TemporaryDirectory() as state_dir:
+            state_path = Path(state_dir) / 'desired-state-v2.json'
+            state_path.write_text(json.dumps(state))
+            with mock.patch.object(bridge, 'STATE_DIR', state_dir), \
+                    mock.patch.object(
+                        bridge, 'resolve_container',
+                        return_value='state-app1-1') as resolver:
+                self.assertEqual(
+                    bridge._resolve_app_container(
+                        'app1', 'reefy-app-app1-app-1'),
+                    'state-app1-1')
+
+        resolver.assert_called_once_with(
+            state, 'app1', 'reefy-app-app1-app-1')
 
 
 if __name__ == '__main__':

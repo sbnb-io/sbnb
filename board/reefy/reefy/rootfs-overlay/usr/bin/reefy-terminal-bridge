@@ -31,6 +31,15 @@ import termios
 import threading
 import time
 
+for reefy_lib in (
+        '/usr/lib/reefy',
+        os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
+                                     'lib', 'reefy'))):
+    if reefy_lib not in sys.path:
+        sys.path.insert(0, reefy_lib)
+
+from reefy.containers import resolve_app_container as resolve_container
+
 try:
     import paho.mqtt.client as mqtt
 except ImportError:
@@ -122,17 +131,11 @@ def _get_app_uid(session_id):
 
 
 def _resolve_app_container(session_id, requested):
-    """Resolve the primary container from cached Apps-v2 state."""
+    """Resolve the live primary container across a guarded v1/v2 handoff."""
     try:
         with open(os.path.join(STATE_DIR, 'desired-state-v2.json')) as f:
             state = json.load(f)
-        for app in state.get('apps', []):
-            if app.get('instance_uuid') != session_id:
-                continue
-            project = app.get('project_name')
-            service = app.get('primary_service') or 'app'
-            if project:
-                return f'{project}-{service}-1'
+        return resolve_container(state, session_id, requested)
     except (OSError, json.JSONDecodeError, TypeError):
         pass
     return requested
