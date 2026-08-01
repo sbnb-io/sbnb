@@ -28,8 +28,15 @@ echo "REEFY_DESIRED_STATE_SCHEMA=2" >> "${OS_RELEASE}"
 # the public IMAGE_VERSION format unchanged. Hash the actual kernel image,
 # configuration, and exported symbol CRCs so an incremental rebuild cannot
 # accidentally select modules from different bytes with the same uname -r.
-LINUX_BUILD_DIR=$(find "${BUILD_DIR}" -maxdepth 1 -type d -name 'linux-*' \
-  -print -quit)
+LINUX_BUILD_DIR=''
+for candidate in "${BUILD_DIR}"/linux-*; do
+  if [ -f "${candidate}/arch/x86/boot/bzImage" ] \
+      && [ -f "${candidate}/.config" ] \
+      && [ -f "${candidate}/Module.symvers" ]; then
+    LINUX_BUILD_DIR=${candidate}
+    break
+  fi
+done
 if [ -n "${LINUX_BUILD_DIR}" ] \
     && [ -f "${LINUX_BUILD_DIR}/arch/x86/boot/bzImage" ] \
     && [ -f "${LINUX_BUILD_DIR}/.config" ] \
