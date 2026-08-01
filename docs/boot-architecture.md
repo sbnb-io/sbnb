@@ -34,12 +34,12 @@ local-fs.target
         |-- reefy-init.service
         |-- reefy-cmds.service
         |-- reefy-tunnel.service, when configured
-        `-- nvidia-cdi-generate.service
+        `-- reefy-artifacts-prepare.service
 ```
 
 The diagram shows the ordering constraints, not a single serial chain. The
-hostname, Wi-Fi, initialization, command, tunnel, and NVIDIA setup branches can
-run in parallel after base storage is ready.
+hostname, Wi-Fi, initialization, command, tunnel, and cached artifact branches
+can run in parallel after base storage is ready.
 
 `reefy-control` does not wait for `network-online.target`, Docker, or the data
 plane. It applies cached identity, starts its reconnect loop, and remains the
@@ -158,12 +158,14 @@ Other parallel branches include:
 
 - `reefy-cmds.service` for boot-device custom commands;
 - `reefy-tunnel.service` when `/mnt/reefy/tunnel-start.sh` exists;
-- `nvidia-cdi-generate.service` for NVIDIA device nodes and CDI metadata; and
+- `reefy-artifacts-prepare.service` for cached host-extension activation; and
 - `reefy-hostname.service`, which waits for a physical interface and derives a
   stable hostname before control registration.
 
-NVIDIA CDI generation is ordered before `reefy-control` so a saved GPU app is
-not reconciled before its CDI device name exists.
+The boot artifact pass never downloads and does not block Docker. The per-app
+reconciler prepares each missing artifact before starting only that app. A
+trusted provider activator performs host-global work such as loading NVIDIA
+modules and atomically generating the runtime CDI definition.
 
 ## First boot and adoption
 

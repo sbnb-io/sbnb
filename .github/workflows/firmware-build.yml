@@ -116,10 +116,6 @@ jobs:
           done
 
           for module in nvidia nvidia-drm nvidia-modeset nvidia-uvm; do
-            if ! find "$module_dir" -name "${module}.ko*" 2>/dev/null | grep -q .; then
-              echo "missing ${module} module under $module_dir"
-              needs_clean=true
-            fi
             if ! find "$BR_OUTPUT/reefy-artifacts/nvidia/modules-root/lib/modules/$expected_kernel" \
                 -name "${module}.ko*" 2>/dev/null | grep -q .; then
               echo "missing staged provider ${module} module"
@@ -161,10 +157,28 @@ jobs:
             find "$module_dir" -name "${module}.ko*" | grep -q . \
               || { echo "missing ${module} module under $module_dir"; exit 1; }
           done
-          for module in nvidia nvidia-drm nvidia-modeset nvidia-uvm; do
-            find "$module_dir" -name "${module}.ko*" | grep -q . \
-              || { echo "missing ${module} module under $module_dir"; exit 1; }
+          if find "$module_dir" -name 'nvidia*.ko*' | grep -q .; then
+            echo "NVIDIA provider modules leaked into the Reefy OS image"
+            exit 1
+          fi
+          for path in \
+              "$BR_OUTPUT/target/usr/bin/nvidia-smi" \
+              "$BR_OUTPUT/target/usr/bin/nvidia-ctk" \
+              "$BR_OUTPUT/target/usr/bin/nvidia-cdi-hook" \
+              "$BR_OUTPUT/target/lib/firmware/nvidia" \
+              "$BR_OUTPUT/target/usr/lib/systemd/system/nvidia-cdi-generate.service"; do
+            if [ -e "$path" ]; then
+              echo "NVIDIA provider payload leaked into the Reefy OS image: $path"
+              exit 1
+            fi
           done
+          if find "$BR_OUTPUT/target/usr/lib" -maxdepth 1 \
+              \( -name 'libnvidia*.so*' -o -name 'libcuda.so*' \
+                 -o -name 'libnvcuvid.so*' -o -name 'libnvoptix.so*' \) \
+              -print -quit | grep -q .; then
+            echo "NVIDIA provider libraries leaked into the Reefy OS image"
+            exit 1
+          fi
 
       - name: Verify multi-flavor outputs
         run: |

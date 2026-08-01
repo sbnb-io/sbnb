@@ -9,6 +9,7 @@ KERNEL_LAYER=${2:?missing NVIDIA kernel layer}
 KERNEL_RELEASE=$(uname -r)
 MODULE_SOURCE="$KERNEL_LAYER/lib/modules/$KERNEL_RELEASE/extra/nvidia"
 FIRMWARE_SOURCE="$COMMON/lib/firmware/nvidia"
+DRIVER_ROOT=/run/reefy-artifacts/providers/nvidia-driver
 
 [ -d "$MODULE_SOURCE" ]
 [ -d "$FIRMWARE_SOURCE" ]
@@ -30,8 +31,25 @@ bind_read_only "$MODULE_SOURCE" \
     "/lib/modules/$KERNEL_RELEASE/extra/nvidia"
 bind_read_only "$FIRMWARE_SOURCE" "/lib/firmware/nvidia"
 
+# Present the read-only payload in NVIDIA Container Toolkit's standard
+# driver-root layout. This lets CDI map libraries into the container's normal
+# multiarch loader path while every source byte remains in the OCI payload.
+mkdir -p "$DRIVER_ROOT/usr/lib/x86_64-linux-gnu" \
+    "$DRIVER_ROOT/usr/bin" \
+    "$DRIVER_ROOT/etc/vulkan/icd.d" \
+    "$DRIVER_ROOT/etc/glvnd/egl_vendor.d" \
+    "$DRIVER_ROOT/lib/firmware/nvidia"
+bind_read_only "$COMMON/usr/lib" \
+    "$DRIVER_ROOT/usr/lib/x86_64-linux-gnu"
+bind_read_only "$COMMON/usr/bin" "$DRIVER_ROOT/usr/bin"
+bind_read_only "$COMMON/usr/share/vulkan/icd.d" \
+    "$DRIVER_ROOT/etc/vulkan/icd.d"
+bind_read_only "$COMMON/usr/share/glvnd/egl_vendor.d" \
+    "$DRIVER_ROOT/etc/glvnd/egl_vendor.d"
+bind_read_only "$FIRMWARE_SOURCE" "$DRIVER_ROOT/lib/firmware/nvidia"
+
 mkdir -p /usr/lib /usr/bin /etc/vulkan/icd.d \
-    /etc/glvnd/egl_vendor.d /etc/cdi
+    /etc/glvnd/egl_vendor.d /run/cdi
 
 # Reefy intentionally does not ship ldconfig. Put ephemeral links in the
 # OverlayFS upper layer so the normal /usr/lib search path resolves the
@@ -88,6 +106,14 @@ if [ -n "$NVIDIA_UVM_MAJOR" ]; then
         mknod -m 666 /dev/nvidia-uvm-tools c "$NVIDIA_UVM_MAJOR" 1
 fi
 
+# Docker scans both /etc/cdi and /run/cdi. The legacy boot-time generator
+# also used /run/cdi, so publishing the artifact-backed spec in /etc/cdi
+# leaves two definitions for nvidia.com/gpu. Docker can then retain the
+# incomplete legacy definition. Replace the runtime definition atomically
+# and remove any artifact definition written by older Reefy releases.
 nvidia-ctk cdi generate --disable-hook update-ldcache \
-    --output=/etc/cdi/nvidia.yaml
+    --driver-root="$DRIVER_ROOT" --dev-root=/ \
+    --output=/run/cdi/nvidia.tmp.yaml
+mv -f /run/cdi/nvidia.tmp.yaml /run/cdi/nvidia.yaml
+rm -f /etc/cdi/nvidia.yaml
 nvidia-smi >/dev/null

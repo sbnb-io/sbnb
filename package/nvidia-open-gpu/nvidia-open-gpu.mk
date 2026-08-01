@@ -37,11 +37,6 @@ define NVIDIA_OPEN_GPU_BUILD_CMDS
 endef
 
 define NVIDIA_OPEN_GPU_INSTALL_TARGET_CMDS
-	$(NVIDIA_OPEN_GPU_MAKE_ENV) $(MAKE) -C $(LINUX_DIR) \
-		$(LINUX_MAKE_FLAGS) \
-		M=$(@D)/kernel-open \
-		INSTALL_MOD_PATH=$(TARGET_DIR) \
-		modules_install
 	rm -rf $(BASE_DIR)/reefy-artifacts/nvidia/modules-root
 	$(NVIDIA_OPEN_GPU_MAKE_ENV) $(MAKE) -C $(LINUX_DIR) \
 		$(LINUX_MAKE_FLAGS) \

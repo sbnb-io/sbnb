@@ -130,3 +130,38 @@ if [ -n "${PINNED_KERNEL}" ] && [ -d "${TARGET_DIR}/lib/modules" ]; then
   find "${TARGET_DIR}/lib/modules" -mindepth 1 -maxdepth 1 -type d \
     ! -name "${PINNED_KERNEL}" -exec rm -rf {} +
 fi
+
+# NVIDIA packages in the Buildroot configuration produce exact inputs for the
+# external provider artifact. None of their driver payload belongs in the
+# immutable Reefy OS image. Remove stale files from incremental TARGET_DIR
+# builds as well as files installed by older package recipes.
+rm -f "${TARGET_DIR}/usr/bin/nvidia-smi" \
+      "${TARGET_DIR}/usr/bin/nvidia-ctk" \
+      "${TARGET_DIR}/usr/bin/nvidia-cdi-hook" \
+      "${TARGET_DIR}/usr/bin/nvidia-cdi-setup.sh" \
+      "${TARGET_DIR}/usr/sbin/nvidia-smi" \
+      "${TARGET_DIR}/usr/lib/systemd/system/nvidia-cdi-generate.service" \
+      "${TARGET_DIR}/etc/systemd/system/nvidia-cdi-generate.service" \
+      "${TARGET_DIR}/etc/systemd/system/multi-user.target.wants/nvidia-cdi-generate.service" \
+      "${TARGET_DIR}"/usr/lib/libcuda.so* \
+      "${TARGET_DIR}"/usr/lib/libnvcuvid.so* \
+      "${TARGET_DIR}"/usr/lib/libnvidia-*.so* \
+      "${TARGET_DIR}"/usr/lib/libEGL_nvidia.so* \
+      "${TARGET_DIR}"/usr/lib/libGLESv1_CM_nvidia.so* \
+      "${TARGET_DIR}"/usr/lib/libGLESv2_nvidia.so* \
+      "${TARGET_DIR}"/usr/lib/libGLX_nvidia.so* \
+      "${TARGET_DIR}"/usr/lib/libnvoptix.so* \
+      "${TARGET_DIR}"/usr/lib/libvdpau_nvidia.so* \
+      "${TARGET_DIR}"/usr/lib/libnvidia-drm_gbm.so \
+      "${TARGET_DIR}"/usr/lib/_nvngx.dll \
+      "${TARGET_DIR}"/etc/vulkan/icd.d/nvidia*.json \
+      "${TARGET_DIR}"/etc/glvnd/egl_vendor.d/10_nvidia.json
+rm -rf "${TARGET_DIR}/lib/firmware/nvidia" \
+       "${TARGET_DIR}/usr/lib/firmware/nvidia"
+if [ -d "${TARGET_DIR}/lib/modules" ]; then
+  find "${TARGET_DIR}/lib/modules" -type f -name 'nvidia*.ko*' -delete
+  find "${TARGET_DIR}/lib/modules" -depth -type d -empty -delete
+fi
+if [ -n "${PINNED_KERNEL}" ] && [ -x "${HOST_DIR}/sbin/depmod" ]; then
+  "${HOST_DIR}/sbin/depmod" -a -b "${TARGET_DIR}" "${PINNED_KERNEL}"
+fi

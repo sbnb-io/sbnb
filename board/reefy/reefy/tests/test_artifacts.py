@@ -150,6 +150,21 @@ def test_artifact_supplied_hook_is_never_executed():
         '/usr/lib/reefy/activators/nvidia-driver']
 
 
+def test_nvidia_activator_replaces_the_runtime_cdi_definition():
+    path = os.path.join(
+        os.path.dirname(__file__), '..', 'rootfs-overlay', 'usr', 'lib',
+        'reefy', 'activators', 'nvidia-driver')
+    with open(path, encoding='utf-8') as stream:
+        script = stream.read()
+
+    assert '--output=/run/cdi/nvidia.tmp.yaml' in script
+    assert '--driver-root="$DRIVER_ROOT" --dev-root=/' in script
+    assert 'DRIVER_ROOT=/run/reefy-artifacts/providers/nvidia-driver' in script
+    assert 'mv -f /run/cdi/nvidia.tmp.yaml /run/cdi/nvidia.yaml' in script
+    assert 'rm -f /etc/cdi/nvidia.yaml' in script
+    assert '--output=/etc/cdi/nvidia.yaml' not in script
+
+
 def test_same_digest_concurrent_requests_share_one_admission():
     _, reference, _ = _fixture()
     manager = _manager()
