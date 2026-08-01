@@ -3,6 +3,7 @@ boot-mount roles. Dependency-free (stdlib only) so the data-plane and
 boot-mount processes can import it without paho-mqtt installed."""
 
 import os
+import json
 import subprocess
 import time
 
@@ -13,7 +14,9 @@ from reefy.redaction import redact_log_message
 
 REEFY_DATA_MNT = '/mnt/reefy-data'
 DESIRED_STATE_PATH = '/mnt/reefy-data/state/desired-state.json'
+DESIRED_STATE_V2_PATH = '/mnt/reefy-data/state/desired-state-v2.json'
 COMPOSE_PATH = '/mnt/reefy-data/state/docker-compose.json'
+PROJECTS_DIR = '/mnt/reefy-data/state/projects'
 
 STORAGE_VG = 'reefy'
 STORAGE_LV = 'reefy_default'
@@ -43,6 +46,24 @@ REEFY_DATA_MOUNT_OPTS = 'noatime,commit=60,discard'
 # work, isolated so a crash/OOM/hang there can't take down control.
 VARLINK_ADDRESS = 'unix:/run/reefy/reconciler.sock'
 VARLINK_INTERFACE_DIR = '/usr/share/varlink'
+
+
+def desired_state_path():
+    """Return the active cached desired-state path.
+
+    Schema v2 is a one-way migration target. Prefer it once present while
+    retaining the legacy path until the data plane commits migration.
+    """
+    if os.path.exists(DESIRED_STATE_V2_PATH):
+        return DESIRED_STATE_V2_PATH
+    return DESIRED_STATE_PATH
+
+
+def load_desired_state():
+    """Load the active cached state and return (state, path)."""
+    path = desired_state_path()
+    with open(path) as stream:
+        return json.load(stream), path
 
 
 def _part_dev(disk, partnum):

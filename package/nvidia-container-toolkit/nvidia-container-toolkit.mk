@@ -28,4 +28,15 @@ NVIDIA_CONTAINER_TOOLKIT_BUILD_TARGETS = \
 
 NVIDIA_CONTAINER_TOOLKIT_DEPENDENCIES = nvidia-userspace
 
+define NVIDIA_CONTAINER_TOOLKIT_STAGE_PROVIDER_INPUTS
+	rm -rf $(BASE_DIR)/reefy-artifacts/nvidia/toolkit
+	$(INSTALL) -D -m 0755 $(@D)/bin/nvidia-ctk \
+		$(BASE_DIR)/reefy-artifacts/nvidia/toolkit/nvidia-ctk
+	$(INSTALL) -D -m 0755 $(@D)/bin/nvidia-cdi-hook \
+		$(BASE_DIR)/reefy-artifacts/nvidia/toolkit/nvidia-cdi-hook
+endef
+
+NVIDIA_CONTAINER_TOOLKIT_POST_INSTALL_TARGET_HOOKS += \
+	NVIDIA_CONTAINER_TOOLKIT_STAGE_PROVIDER_INPUTS
+
 $(eval $(golang-package))

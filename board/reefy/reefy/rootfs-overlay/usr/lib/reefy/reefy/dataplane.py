@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import uuid as uuid_mod
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 
 from reefy import shared
@@ -82,7 +83,9 @@ def _desired_state_log_summary(state):
 class DataPlane:
     # Shared constants (single source in reefy.shared).
     DESIRED_STATE_PATH = shared.DESIRED_STATE_PATH
+    DESIRED_STATE_V2_PATH = shared.DESIRED_STATE_V2_PATH
     COMPOSE_PATH = shared.COMPOSE_PATH
+    PROJECTS_DIR = shared.PROJECTS_DIR
     REEFY_DATA_MNT = shared.REEFY_DATA_MNT
     REEFY_DATA_MOUNT_OPTS = shared.REEFY_DATA_MOUNT_OPTS
     STORAGE_VG = shared.STORAGE_VG
@@ -115,6 +118,11 @@ class DataPlane:
         # app restart can otherwise race the apply worker while both mutate
         # the same Compose project and container names.
         self._compose_mutation_lock = threading.Lock()
+        self._project_locks_guard = threading.Lock()
+        self._project_locks = {}
+        self._artifact_retry_lock = threading.Lock()
+        self._artifact_retry_timer = None
+        self._artifact_retry_attempt = 0
         self._running_job = None
         self._pending_job = None
         self._last_apply_warnings = []
@@ -216,7 +224,7 @@ class DataPlane:
                     applied = True
                     ok = self._apply_state({'state': job['state']})
                 else:
-                    applied = os.path.exists(self.DESIRED_STATE_PATH)
+                    applied = os.path.exists(self._active_state_path())
                     ok = self._apply_desired_state()
                 warnings = list(self._last_apply_warnings)
                 if ok is False:
@@ -316,6 +324,56 @@ class DataPlane:
         # command responses are published by the control process.
         return
 
+    @staticmethod
+    def _is_v2_state(state):
+        return isinstance(state, dict) and state.get('schema_version') == 2
+
+    def _active_state_path(self):
+        if os.path.exists(self.DESIRED_STATE_V2_PATH):
+            return self.DESIRED_STATE_V2_PATH
+        return self.DESIRED_STATE_PATH
+
+    def _project_lock(self, project_name):
+        with self._project_locks_guard:
+            return self._project_locks.setdefault(
+                project_name, threading.RLock())
+
+    def _project_compose_path(self, project_name):
+        return os.path.join(
+            self.PROJECTS_DIR, project_name, 'compose.json')
+
+    @staticmethod
+    def _flatten_v2_state(state):
+        """Return the legacy-shaped host/storage view of schema v2."""
+        host = json.loads(json.dumps(state.get('host') or {}))
+        host['instances'] = json.loads(json.dumps(
+            state.get('instances') or []))
+        app_volumes = []
+        files = list(host.get('files') or [])
+        volume_caps = {}
+        backup_instances = []
+        for app in state.get('apps') or []:
+            app_volumes.extend(json.loads(json.dumps(
+                app.get('volumes') or [])))
+            files.extend(json.loads(json.dumps(app.get('files') or [])))
+            volume_caps.update(app.get('volume_caps') or {})
+            if app.get('backup'):
+                backup_instances.append(json.loads(json.dumps(
+                    app['backup'])))
+        if app_volumes:
+            host['app_volumes'] = app_volumes
+        if files:
+            host['files'] = files
+        if volume_caps:
+            host['volume_caps'] = volume_caps
+        backup_policy = json.loads(json.dumps(
+            state.get('backup_policy') or {}))
+        if backup_instances:
+            backup_policy['instances'] = backup_instances
+        if backup_policy:
+            host['backup'] = backup_policy
+        return host
+
     def _apply_state_command(self, payload, cmd_id=None):
         """Compatibility wrapper around the request/result scheduler."""
         submission = self._submit_apply_job(
@@ -390,6 +448,29 @@ class DataPlane:
         self._send_command_response(cmd_id, status='running',
                                     message=f'Restarting {svc_id}...')
 
+        state = self._read_json(self._active_state_path())
+        if self._is_v2_state(state):
+            app = next((candidate for candidate in state.get('apps') or []
+                        if candidate.get('instance_uuid') == instance_uuid),
+                       None)
+            if app is None:
+                raise RuntimeError('App project not found')
+            project_name = app.get('project_name') or ''
+            compose_path = self._project_compose_path(project_name)
+            with self._project_lock(project_name):
+                result = subprocess.run(
+                    ['docker', 'compose', '-f', compose_path, '-p',
+                     project_name, 'up', '-d', '--force-recreate',
+                     '--no-deps', app.get('primary_service') or 'app'],
+                    capture_output=True, text=True, timeout=180)
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        result.stderr.strip()
+                        or 'docker compose up --force-recreate failed '
+                           f'(exit {result.returncode})')
+            log('mqtt', f'App project {project_name} recreated')
+            return f'Instance {svc_id} restarted'
+
         with self._compose_mutation_lock:
             if not os.path.exists(self.COMPOSE_PATH):
                 raise RuntimeError('No docker-compose.json found')
@@ -416,23 +497,42 @@ class DataPlane:
             print("[mqtt] ERROR: Empty state in apply_state")
             return False
 
+        incoming_v2 = self._is_v2_state(state)
+        if not incoming_v2 and os.path.exists(self.DESIRED_STATE_V2_PATH):
+            log('mqtt', 'ERROR: refusing desired-state schema downgrade after '
+                'Apps-v2 migration')
+            return False
+        target_path = (
+            self.DESIRED_STATE_V2_PATH if incoming_v2
+            else self.DESIRED_STATE_PATH)
+
         # Read old state before overwriting (for diff-based cleanup)
         old_state = None
         try:
-            if os.path.exists(self.DESIRED_STATE_PATH):
-                with open(self.DESIRED_STATE_PATH) as f:
+            old_path = self._active_state_path()
+            if os.path.exists(old_path):
+                with open(old_path) as f:
                     old_state = json.load(f)
         except (OSError, json.JSONDecodeError):
             pass
 
         # Save to persistent storage
         try:
-            with open(self.DESIRED_STATE_PATH, 'w') as f:
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            tmp_path = target_path + '.tmp'
+            with open(tmp_path, 'w') as f:
                 json.dump(state, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, target_path)
             log('mqtt', _desired_state_log_summary(state))
         except OSError as e:
             log('mqtt', f'ERROR: Failed to save desired state: {e}')
             return False
+
+        # A changed desired state is an immediate event and supersedes any
+        # delayed retry scheduled for the previous artifact requirements.
+        self._reset_artifact_retry()
 
         # Data plane applies directly; the control process publishes the
         # applying/ready stages around its Varlink call.
@@ -444,16 +544,26 @@ class DataPlane:
         old_state: previous desired state for diff-based cleanup (None on boot).
         Returns True on success, False on failure."""
         self._last_apply_warnings = []
-        if not os.path.exists(self.DESIRED_STATE_PATH):
+        active_path = self._active_state_path()
+        if not os.path.exists(active_path):
             shared.set_hostname(shared.get_default_hostname())
             return True
 
         try:
-            with open(self.DESIRED_STATE_PATH) as f:
+            with open(active_path) as f:
                 state = json.load(f)
         except (OSError, json.JSONDecodeError) as e:
             log('mqtt', f'ERROR: Failed to read desired state: {e}')
             return False
+
+        v2_state = state if self._is_v2_state(state) else None
+        runtime_state = (
+            self._flatten_v2_state(state) if v2_state is not None else state)
+        runtime_old_state = (
+            self._flatten_v2_state(old_state)
+            if self._is_v2_state(old_state) else old_state)
+        state = runtime_state
+        old_state = runtime_old_state
 
         # Fair-share volume caps (path -> % of pool) consumed by Storage's
         # _ensure_volume_lv when it creates per-volume LVs. Push onto the
@@ -532,9 +642,18 @@ class DataPlane:
         # instance parent dir exists.
         self._apply_files(state.get('files', []))
 
-        # Write compose file and run docker compose up
+        # Schema v2 owns one system project plus one project per app. Each app
+        # reconciles independently; one bad app becomes a warning rather than
+        # failing the complete device apply. Legacy firmware keeps the
+        # monolithic path below unchanged.
+        if v2_state is not None:
+            project_failures = self._apply_v2_projects(
+                v2_state, failed_restores=failed_restores)
+            self._last_apply_warnings.extend(project_failures)
+
+        # Write legacy compose file and run the monolithic project.
         compose = state.get('compose')
-        if compose:
+        if v2_state is None and compose:
             # Remove services for instances whose restore failed
             if failed_restores and 'services' in compose:
                 for iuuid in failed_restores:
@@ -605,6 +724,489 @@ class DataPlane:
             old_state or {}, state, backup_paths)
 
         return True
+
+    def _apply_v2_projects(self, state, failed_restores=None):
+        """Reconcile the system project, then all app projects concurrently.
+
+        Returns structured ApplyWarning records. A project failure does not
+        block unrelated projects or make the device-wide desired state fail.
+        """
+        failed_restores = set(failed_restores or ())
+        warnings = []
+        system = state.get('system_project') or {}
+        system_name = system.get('project_name') or 'reefy-system'
+        system_compose = system.get('compose') or {'services': {}}
+        migration = self._v2_migration_pending()
+        migration_failed = False
+        legacy_compose = self._read_json(self.COMPOSE_PATH) if migration else {}
+        legacy_instances = {
+            row.get('instance_uuid')
+            for row in (state.get('instances') or [])
+            if row.get('instance_uuid')
+        }
+
+        legacy_system_services = []
+        if migration and legacy_compose:
+            legacy_system_services = [
+                name for name in (legacy_compose.get('services') or {})
+                if name not in legacy_instances
+            ]
+            if legacy_system_services:
+                self._run_compose_command(
+                    self.COMPOSE_PATH, 'state',
+                    ['stop', *legacy_system_services], timeout=180)
+
+        if not self._apply_project_compose(
+                system_name, system_compose, instance_uuid=None):
+            migration_failed = True
+            warnings.append({
+                'code': 'system_project_failed',
+                'instance_uuid': '',
+                'volume': '',
+            })
+            if migration and legacy_system_services:
+                self._run_compose_command(
+                    self.COMPOSE_PATH, 'state',
+                    ['start', *legacy_system_services], timeout=180)
+
+        desired_projects = {
+            app.get('project_name') for app in (state.get('apps') or [])
+            if app.get('project_name')
+        }
+        self._remove_absent_v2_projects(desired_projects)
+
+        apps = list(state.get('apps') or [])
+        if apps:
+            with ThreadPoolExecutor(max_workers=len(apps)) as pool:
+                futures = {
+                    pool.submit(
+                        self._reconcile_v2_app, app, migration,
+                        app.get('instance_uuid') in failed_restores): app
+                    for app in apps
+                }
+                for future in as_completed(futures):
+                    app = futures[future]
+                    try:
+                        ok, outcome = future.result()
+                    except Exception as exception:
+                        ok = False
+                        outcome = (
+                            f'app_project_exception_{type(exception).__name__}',
+                            [])
+                        log('reconciler',
+                            f'{app.get("project_name")}: {outcome[0]}')
+                    if isinstance(outcome, tuple):
+                        code, optional_failures = outcome
+                    else:
+                        code, optional_failures = outcome, []
+                    if not ok:
+                        migration_failed = True
+                        warnings.append({
+                            'code': code or 'app_project_failed',
+                            'instance_uuid': app.get('instance_uuid') or '',
+                            'volume': '',
+                        })
+                    warnings.extend({
+                        'code': 'optional_service_failed',
+                        'instance_uuid': app.get('instance_uuid') or '',
+                        'volume': service_name,
+                    } for service_name in optional_failures)
+
+        if migration and not migration_failed:
+            self._commit_v2_migration()
+        if any(
+                warning.get('code') == 'artifact_prepare_failed'
+                for warning in warnings):
+            self._schedule_artifact_retry()
+        else:
+            self._reset_artifact_retry()
+        return warnings
+
+    def _schedule_artifact_retry(self):
+        """Queue one exponential, event-driven retry for unavailable bytes.
+
+        This is a one-shot timer created only by a failed transfer. It is not
+        periodic state polling. A new desired state or a successful reconcile
+        cancels and resets it immediately.
+        """
+        with self._artifact_retry_lock:
+            if (self._artifact_retry_timer is not None
+                    and self._artifact_retry_timer.is_alive()):
+                return
+            delay = min(10 * (2 ** self._artifact_retry_attempt), 300)
+            self._artifact_retry_attempt += 1
+
+            def retry():
+                with self._artifact_retry_lock:
+                    self._artifact_retry_timer = None
+                log('reconciler',
+                    f'artifact backoff elapsed; queueing reconcile '
+                    f'(delay={delay}s)')
+                self._submit_apply_job('reconcile')
+
+            timer = threading.Timer(delay, retry)
+            timer.daemon = True
+            self._artifact_retry_timer = timer
+            timer.start()
+
+    def _reset_artifact_retry(self):
+        with self._artifact_retry_lock:
+            timer = self._artifact_retry_timer
+            self._artifact_retry_timer = None
+            self._artifact_retry_attempt = 0
+            if timer is not None:
+                timer.cancel()
+
+    def _reconcile_v2_app(self, app, migration, restore_failed):
+        instance_uuid = app.get('instance_uuid') or ''
+        project_name = app.get('project_name') or ''
+        if not instance_uuid or not project_name:
+            return False, 'invalid_app_project'
+        if restore_failed:
+            self._publish_health_status(
+                instance_uuid, 'failed', message='restore failed')
+            return False, 'restore_failed'
+
+        compose = json.loads(json.dumps(app.get('compose') or {}))
+        for _service, host_path in _drop_absent_devices(compose):
+            log('reconciler',
+                f'{project_name}: skipping absent device {host_path}')
+
+        if app.get('desired_status') == 'stopped':
+            if migration:
+                self._run_compose_command(
+                    self.COMPOSE_PATH, 'state', ['stop', instance_uuid],
+                    timeout=180)
+            self._write_project_compose(project_name, compose)
+            ok, _ = self._run_compose_command(
+                self._project_compose_path(project_name), project_name,
+                ['stop'], timeout=180)
+            return ok, '' if ok else 'app_stop_failed'
+
+        if not self._prepare_app_artifacts(app):
+            return False, 'artifact_prepare_failed'
+
+        # Keep a runnable legacy service alive while its new image or host
+        # artifact prepares. Stop it only at the final per-app handoff.
+        if migration:
+            self._run_compose_command(
+                self.COMPOSE_PATH, 'state', ['stop', instance_uuid],
+                timeout=180)
+
+        ok, optional_failures = self._apply_app_project_compose(
+            project_name, compose, instance_uuid=instance_uuid,
+            primary_service=app.get('primary_service') or 'app')
+        if not ok and migration:
+            self._run_compose_command(
+                self.COMPOSE_PATH, 'state', ['start', instance_uuid],
+                timeout=180)
+        return ok, ('' if ok else 'app_project_failed', optional_failures)
+
+    def _prepare_app_artifacts(self, app):
+        for artifact in app.get('artifacts') or []:
+            ref = artifact.get('ref') or ''
+            if not ref:
+                return False
+            self._publish_health_status(
+                app.get('instance_uuid') or '', 'waiting_artifacts')
+            try:
+                result = subprocess.run(
+                    ['reefy-artifacts', 'prepare', '--ref', ref,
+                     '--kind', artifact.get('kind') or 'app'],
+                    capture_output=True, text=True, timeout=3600)
+            except (OSError, subprocess.TimeoutExpired) as exception:
+                log('reconciler',
+                    f'artifact prepare failed ({type(exception).__name__})')
+                return False
+            if result.returncode != 0:
+                log('reconciler',
+                    f'artifact prepare failed (exit {result.returncode})')
+                return False
+        return True
+
+    @staticmethod
+    def _service_lifecycle(service):
+        labels = service.get('labels') or {}
+        return labels.get('ai.reefy.lifecycle') or 'service'
+
+    @staticmethod
+    def _service_is_optional(service):
+        labels = service.get('labels') or {}
+        return labels.get('ai.reefy.optional') == 'true'
+
+    def _runtime_app_compose(self, compose):
+        """Remove completed init definitions from the long-running project.
+
+        Init definitions remain authoritative in desired state. The runtime
+        Compose file excludes them after fingerprinted execution so a later
+        Compose or Docker restart cannot accidentally rerun an init job.
+        """
+        runtime = json.loads(json.dumps(compose))
+        services = runtime.get('services') or {}
+        init_names = {
+            name for name, service in services.items()
+            if self._service_lifecycle(service) == 'init'
+        }
+        for name in init_names:
+            services.pop(name, None)
+        for service in services.values():
+            depends_on = service.get('depends_on')
+            if isinstance(depends_on, dict):
+                service['depends_on'] = {
+                    name: value for name, value in depends_on.items()
+                    if name not in init_names
+                }
+                if not service['depends_on']:
+                    service.pop('depends_on')
+            elif isinstance(depends_on, list):
+                service['depends_on'] = [
+                    name for name in depends_on if name not in init_names]
+                if not service['depends_on']:
+                    service.pop('depends_on')
+        return runtime
+
+    def _run_app_init_services(
+            self, project_name, compose, instance_uuid):
+        failures = []
+        compose_path = self._write_project_compose(project_name, compose)
+        project_dir = os.path.dirname(compose_path)
+        for service_name, service in (compose.get('services') or {}).items():
+            if self._service_lifecycle(service) != 'init':
+                continue
+            signature = self._compose_sig({
+                'service': service_name,
+                'definition': service,
+            })
+            signature_path = os.path.join(
+                project_dir, f'.init-{service_name}.sig')
+            try:
+                with open(signature_path) as stream:
+                    if stream.read().strip() == signature:
+                        continue
+            except OSError:
+                pass
+            self._publish_health_status(
+                instance_uuid, 'starting',
+                message=f'running init service {service_name}')
+            ok, output = self._run_compose_command(
+                compose_path, project_name,
+                ['run', '--rm', service_name], timeout=1800)
+            if not ok:
+                log('reconciler',
+                    f'{project_name}: init service {service_name} failed')
+                if self._service_is_optional(service):
+                    failures.append(service_name)
+                    continue
+                return False, failures
+            temporary = f'{signature_path}.tmp'
+            with open(temporary, 'w') as stream:
+                stream.write(f'{signature}\n')
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, signature_path)
+        return True, failures
+
+    def _apply_app_project_compose(
+            self, project_name, compose, instance_uuid, primary_service):
+        with self._project_lock(project_name):
+            init_ok, optional_failures = self._run_app_init_services(
+                project_name, compose, instance_uuid)
+            if not init_ok:
+                return False, optional_failures
+
+            runtime = self._runtime_app_compose(compose)
+            required = []
+            optional = []
+            for service_name, service in (
+                    runtime.get('services') or {}).items():
+                if self._service_is_optional(service):
+                    optional.append(service_name)
+                else:
+                    required.append(service_name)
+            if primary_service not in required:
+                return False, optional_failures
+
+            ok = self._apply_project_compose(
+                project_name, runtime, instance_uuid=instance_uuid,
+                primary_service=primary_service, services=required)
+            if not ok:
+                return False, optional_failures
+
+            for service_name in optional:
+                if not self._apply_project_compose(
+                        project_name, runtime, instance_uuid=None,
+                        primary_service=primary_service,
+                        services=[service_name], remove_orphans=False,
+                        failure_suffix=f'optional-{service_name}',
+                        max_retries=1):
+                    optional_failures.append(service_name)
+            if optional_failures:
+                self._publish_health_status(
+                    instance_uuid, 'running',
+                    message='optional services failed: '
+                    + ', '.join(sorted(optional_failures)),
+                    image=((runtime.get('services') or {}).get(
+                        primary_service) or {}).get('image'))
+            return True, optional_failures
+
+    def _apply_project_compose(
+            self, project_name, compose, instance_uuid=None,
+            primary_service='app', services=None, remove_orphans=True,
+            failure_suffix='', max_retries=5):
+        lock = self._project_lock(project_name)
+        with lock:
+            compose_path = self._write_project_compose(project_name, compose)
+            sig = self._compose_sig(compose)
+            if services:
+                sig = self._compose_sig({
+                    'compose': compose,
+                    'services': list(services),
+                })
+            failed_name = '.failed-compose-sig'
+            if failure_suffix:
+                failed_name += f'.{failure_suffix}'
+            failed_path = os.path.join(
+                os.path.dirname(compose_path), failed_name)
+            failed_sig, failed_reason = self._read_failed_sig_path(failed_path)
+            if failed_sig == sig:
+                if instance_uuid:
+                    self._publish_health_status(
+                        instance_uuid, 'failed', message=failed_reason)
+                return False
+            if instance_uuid:
+                self._publish_health_status(instance_uuid, 'starting')
+
+            last_output = ''
+            reason = 'docker compose up failed'
+            for attempt in range(1, max_retries + 1):
+                args = ['up', '-d', '--pull', 'missing']
+                if remove_orphans:
+                    args.append('--remove-orphans')
+                if services:
+                    args.extend(services)
+                ok, output = self._run_compose_command(
+                    compose_path, project_name,
+                    args, timeout=180)
+                if ok:
+                    self._clear_failed_sig_path(failed_path)
+                    if instance_uuid:
+                        image = ((compose.get('services') or {}).get(
+                            primary_service) or {}).get('image')
+                        self._publish_health_status(
+                            instance_uuid, 'running', image=image)
+                    return True
+                last_output = output
+                classification = self._classify_compose_failure(output)
+                reason = self._failure_reason(classification, output)
+                if classification == 'image_missing':
+                    break
+                if attempt < max_retries:
+                    time.sleep(min(10 * (2 ** (attempt - 1)), 60))
+
+            self._write_failed_sig_path(failed_path, sig, reason)
+            if instance_uuid:
+                tail = '\n'.join(last_output.splitlines()[-5:]) or reason
+                self._publish_health_status(
+                    instance_uuid, 'failed', message=tail)
+            return False
+
+    def _write_project_compose(self, project_name, compose):
+        compose_path = self._project_compose_path(project_name)
+        os.makedirs(os.path.dirname(compose_path), exist_ok=True)
+        tmp_path = compose_path + '.tmp'
+        with open(tmp_path, 'w') as stream:
+            json.dump(compose, stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp_path, compose_path)
+        return compose_path
+
+    @staticmethod
+    def _run_compose_command(compose_path, project_name, args, timeout):
+        try:
+            result = subprocess.run(
+                ['docker', 'compose', '-f', compose_path, '-p', project_name,
+                 *args],
+                capture_output=True, text=True, timeout=timeout)
+            output = '\n'.join(filter(None, [result.stdout, result.stderr]))
+            return result.returncode == 0, output
+        except subprocess.TimeoutExpired:
+            return False, 'docker compose command timed out'
+        except OSError as exception:
+            return False, f'docker compose error: {type(exception).__name__}'
+
+    @staticmethod
+    def _read_json(path):
+        try:
+            with open(path) as stream:
+                return json.load(stream)
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _v2_migration_pending(self):
+        marker = os.path.join(
+            os.path.dirname(self.DESIRED_STATE_V2_PATH), 'apps-v2-migrated')
+        return (os.path.exists(self.DESIRED_STATE_PATH)
+                and not os.path.exists(marker))
+
+    def _commit_v2_migration(self):
+        if os.path.exists(self.COMPOSE_PATH):
+            self._run_compose_command(
+                self.COMPOSE_PATH, 'state', ['down', '--remove-orphans'],
+                timeout=300)
+        state_dir = os.path.dirname(self.DESIRED_STATE_V2_PATH)
+        marker = os.path.join(state_dir, 'apps-v2-migrated')
+        marker_tmp = marker + '.tmp'
+        with open(marker_tmp, 'w') as stream:
+            stream.write('2\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(marker_tmp, marker)
+        for legacy_path in (self.DESIRED_STATE_PATH, self.COMPOSE_PATH):
+            try:
+                os.remove(legacy_path)
+            except FileNotFoundError:
+                pass
+        log('reconciler', 'Apps-v2 migration committed')
+
+    def _remove_absent_v2_projects(self, desired_projects):
+        if not os.path.isdir(self.PROJECTS_DIR):
+            return
+        for entry in os.scandir(self.PROJECTS_DIR):
+            if (not entry.is_dir() or entry.name == 'reefy-system'
+                    or entry.name in desired_projects):
+                continue
+            compose_path = os.path.join(entry.path, 'compose.json')
+            if os.path.exists(compose_path):
+                self._run_compose_command(
+                    compose_path, entry.name,
+                    ['down', '--remove-orphans'], timeout=300)
+            shutil.rmtree(entry.path, ignore_errors=True)
+
+    @staticmethod
+    def _read_failed_sig_path(path):
+        try:
+            with open(path) as stream:
+                signature, _, reason = stream.read().partition('\n')
+            return signature.strip() or None, reason.strip()
+        except OSError:
+            return None, ''
+
+    @staticmethod
+    def _write_failed_sig_path(path, signature, reason):
+        try:
+            with open(path, 'w') as stream:
+                stream.write(f'{signature}\n{reason}')
+        except OSError as exception:
+            log('reconciler',
+                f'cannot persist project failure ({type(exception).__name__})')
+
+    @staticmethod
+    def _clear_failed_sig_path(path):
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
 
     def _apply_files(self, files):
         """Apply the generic `files` directive from desired-state.
@@ -786,6 +1388,59 @@ class DataPlane:
         request instead of running concurrently."""
         self._dp_reconcile()
 
+    def _docker_event_loop(self):
+        """Repair desired service containers immediately after a die event."""
+        while True:
+            try:
+                process = subprocess.Popen(
+                    ['docker', 'events', '--filter', 'type=container',
+                     '--format', '{{json .}}'],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    text=True)
+                for line in process.stdout:
+                    try:
+                        event = json.loads(line)
+                    except (TypeError, ValueError):
+                        continue
+                    self._handle_docker_event(event)
+                process.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            time.sleep(1)
+
+    def _handle_docker_event(self, event):
+        action = event.get('Action') or event.get('status')
+        if action != 'die':
+            return False
+        attributes = ((event.get('Actor') or {}).get('Attributes') or {})
+        if attributes.get('ai.reefy.lifecycle') != 'service':
+            return False
+        # Docker owns nonzero crash recovery through unlimited on-failure.
+        # Reefy only fills the exit-code-0 gap that policy intentionally
+        # leaves alone.
+        if str(attributes.get('exitCode', '0')) != '0':
+            return False
+        project = attributes.get('com.docker.compose.project')
+        instance_uuid = attributes.get('ai.reefy.instance_uuid')
+        if not project or not instance_uuid:
+            return False
+        state = self._read_json(self._active_state_path())
+        if not self._is_v2_state(state):
+            return False
+        app = next((candidate for candidate in state.get('apps') or []
+                    if (candidate.get('project_name') == project
+                        and candidate.get('instance_uuid') == instance_uuid
+                        and candidate.get('desired_status') == 'running')),
+                   None)
+        if app is None:
+            return False
+        log('reconciler',
+            f'{project}: service die event detected; scheduling repair')
+        threading.Thread(
+            target=self._reconcile_v2_app,
+            args=(app, False, False), daemon=True).start()
+        return True
+
     def run_data_plane(self):
         """Data-plane entrypoint (reefy-reconciler): serve the Varlink
         interface and apply persisted desired state on startup. No MQTT -
@@ -852,6 +1507,7 @@ class DataPlane:
         # forwarded apply enters the pending slot instead of running
         # concurrently.
         threading.Thread(target=self._boot_apply, daemon=True).start()
+        threading.Thread(target=self._docker_event_loop, daemon=True).start()
 
         log('mqtt', f'[data-plane] serving Varlink at {self.VARLINK_ADDRESS}')
         with varlink.ThreadingServer(self.VARLINK_ADDRESS, _Handler) as server:

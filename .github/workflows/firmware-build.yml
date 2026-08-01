@@ -35,6 +35,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
   # For actions/attest-build-provenance@v2: write attestations to
   # the repo's transparency log. id-token: write is what fetches
   # the OIDC JWT used to sign.
@@ -45,6 +46,10 @@ jobs:
   build:
     runs-on: [self-hosted, large]
     timeout-minutes: 360
+    outputs:
+      reefy_build_id: ${{ steps.provider_metadata.outputs.reefy_build_id }}
+      kernel_abi_sha256: ${{ steps.provider_metadata.outputs.kernel_abi_sha256 }}
+      image_version: ${{ steps.provider_metadata.outputs.image_version }}
     env:
       # Persistent caches in the github-runner Reefy app's
       # buildroot-cache volume. dl/ = source tarballs (~2 GB),
@@ -115,6 +120,11 @@ jobs:
               echo "missing ${module} module under $module_dir"
               needs_clean=true
             fi
+            if ! find "$BR_OUTPUT/reefy-artifacts/nvidia/modules-root/lib/modules/$expected_kernel" \
+                -name "${module}.ko*" 2>/dev/null | grep -q .; then
+              echo "missing staged provider ${module} module"
+              needs_clean=true
+            fi
           done
 
           if [ "$needs_clean" = true ]; then
@@ -127,6 +137,12 @@ jobs:
             make O="$BR_OUTPUT" nvidia-open-gpu-dirclean
           else
             echo "kernel module cache is current for $expected_kernel"
+          fi
+
+          if [ ! -x "$BR_OUTPUT/reefy-artifacts/nvidia/toolkit/nvidia-ctk" ] \
+              || [ ! -x "$BR_OUTPUT/reefy-artifacts/nvidia/toolkit/nvidia-cdi-hook" ]; then
+            echo "missing staged NVIDIA Container Toolkit provider inputs"
+            make O="$BR_OUTPUT" nvidia-container-toolkit-dirclean
           fi
 
       - name: Build (post_image.sh loops flavors)
@@ -172,6 +188,59 @@ jobs:
       # isn't a meaningful release tag.
       - name: Stage os-release alongside images
         run: cp "$BR_OUTPUT/target/usr/lib/os-release" "$BR_OUTPUT/images/os-release"
+
+      - name: Stage exact provider inputs
+        id: provider_metadata
+        run: |
+          os_release="$BR_OUTPUT/target/usr/lib/os-release"
+          kernel_release=$(find "$BR_OUTPUT/target/lib/modules" \
+            -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+          reefy_build_id=$(sed -n 's/^REEFY_BUILD_ID=//p' "$os_release")
+          kernel_abi_sha256=$(sed -n 's/^REEFY_KERNEL_ABI_SHA256=//p' "$os_release")
+          image_version=$(sed -n 's/^IMAGE_VERSION=//p' "$os_release")
+          test -n "$kernel_release"
+          test -n "$reefy_build_id"
+          test -n "$kernel_abi_sha256"
+          test -n "$image_version"
+
+          nvidia="$BR_OUTPUT/reefy-artifacts/nvidia"
+          test -x "$nvidia/toolkit/nvidia-ctk"
+          test -x "$nvidia/toolkit/nvidia-cdi-hook"
+          for module in nvidia nvidia-drm nvidia-modeset nvidia-uvm; do
+            find "$nvidia/modules-root/lib/modules/$kernel_release" \
+              -name "${module}.ko*" | grep -q . \
+              || { echo "missing provider input ${module}"; exit 1; }
+          done
+          cat > "$nvidia/metadata.env" <<EOF
+          KERNEL_RELEASE=$kernel_release
+          REEFY_BUILD_ID=$reefy_build_id
+          REEFY_KERNEL_ABI_SHA256=$kernel_abi_sha256
+          IMAGE_VERSION=$image_version
+          EOF
+
+          intel="$BR_OUTPUT/reefy-artifacts/intel"
+          mkdir -p "$intel"
+          cp "$nvidia/metadata.env" "$intel/metadata.env"
+
+          echo "reefy_build_id=$reefy_build_id" >> "$GITHUB_OUTPUT"
+          echo "kernel_abi_sha256=$kernel_abi_sha256" >> "$GITHUB_OUTPUT"
+          echo "image_version=$image_version" >> "$GITHUB_OUTPUT"
+
+      - name: Upload NVIDIA provider inputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: reefy-nvidia-inputs
+          compression-level: 1
+          path: |
+            ${{ env.BR_OUTPUT }}/reefy-artifacts/nvidia/modules-root
+            ${{ env.BR_OUTPUT }}/reefy-artifacts/nvidia/toolkit
+            ${{ env.BR_OUTPUT }}/reefy-artifacts/nvidia/metadata.env
+
+      - name: Upload Intel provider inputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: reefy-intel-inputs
+          path: ${{ env.BR_OUTPUT }}/reefy-artifacts/intel/metadata.env
 
       # Per-flavor artifact upload. Naming convention `reefy-<flavor>`
       # is the contract reefy-deploy queries against
@@ -225,3 +294,50 @@ jobs:
             ${{ env.BR_OUTPUT }}/images/reefy-prod.raw
             ${{ env.BR_OUTPUT }}/images/reefy-dev.efi
             ${{ env.BR_OUTPUT }}/images/reefy-dev.raw
+
+  publish-nvidia-provider:
+    needs: build
+    uses: reefyai/reefy-nvidia/.github/workflows/publish.yml@main
+    with:
+      input_artifact: reefy-nvidia-inputs
+    secrets: inherit
+
+  publish-intel-provider:
+    needs: build
+    uses: reefyai/reefy-intel/.github/workflows/publish.yml@main
+    with:
+      input_artifact: reefy-intel-inputs
+    secrets: inherit
+
+  provider-catalog:
+    needs: [build, publish-nvidia-provider, publish-intel-provider]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build exact provider catalog
+        env:
+          REEFY_BUILD_ID: ${{ needs.build.outputs.reefy_build_id }}
+          KERNEL_ABI_SHA256: ${{ needs.build.outputs.kernel_abi_sha256 }}
+          IMAGE_VERSION: ${{ needs.build.outputs.image_version }}
+          NVIDIA_DIGEST: ${{ needs.publish-nvidia-provider.outputs.digest }}
+          INTEL_DIGEST: ${{ needs.publish-intel-provider.outputs.digest }}
+        run: |
+          jq -n \
+            --arg build_id "$REEFY_BUILD_ID" \
+            --arg abi "sha256:$KERNEL_ABI_SHA256" \
+            --arg image_version "$IMAGE_VERSION" \
+            --arg nvidia "ghcr.io/reefyai/reefy-nvidia@$NVIDIA_DIGEST" \
+            --arg intel "ghcr.io/reefyai/reefy-intel@$INTEL_DIGEST" \
+            '{schema_version: 1,
+              reefy_build_id: $build_id,
+              kernel_abi_digest: $abi,
+              image_version: $image_version,
+              providers: {
+                "nvidia-driver": {ref: $nvidia},
+                "intel-accelerator": {ref: $intel}
+              }}' > provider-artifacts.json
+
+      - name: Upload exact provider catalog
+        uses: actions/upload-artifact@v4
+        with:
+          name: reefy-provider-catalog
+          path: provider-artifacts.json

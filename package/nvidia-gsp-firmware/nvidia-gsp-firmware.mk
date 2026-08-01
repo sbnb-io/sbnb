@@ -4,7 +4,7 @@
 #
 ################################################################################
 
-NVIDIA_GSP_FIRMWARE_VERSION = 595.45.04
+NVIDIA_GSP_FIRMWARE_VERSION = 595.84
 NVIDIA_GSP_FIRMWARE_SITE = https://us.download.nvidia.com/XFree86/Linux-x86_64/$(NVIDIA_GSP_FIRMWARE_VERSION)
 NVIDIA_GSP_FIRMWARE_SOURCE = NVIDIA-Linux-x86_64-$(NVIDIA_GSP_FIRMWARE_VERSION).run
 NVIDIA_GSP_FIRMWARE_LICENSE = NVIDIA Proprietary

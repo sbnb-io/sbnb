@@ -22,6 +22,34 @@ fi
 echo "${IMAGE_VERSION}" > "${VERSION_FILE}"
 echo "IMAGE_ID=reefy-linux" >> "${OS_RELEASE}"
 echo "IMAGE_VERSION=${IMAGE_VERSION}" >> "${OS_RELEASE}"
+echo "REEFY_DESIRED_STATE_SCHEMA=2" >> "${OS_RELEASE}"
+
+# Internal exact-build identity for externally packaged kernel modules. Keep
+# the public IMAGE_VERSION format unchanged. Hash the actual kernel image,
+# configuration, and exported symbol CRCs so an incremental rebuild cannot
+# accidentally select modules from different bytes with the same uname -r.
+LINUX_BUILD_DIR=$(find "${BUILD_DIR}" -maxdepth 1 -type d -name 'linux-*' \
+  -print -quit)
+if [ -n "${LINUX_BUILD_DIR}" ] \
+    && [ -f "${LINUX_BUILD_DIR}/arch/x86/boot/bzImage" ] \
+    && [ -f "${LINUX_BUILD_DIR}/.config" ] \
+    && [ -f "${LINUX_BUILD_DIR}/Module.symvers" ]; then
+  KERNEL_ABI_SHA256=$(sha256sum \
+    "${LINUX_BUILD_DIR}/.config" "${LINUX_BUILD_DIR}/Module.symvers" \
+    | sha256sum | awk '{print $1}')
+  if [ -z "${REEFY_BUILD_ID:-}" ]; then
+    REEFY_BUILD_ID=$(sha256sum \
+      "${LINUX_BUILD_DIR}/arch/x86/boot/bzImage" \
+      "${LINUX_BUILD_DIR}/.config" \
+      "${LINUX_BUILD_DIR}/Module.symvers" \
+      | sha256sum | awk '{print $1}')
+  fi
+  echo "REEFY_BUILD_ID=${REEFY_BUILD_ID}" >> "${OS_RELEASE}"
+  echo "REEFY_KERNEL_ABI_SHA256=${KERNEL_ABI_SHA256}" >> "${OS_RELEASE}"
+else
+  echo "ERROR: cannot calculate Reefy kernel build identity" >&2
+  exit 1
+fi
 
 # Mount efivarfs to access UEFI variables
 # Remount as read-write as needed

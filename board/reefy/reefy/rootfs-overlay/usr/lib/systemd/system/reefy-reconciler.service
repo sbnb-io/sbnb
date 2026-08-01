@@ -10,6 +10,7 @@ Documentation=https://github.com/reefyai/reefy
 # Varlink calls retry.
 After=reefy-storage.service reefy-app-volumes.service docker.service
 Wants=docker.service
+PartOf=docker.service
 RequiresMountsFor=/mnt/reefy-data
 
 [Service]

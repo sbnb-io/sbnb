@@ -108,7 +108,10 @@ def _get_app_uid(session_id):
     in sync. Returns 0 (root) if not declared or state is missing, so
     apps that pre-date the uid field stay backwards-compatible."""
     try:
-        with open(os.path.join(STATE_DIR, 'desired-state.json')) as f:
+        v2_path = os.path.join(STATE_DIR, 'desired-state-v2.json')
+        state_path = (v2_path if os.path.exists(v2_path)
+                      else os.path.join(STATE_DIR, 'desired-state.json'))
+        with open(state_path) as f:
             state = json.load(f)
         for i in state.get('instances', []):
             if i.get('instance_uuid') == session_id:
@@ -116,6 +119,23 @@ def _get_app_uid(session_id):
     except (OSError, json.JSONDecodeError, ValueError, TypeError):
         pass
     return 0
+
+
+def _resolve_app_container(session_id, requested):
+    """Resolve the primary container from cached Apps-v2 state."""
+    try:
+        with open(os.path.join(STATE_DIR, 'desired-state-v2.json')) as f:
+            state = json.load(f)
+        for app in state.get('apps', []):
+            if app.get('instance_uuid') != session_id:
+                continue
+            project = app.get('project_name')
+            service = app.get('primary_service') or 'app'
+            if project:
+                return f'{project}-{service}-1'
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+    return requested
 
 
 def spawn_pty(session_id, container=None, name=None):
@@ -221,7 +241,8 @@ def subscribe_session(session_id, data, now=None):
             s['legacy_subscribers'] += 1
         s['last_activity'] = now
         if data.get('container'):
-            s['container'] = data['container']
+            s['container'] = _resolve_app_container(
+                session_id, data['container'])
         if data.get('name'):
             s['name'] = data['name']
         return subscriber_count(s)
