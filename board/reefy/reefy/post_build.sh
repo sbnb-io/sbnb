@@ -49,12 +49,27 @@ if [ -n "${LINUX_BUILD_DIR}" ] \
   KERNEL_ABI_SHA256=$(sha256sum \
     "${LINUX_BUILD_DIR}/.config" "${LINUX_BUILD_DIR}/Module.symvers" \
     | sha256sum | awk '{print $1}')
+  BUILD_IDENTITY_SALT=${REEFY_E2E_BUILD_IDENTITY_SALT:-}
+  if [ -n "${BUILD_IDENTITY_SALT}" ] \
+      && [[ ! "${BUILD_IDENTITY_SALT}" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
+    echo "ERROR: invalid E2E build identity salt" >&2
+    exit 1
+  fi
   if [ -z "${REEFY_BUILD_ID:-}" ]; then
-    REEFY_BUILD_ID=$(sha256sum \
+    BASE_REEFY_BUILD_ID=$(sha256sum \
       "${LINUX_BUILD_DIR}/arch/x86/boot/bzImage" \
       "${LINUX_BUILD_DIR}/.config" \
       "${LINUX_BUILD_DIR}/Module.symvers" \
       | sha256sum | awk '{print $1}')
+    REEFY_BUILD_ID=${BASE_REEFY_BUILD_ID}
+    if [ -n "${BUILD_IDENTITY_SALT}" ]; then
+      REEFY_BUILD_ID=$(printf '%s\0%s\0%s\0' \
+        reefy-e2e-build-id-v1 "${BASE_REEFY_BUILD_ID}" \
+        "${BUILD_IDENTITY_SALT}" | sha256sum | awk '{print $1}')
+    fi
+  elif [ -n "${BUILD_IDENTITY_SALT}" ]; then
+    echo "ERROR: cannot combine REEFY_BUILD_ID with an E2E identity salt" >&2
+    exit 1
   fi
   echo "REEFY_BUILD_ID=${REEFY_BUILD_ID}" >> "${OS_RELEASE}"
   echo "REEFY_KERNEL_ABI_SHA256=${KERNEL_ABI_SHA256}" >> "${OS_RELEASE}"

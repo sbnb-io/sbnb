@@ -22,6 +22,12 @@ name: Build reefy firmware (self-hosted)
 
 on:
   workflow_dispatch:
+    inputs:
+      e2e_build_identity_salt:
+        description: Test-only salt for a distinct build ID with unchanged kernel ABI
+        required: false
+        default: ''
+        type: string
   push:
     paths-ignore:
       - '**/README*.md'
@@ -60,6 +66,7 @@ jobs:
       BR2_DL_DIR: /buildroot-cache/dl
       BR2_CCACHE_DIR: /buildroot-cache/ccache
       BR_OUTPUT: /buildroot-cache/output
+      REEFY_E2E_BUILD_IDENTITY_SALT: ${{ inputs.e2e_build_identity_salt || '' }}
 
     steps:
       - name: Checkout (with buildroot submodule)
@@ -80,6 +87,15 @@ jobs:
           repository: reefyai/reefy-amd
           ref: main
           path: amd-provider
+
+      - name: Validate E2E build identity salt
+        shell: bash
+        run: |
+          if [ -n "$REEFY_E2E_BUILD_IDENTITY_SALT" ] \
+              && [[ ! "$REEFY_E2E_BUILD_IDENTITY_SALT" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
+            echo "invalid e2e_build_identity_salt"
+            exit 1
+          fi
 
       - name: Install buildroot prereqs
         run: |
