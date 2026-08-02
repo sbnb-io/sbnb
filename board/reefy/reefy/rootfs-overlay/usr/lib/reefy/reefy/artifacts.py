@@ -276,6 +276,11 @@ class ArtifactManager:
                         self._manifest_path(source.digest_hex))
                     if not admitted:
                         admitted = self._admit(source, kind)
+            # Admission is persistent but compatibility is boot-specific.
+            # Revalidate cached host extensions against the running slot so
+            # an A/B update cannot activate the previous slot's modules before
+            # the cloud supplies this build's provider digest.
+            self._validate_config(admitted.get('config') or {}, kind, source)
             mounts = self._mount(admitted)
             if kind == 'host-extension':
                 self._activate(admitted, mounts)

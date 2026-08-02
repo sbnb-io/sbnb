@@ -181,6 +181,30 @@ def test_host_extension_requires_exact_build_and_abi():
         raise AssertionError('wrong-build host extension was admitted')
 
 
+def test_cached_host_extension_is_revalidated_after_os_update():
+    _, reference, _ = _fixture(
+        kind='host-extension', name='nvidia-driver')
+    manager = _manager()
+    with mock.patch.object(manager, '_mount', return_value=['/mount']), \
+            mock.patch.object(manager, '_activate'):
+        manager.prepare(reference, kind='host-extension')
+
+    with open(manager.os_release_path, 'w') as stream:
+        stream.write(
+            'REEFY_BUILD_ID=next-build\n'
+            'REEFY_KERNEL_ABI_SHA256=next-abi\n')
+
+    with mock.patch.object(manager, '_mount') as mount:
+        try:
+            manager.prepare(
+                reference, kind='host-extension', cached_only=True)
+        except artifacts.ArtifactError as exception:
+            assert 'build identity mismatch' in str(exception)
+        else:
+            raise AssertionError('previous-slot provider was activated')
+    mount.assert_not_called()
+
+
 def test_all_accelerator_providers_are_allow_listed():
     assert {
         'nvidia-driver', 'amd-driver', 'intel-accelerator',
