@@ -410,6 +410,10 @@ class ArtifactManager:
             if active.get('digest') == admitted['digest']:
                 return
             if active.get('digest'):
+                active_admitted = _read_json(self._manifest_path(
+                    _split_digest(active['digest'])))
+                if self._same_payload(active_admitted, admitted):
+                    return
                 raise ArtifactError('different provider is active; reboot required')
             activator = HOST_ACTIVATORS[name]
             if not os.path.isfile(activator):
@@ -432,6 +436,31 @@ class ArtifactManager:
                 'digest': admitted['digest'], 'mounts': mounts,
                 'activated_at': int(time.time()),
             })
+
+    @staticmethod
+    def _same_payload(left, right):
+        """Whether two admitted manifests activate identical host bytes.
+
+        OCI manifests may differ only in outer metadata while referring to
+        the same validated config and ordered SquashFS layers. Re-running a
+        host activator is unnecessary in that case and can be unsafe after
+        kernel modules are loaded. Config and every mounted layer descriptor
+        remain exact; only non-runtime manifest metadata is ignored.
+        """
+        if not left or left.get('config') != right.get('config'):
+            return False
+
+        def runtime_layers(value):
+            return [
+                (
+                    layer.get('digest'),
+                    layer.get('size'),
+                    layer.get('mediaType'),
+                )
+                for layer in value.get('layers') or []
+            ]
+
+        return runtime_layers(left) == runtime_layers(right)
 
     def activate_cached_state(self, state_path):
         state = _read_json(state_path)

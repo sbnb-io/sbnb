@@ -150,6 +150,86 @@ def test_artifact_supplied_hook_is_never_executed():
         '/usr/lib/reefy/activators/nvidia-driver']
 
 
+def test_equivalent_host_extension_manifest_needs_no_reactivation():
+    manager = _manager()
+    config = {
+        'kind': 'host-extension',
+        'name': 'nvidia-driver',
+        'version': '595.84',
+    }
+    layer = {
+        'digest': 'sha256:' + ('c' * 64),
+        'size': 1234,
+        'mediaType': 'application/vnd.reefy.squashfs.v1',
+    }
+    active_admitted = {
+        'digest': 'sha256:' + ('a' * 64),
+        'config': config,
+        'layers': [layer],
+        'ref': 'synthetic-active',
+    }
+    requested = {
+        'digest': 'sha256:' + ('b' * 64),
+        'config': dict(config),
+        'layers': [{**layer, 'annotations': {'rebuilt': 'true'}}],
+        'ref': 'synthetic-requested',
+    }
+    artifacts._atomic_json(
+        manager._manifest_path('a' * 64), active_admitted)
+    artifacts._atomic_json(
+        os.path.join(manager.run_dir, 'active', 'nvidia-driver.json'), {
+            'digest': active_admitted['digest'],
+            'name': 'nvidia-driver',
+            'mounts': ['/active/layer'],
+        })
+
+    with mock.patch.object(artifacts.subprocess, 'run') as run:
+        manager._activate(requested, ['/requested/layer'])
+
+    run.assert_not_called()
+
+
+def test_changed_host_extension_layer_still_requires_reboot():
+    manager = _manager()
+    config = {'kind': 'host-extension', 'name': 'nvidia-driver'}
+    active_admitted = {
+        'digest': 'sha256:' + ('a' * 64),
+        'config': config,
+        'layers': [{
+            'digest': 'sha256:' + ('c' * 64),
+            'size': 1234,
+            'mediaType': 'application/vnd.reefy.squashfs.v1',
+        }],
+    }
+    requested = {
+        'digest': 'sha256:' + ('b' * 64),
+        'config': dict(config),
+        'layers': [{
+            'digest': 'sha256:' + ('d' * 64),
+            'size': 1234,
+            'mediaType': 'application/vnd.reefy.squashfs.v1',
+        }],
+    }
+    artifacts._atomic_json(
+        manager._manifest_path('a' * 64), active_admitted)
+    artifacts._atomic_json(
+        os.path.join(manager.run_dir, 'active', 'nvidia-driver.json'), {
+            'digest': active_admitted['digest'],
+            'name': 'nvidia-driver',
+            'mounts': ['/active/layer'],
+        })
+
+    with mock.patch.object(artifacts.subprocess, 'run') as run:
+        try:
+            manager._activate(requested, ['/requested/layer'])
+        except artifacts.ArtifactError as exception:
+            assert 'reboot required' in str(exception)
+        else:
+            raise AssertionError('changed host payload was accepted live')
+
+    run.assert_not_called()
+
+
 def test_nvidia_activator_replaces_the_runtime_cdi_definition():
     path = os.path.join(
         os.path.dirname(__file__), '..', 'rootfs-overlay', 'usr', 'lib',
