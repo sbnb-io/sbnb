@@ -432,7 +432,7 @@ jobs:
 
   publish-amd-provider:
     needs: build
-    uses: reefyai/reefy-amd/.github/workflows/publish.yml@main
+    uses: reefyai/reefy-amd/.github/workflows/publish.yml@shared-host-libdrm
     with:
       input_artifact: reefy-amd-inputs
     secrets: inherit
