@@ -32,7 +32,11 @@ HOST_EXTENSION_REPOSITORIES = {
     'ghcr.io/reefyai/reefy-intel',
     'ghcr.io/reefyai/reefy-artifact-fixtures',
 }
-HOST_EXTENSION_NAMES = {'nvidia-driver', 'intel-accelerator'}
+HOST_EXTENSION_NAMES = {
+    'nvidia-driver',
+    'intel-accelerator',
+    'e2e-host-extension',
+}
 HOST_ACTIVATION_HOOK = 'usr/lib/reefy/activate'
 MANIFEST_ACCEPT = ', '.join((
     'application/vnd.oci.image.manifest.v1+json',

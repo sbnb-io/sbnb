@@ -67,6 +67,13 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Checkout synthetic artifact fixture module
+        uses: actions/checkout@v4
+        with:
+          repository: reefyai/reefy-artifact-fixtures
+          ref: main
+          path: artifact-fixtures
+
       - name: Install buildroot prereqs
         run: |
           apt-get update
@@ -236,6 +243,17 @@ jobs:
           mkdir -p "$intel"
           cp "$nvidia/metadata.env" "$intel/metadata.env"
 
+          fixture="$BR_OUTPUT/reefy-artifacts/fixture"
+          mkdir -p "$fixture"
+          cp "$nvidia/metadata.env" "$fixture/metadata.env"
+          kernel_build=$(find "$BR_OUTPUT/build" -mindepth 1 -maxdepth 1 \
+            -type d -name 'linux-*' | head -n1)
+          test -n "$kernel_build"
+          make -C "$kernel_build" \
+            M="$GITHUB_WORKSPACE/artifact-fixtures/module" modules
+          cp "$GITHUB_WORKSPACE/artifact-fixtures/module/reefy_e2e_artifact.ko" \
+            "$fixture/reefy_e2e_artifact.ko"
+
           echo "reefy_build_id=$reefy_build_id" >> "$GITHUB_OUTPUT"
           echo "kernel_abi_sha256=$kernel_abi_sha256" >> "$GITHUB_OUTPUT"
           echo "image_version=$image_version" >> "$GITHUB_OUTPUT"
@@ -255,6 +273,14 @@ jobs:
         with:
           name: reefy-intel-inputs
           path: ${{ env.BR_OUTPUT }}/reefy-artifacts/intel/metadata.env
+
+      - name: Upload synthetic artifact fixture inputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: reefy-artifact-fixture-inputs
+          path: |
+            ${{ env.BR_OUTPUT }}/reefy-artifacts/fixture/metadata.env
+            ${{ env.BR_OUTPUT }}/reefy-artifacts/fixture/reefy_e2e_artifact.ko
 
       # Per-flavor artifact upload. Naming convention `reefy-<flavor>`
       # is the contract reefy-deploy queries against
@@ -323,8 +349,15 @@ jobs:
       input_artifact: reefy-intel-inputs
     secrets: inherit
 
+  publish-artifact-fixture:
+    needs: build
+    uses: reefyai/reefy-artifact-fixtures/.github/workflows/publish.yml@main
+    with:
+      input_artifact: reefy-artifact-fixture-inputs
+    secrets: inherit
+
   provider-catalog:
-    needs: [build, publish-nvidia-provider, publish-intel-provider]
+    needs: [build, publish-nvidia-provider, publish-intel-provider, publish-artifact-fixture]
     runs-on: ubuntu-24.04
     steps:
       - name: Build exact provider catalog
@@ -334,6 +367,7 @@ jobs:
           IMAGE_VERSION: ${{ needs.build.outputs.image_version }}
           NVIDIA_DIGEST: ${{ needs.publish-nvidia-provider.outputs.digest }}
           INTEL_DIGEST: ${{ needs.publish-intel-provider.outputs.digest }}
+          FIXTURE_DIGEST: ${{ needs.publish-artifact-fixture.outputs.digest }}
         run: |
           jq -n \
             --arg build_id "$REEFY_BUILD_ID" \
@@ -341,6 +375,7 @@ jobs:
             --arg image_version "$IMAGE_VERSION" \
             --arg nvidia "ghcr.io/reefyai/reefy-nvidia@$NVIDIA_DIGEST" \
             --arg intel "ghcr.io/reefyai/reefy-intel@$INTEL_DIGEST" \
+            --arg fixture "ghcr.io/reefyai/reefy-artifact-fixtures@$FIXTURE_DIGEST" \
             '{schema_version: 1,
               reefy_build_id: $build_id,
               kernel_abi_digest: $abi,
@@ -348,6 +383,9 @@ jobs:
               providers: {
                 "nvidia-driver": {ref: $nvidia},
                 "intel-accelerator": {ref: $intel}
+              },
+              fixtures: {
+                "e2e-host-extension": {ref: $fixture}
               }}' > provider-artifacts.json
 
       - name: Upload exact provider catalog
