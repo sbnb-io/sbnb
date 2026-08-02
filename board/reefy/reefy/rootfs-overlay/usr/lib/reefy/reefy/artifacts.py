@@ -172,8 +172,16 @@ class OciSource:
                 pass
             raise
         if expected_size is not None and count != expected_size:
+            try:
+                os.remove(destination)
+            except OSError:
+                pass
             raise ArtifactError('blob size mismatch')
         if f'sha256:{hasher.hexdigest()}' != digest:
+            try:
+                os.remove(destination)
+            except OSError:
+                pass
             raise ArtifactError('blob digest mismatch')
 
     def _local_path(self, digest):

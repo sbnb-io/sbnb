@@ -107,6 +107,55 @@ def test_manifest_digest_mismatch_is_rejected_before_mount():
     mount.assert_not_called()
 
 
+def test_failed_blob_download_never_leaves_final_or_partial_content():
+    source = artifacts.OciSource(
+        'registry.example/fixtures@sha256:' + ('a' * 64))
+    destination = os.path.join(tempfile.mkdtemp(), 'partial')
+
+    class BrokenResponse:
+        calls = 0
+
+        def read(self, _size):
+            self.calls += 1
+            if self.calls == 1:
+                return b'incomplete'
+            raise OSError('synthetic transfer interruption')
+
+        def close(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    with mock.patch.object(source, '_request', return_value=BrokenResponse()):
+        try:
+            source.download_blob(
+                'sha256:' + ('b' * 64), destination, expected_size=20)
+        except OSError as exception:
+            assert 'synthetic transfer interruption' in str(exception)
+        else:
+            raise AssertionError('interrupted transfer unexpectedly passed')
+    assert not os.path.exists(destination)
+
+
+def test_blob_digest_failure_removes_partial_content():
+    root, reference, _ = _fixture()
+    source = artifacts.OciSource(reference)
+    destination = os.path.join(tempfile.mkdtemp(), 'partial')
+    layer_digest = _blob(root, b'wrong bytes')
+    try:
+        source.download_blob(
+            layer_digest, destination, expected_size=len(b'wrong bytes') + 1)
+    except artifacts.ArtifactError as exception:
+        assert 'size mismatch' in str(exception)
+    else:
+        raise AssertionError('wrong blob size unexpectedly passed')
+    assert not os.path.exists(destination)
+
+
 def test_host_extension_requires_exact_build_and_abi():
     root, reference, config = _fixture(
         kind='host-extension', name='nvidia-driver')
