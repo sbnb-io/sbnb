@@ -23,7 +23,7 @@ bind_read_only() {
     mkdir -p "$target"
     if ! mountpoint -q "$target"; then
         mount --bind "$source" "$target"
-        mount -o remount,bind,ro,nodev,nosuid "$target"
+        mount -o remount,bind,ro,nodev,nosuid "$source" "$target"
     fi
 }
 
