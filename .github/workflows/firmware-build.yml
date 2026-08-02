@@ -255,6 +255,8 @@ jobs:
           done
           test -n "$kernel_build"
           make -C "$kernel_build" \
+            ARCH=x86 \
+            CROSS_COMPILE="$BR_OUTPUT/host/bin/x86_64-buildroot-linux-gnu-" \
             M="$GITHUB_WORKSPACE/artifact-fixtures/module" modules
           cp "$GITHUB_WORKSPACE/artifact-fixtures/module/reefy_e2e_artifact.ko" \
             "$fixture/reefy_e2e_artifact.ko"
