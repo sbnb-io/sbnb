@@ -246,8 +246,13 @@ jobs:
           fixture="$BR_OUTPUT/reefy-artifacts/fixture"
           mkdir -p "$fixture"
           cp "$nvidia/metadata.env" "$fixture/metadata.env"
-          kernel_build=$(find "$BR_OUTPUT/build" -mindepth 1 -maxdepth 1 \
-            -type d -name 'linux-*' | head -n1)
+          kernel_build=''
+          for candidate in "$BR_OUTPUT"/build/linux-*; do
+            test -f "$candidate/include/config/auto.conf" || continue
+            test -f "$candidate/include/generated/autoconf.h" || continue
+            kernel_build=$candidate
+            break
+          done
           test -n "$kernel_build"
           make -C "$kernel_build" \
             M="$GITHUB_WORKSPACE/artifact-fixtures/module" modules
