@@ -353,7 +353,7 @@ def _next_gpu_index(samples: list[dict]) -> int:
 
 
 def _collect_nvidia_gpu() -> list[dict]:
-    """nvidia-smi → util / VRAM / temp / power."""
+    """nvidia-smi → util / VRAM / temp / fan / power."""
     if not shutil.which('nvidia-smi'):
         return []
     if not _has_nvidia_pci_device():
@@ -362,7 +362,7 @@ def _collect_nvidia_gpu() -> list[dict]:
         r = subprocess.run(
             ['nvidia-smi',
              '--query-gpu=index,name,pci.bus_id,uuid,utilization.gpu,'
-             'memory.used,memory.total,temperature.gpu,power.draw',
+             'memory.used,memory.total,temperature.gpu,fan.speed,power.draw',
              '--format=csv,noheader,nounits'],
             capture_output=True, text=True, timeout=2)
         if r.returncode != 0:
@@ -373,9 +373,10 @@ def _collect_nvidia_gpu() -> list[dict]:
     samples = []
     for line in r.stdout.strip().splitlines():
         parts = [p.strip() for p in line.split(',')]
-        if len(parts) != 9:
+        if len(parts) != 10:
             continue
-        idx, name, pci, uuid_str, util, used_mb, total_mb, temp, watts = parts
+        (idx, name, pci, uuid_str, util, used_mb, total_mb, temp,
+         fan_pct, watts) = parts
         labels = {
             'gpu': idx,
             'name': name,
@@ -398,6 +399,11 @@ def _collect_nvidia_gpu() -> list[dict]:
                                 'value': used_bytes / total_bytes * 100})
             samples.append({'name': 'reefy_gpu_temp_celsius',
                             'labels': labels, 'value': float(temp)})
+            try:
+                samples.append({'name': 'reefy_gpu_fan_pct',
+                                'labels': labels, 'value': float(fan_pct)})
+            except ValueError:
+                pass
             try:
                 power_watts = float(watts)
                 samples.append({'name': 'reefy_gpu_power_watts',
@@ -476,8 +482,9 @@ def _amd_gpu_identities() -> dict[int, dict[str, str]]:
         asic = item.get('asic') or {}
         bus = item.get('bus') or {}
         pci = str(bus.get('bdf') or '')
+        market_name = str(asic.get('market_name') or 'AMD GPU')
         identities[native_idx] = {
-            'name': str(asic.get('market_name') or 'AMD GPU'),
+            'name': _amd_gpu_model(pci, market_name),
             'pci': pci,
             'uuid': str(asic.get('asic_serial') or pci),
         }
@@ -486,14 +493,34 @@ def _amd_gpu_identities() -> dict[int, dict[str, str]]:
     return identities
 
 
+def _amd_gpu_model(pci: str, market_name: str) -> str:
+    """Prefer the PCI model when AMD SMI reports a generic market name."""
+    generic_names = {'AMD GPU', 'AMD Radeon Graphics', 'Radeon Graphics'}
+    if market_name not in generic_names or not pci or not shutil.which('lspci'):
+        return market_name
+    try:
+        result = subprocess.run(
+            ['lspci', '-D', '-s', pci], capture_output=True, text=True,
+            timeout=2)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return market_name
+    if result.returncode != 0:
+        return market_name
+    match = re.search(r'\[([^\]]*Radeon[^\]]*)\]', result.stdout)
+    if not match:
+        return market_name
+    model = match.group(1).strip()
+    return model if model.startswith('AMD ') else f'AMD {model}'
+
+
 def _collect_amd_gpu(start_idx: int = 0) -> list[dict]:
-    """amd-smi metrics for utilization, VRAM, temperature, and power."""
+    """amd-smi metrics for utilization, VRAM, temperature, fan, and power."""
     if not shutil.which('amd-smi') or not _path_exists('/run/cdi/amd.json'):
         return []
     identities = _amd_gpu_identities()
     try:
         result = subprocess.run(
-            ['amd-smi', 'metric', '-m', '-u', '-p', '-t', '--json'],
+            ['amd-smi', 'metric', '-m', '-u', '-p', '-t', '-f', '--json'],
             capture_output=True, text=True, timeout=2)
         if result.returncode != 0:
             return []
@@ -529,12 +556,14 @@ def _collect_amd_gpu(start_idx: int = 0) -> list[dict]:
         usage = item.get('usage') or {}
         memory = item.get('mem_usage') or {}
         temperature = item.get('temperature') or {}
+        fan = item.get('fan') or {}
         power = item.get('power') or {}
 
         util = _amd_value(usage, 'gfx_activity')
         used_mb = _amd_value(memory, 'used_vram')
         total_mb = _amd_value(memory, 'total_vram')
         temp = _amd_value(temperature, 'edge')
+        fan_pct = _amd_value(fan, 'usage')
         watts = _amd_value(power, 'socket_power')
         if util is not None:
             samples.append({'name': 'reefy_gpu_util_pct',
@@ -554,6 +583,9 @@ def _collect_amd_gpu(start_idx: int = 0) -> list[dict]:
         if temp is not None:
             samples.append({'name': 'reefy_gpu_temp_celsius',
                             'labels': labels, 'value': temp})
+        if fan_pct is not None:
+            samples.append({'name': 'reefy_gpu_fan_pct',
+                            'labels': labels, 'value': fan_pct})
         if watts is not None:
             samples.append({'name': 'reefy_gpu_power_watts',
                             'labels': labels, 'value': watts})
