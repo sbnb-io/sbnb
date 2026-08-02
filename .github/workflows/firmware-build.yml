@@ -85,7 +85,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: reefyai/reefy-amd
-          ref: shared-host-libdrm
+          ref: 7a20e7d7a78e563edbf5552ec7237bb5f2bd8901
           path: amd-provider
 
       - name: Validate E2E build identity salt
@@ -432,7 +432,7 @@ jobs:
 
   publish-amd-provider:
     needs: build
-    uses: reefyai/reefy-amd/.github/workflows/publish.yml@shared-host-libdrm
+    uses: reefyai/reefy-amd/.github/workflows/publish.yml@7a20e7d7a78e563edbf5552ec7237bb5f2bd8901
     with:
       input_artifact: reefy-amd-inputs
     secrets: inherit
