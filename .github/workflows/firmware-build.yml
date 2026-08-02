@@ -368,7 +368,19 @@ jobs:
           NVIDIA_DIGEST: ${{ needs.publish-nvidia-provider.outputs.digest }}
           INTEL_DIGEST: ${{ needs.publish-intel-provider.outputs.digest }}
           FIXTURE_DIGEST: ${{ needs.publish-artifact-fixture.outputs.digest }}
+          FIXTURE_WRONG_ABI_DIGEST: ${{ needs.publish-artifact-fixture.outputs.wrong_abi_digest }}
+          FIXTURE_MISSING_HOOK_DIGEST: ${{ needs.publish-artifact-fixture.outputs.missing_hook_digest }}
+          FIXTURE_FAILING_HOOK_DIGEST: ${{ needs.publish-artifact-fixture.outputs.failing_hook_digest }}
+          FIXTURE_APP_DIGESTS: ${{ needs.publish-artifact-fixture.outputs.app_digests }}
         run: |
+          fixture_app_1=$(printf '%s' "$FIXTURE_APP_DIGESTS" | cut -d, -f1)
+          fixture_app_2=$(printf '%s' "$FIXTURE_APP_DIGESTS" | cut -d, -f2)
+          fixture_app_3=$(printf '%s' "$FIXTURE_APP_DIGESTS" | cut -d, -f3)
+          fixture_app_4=$(printf '%s' "$FIXTURE_APP_DIGESTS" | cut -d, -f4)
+          for digest in "$fixture_app_1" "$fixture_app_2" \
+              "$fixture_app_3" "$fixture_app_4"; do
+            test -n "$digest"
+          done
           jq -n \
             --arg build_id "$REEFY_BUILD_ID" \
             --arg abi "sha256:$KERNEL_ABI_SHA256" \
@@ -376,6 +388,13 @@ jobs:
             --arg nvidia "ghcr.io/reefyai/reefy-nvidia@$NVIDIA_DIGEST" \
             --arg intel "ghcr.io/reefyai/reefy-intel@$INTEL_DIGEST" \
             --arg fixture "ghcr.io/reefyai/reefy-artifact-fixtures@$FIXTURE_DIGEST" \
+            --arg fixture_wrong_abi "ghcr.io/reefyai/reefy-artifact-fixtures@$FIXTURE_WRONG_ABI_DIGEST" \
+            --arg fixture_missing_hook "ghcr.io/reefyai/reefy-artifact-fixtures@$FIXTURE_MISSING_HOOK_DIGEST" \
+            --arg fixture_failing_hook "ghcr.io/reefyai/reefy-artifact-fixtures@$FIXTURE_FAILING_HOOK_DIGEST" \
+            --arg fixture_app_1 "ghcr.io/reefyai/reefy-artifact-fixtures@$fixture_app_1" \
+            --arg fixture_app_2 "ghcr.io/reefyai/reefy-artifact-fixtures@$fixture_app_2" \
+            --arg fixture_app_3 "ghcr.io/reefyai/reefy-artifact-fixtures@$fixture_app_3" \
+            --arg fixture_app_4 "ghcr.io/reefyai/reefy-artifact-fixtures@$fixture_app_4" \
             '{schema_version: 1,
               reefy_build_id: $build_id,
               kernel_abi_digest: $abi,
@@ -385,7 +404,14 @@ jobs:
                 "intel-accelerator": {ref: $intel}
               },
               fixtures: {
-                "e2e-host-extension": {ref: $fixture}
+                "e2e-host-extension": {ref: $fixture},
+                "e2e-wrong-abi": {ref: $fixture_wrong_abi},
+                "e2e-missing-hook": {ref: $fixture_missing_hook},
+                "e2e-failing-hook": {ref: $fixture_failing_hook},
+                "e2e-app-1": {ref: $fixture_app_1},
+                "e2e-app-2": {ref: $fixture_app_2},
+                "e2e-app-3": {ref: $fixture_app_3},
+                "e2e-app-4": {ref: $fixture_app_4}
               }}' > provider-artifacts.json
 
       - name: Upload exact provider catalog
