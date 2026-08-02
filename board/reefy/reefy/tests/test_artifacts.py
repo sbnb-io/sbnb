@@ -418,6 +418,55 @@ def test_different_artifact_admissions_are_limited_to_two():
     assert maximum == 2
 
 
+def test_different_provider_activation_hooks_are_serialized():
+    manager = _manager()
+    active = 0
+    maximum = 0
+    guard = threading.Lock()
+    release = threading.Event()
+    errors = []
+
+    def run_hook(*_args, **_kwargs):
+        nonlocal active, maximum
+        with guard:
+            active += 1
+            maximum = max(maximum, active)
+        release.wait(timeout=0.1)
+        with guard:
+            active -= 1
+        return mock.Mock(returncode=0)
+
+    def activate(name, marker):
+        admitted = {
+            'digest': 'sha256:' + (marker * 64),
+            'config': {'name': name, 'version': '1'},
+        }
+        try:
+            manager._activate(admitted, [f'/{name}'])
+        except Exception as exception:  # pragma: no cover - assertion detail
+            errors.append(exception)
+
+    with mock.patch.object(artifacts.os.path, 'isfile', return_value=True), \
+            mock.patch.object(artifacts.os, 'access', return_value=True), \
+            mock.patch.object(
+                artifacts.subprocess, 'run', side_effect=run_hook):
+        threads = [
+            threading.Thread(
+                target=activate, args=('nvidia-driver', 'a')),
+            threading.Thread(
+                target=activate, args=('amd-driver', 'b')),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+
+    release.set()
+    assert not errors
+    assert not any(thread.is_alive() for thread in threads)
+    assert maximum == 1
+
+
 def test_artifact_flock_is_released_when_holder_is_killed():
     manager = _manager()
     lock_path = os.path.join(

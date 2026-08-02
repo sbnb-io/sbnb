@@ -446,13 +446,22 @@ class ArtifactManager:
                 'REEFY_ARTIFACT_CONFIG': json.dumps(config, sort_keys=True),
                 'REEFY_ARTIFACT_MOUNTS': ':'.join(mounts),
             }
+            # Downloads and mounts remain parallel, but host activation is
+            # global. Provider hooks may both run depmod, load modules, and
+            # publish CDI specifications. Running different vendors' hooks
+            # concurrently can corrupt the shared module dependency update or
+            # make modprobe observe an incomplete index.
+            activation_lock = os.path.join(
+                self.run_dir, 'locks', 'host-activation')
             try:
-                # Inherit reefy-artifacts stdout and stderr. The reconciler
-                # forwards both streams through the normal Reefy log, while
-                # the boot-time one-shot service writes them to journald.
-                result = subprocess.run(
-                    [activator], env=environment, timeout=300,
-                    close_fds=True)
+                with _flock(activation_lock):
+                    # Inherit reefy-artifacts stdout and stderr. The
+                    # reconciler forwards both streams through the normal
+                    # Reefy log, while the boot-time one-shot service writes
+                    # them to journald.
+                    result = subprocess.run(
+                        [activator], env=environment, timeout=300,
+                        close_fds=True)
             except (OSError, subprocess.TimeoutExpired) as exception:
                 raise ArtifactError(
                     f'provider activation hook failed '
