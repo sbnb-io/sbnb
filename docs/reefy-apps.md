@@ -228,7 +228,9 @@ CDI, Reefy omits the directive instead of making Docker fail the app.
 Entries in `devices` are also optional at runtime. The device data plane drops
 a mapping whose host `/dev` node does not exist, allowing an app to use an
 accelerator when present and fall back otherwise. Explicit CDI requests such
-as `intel.com/npu=all` select their matching host provider artifact. Provider
+as `nvidia.com/gpu=all`, `amd.com/gpu=all`, `intel.com/gpu=all`, and
+`intel.com/npu=all` select their matching host provider artifacts. One app may
+request more than one provider; Reefy prepares each independently. Provider
 download and activation are best effort: Reefy logs activation output, removes
 any CDI request the provider did not publish, and continues starting the app.
 This guarantees container lifecycle, not application-level acceleration, so

@@ -181,6 +181,17 @@ def test_host_extension_requires_exact_build_and_abi():
         raise AssertionError('wrong-build host extension was admitted')
 
 
+def test_all_accelerator_providers_are_allow_listed():
+    assert {
+        'nvidia-driver', 'amd-driver', 'intel-accelerator',
+    } <= artifacts.HOST_EXTENSION_NAMES
+    assert {
+        'ghcr.io/reefyai/reefy-nvidia',
+        'ghcr.io/reefyai/reefy-amd',
+        'ghcr.io/reefyai/reefy-intel',
+    } <= artifacts.HOST_EXTENSION_REPOSITORIES
+
+
 def test_provider_hook_uses_the_fixed_payload_path():
     manager = _manager()
     admitted = {

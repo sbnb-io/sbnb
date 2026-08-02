@@ -74,6 +74,13 @@ jobs:
           ref: main
           path: artifact-fixtures
 
+      - name: Checkout AMD provider builder
+        uses: actions/checkout@v4
+        with:
+          repository: reefyai/reefy-amd
+          ref: main
+          path: amd-provider
+
       - name: Install buildroot prereqs
         run: |
           apt-get update
@@ -152,6 +159,27 @@ jobs:
         working-directory: buildroot
         run: make O="$BR_OUTPUT" -j$(nproc)
 
+      - name: Build exact AMD provider modules
+        run: |
+          expected_kernel=$(sed -n 's/^BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION="v\([0-9.]*\)"$/\1/p' configs/reefy_defconfig)
+          test -n "$expected_kernel"
+          kernel_build=''
+          for candidate in "$BR_OUTPUT"/build/linux-*; do
+            test "$(cat "$candidate/include/config/kernel.release" 2>/dev/null || true)" = "$expected_kernel" || continue
+            test -z "$kernel_build" || { echo "multiple exact kernel build trees"; exit 1; }
+            kernel_build=$candidate
+          done
+          test -n "$kernel_build"
+          driver_url=$(python3 -c 'import json; print(json.load(open("amd-provider/versions.json"))["amd_gpu_driver"]["package_url"])')
+          mkdir -p "$BR_OUTPUT/reefy-artifacts/amd"
+          curl -fL --retry 3 -o "$BR_OUTPUT/reefy-artifacts/amd/amdgpu-dkms.deb" "$driver_url"
+          python3 amd-provider/scripts/build_modules.py \
+            --driver-package "$BR_OUTPUT/reefy-artifacts/amd/amdgpu-dkms.deb" \
+            --kernel-dir "$kernel_build" \
+            --kernel-release "$expected_kernel" \
+            --toolchain-prefix "$BR_OUTPUT/host/bin/x86_64-buildroot-linux-gnu-" \
+            --output "$BR_OUTPUT/reefy-artifacts/amd/modules-root"
+
       - name: Verify pinned kernel version
         run: |
           expected_kernel=$(sed -n 's/^BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION="v\([0-9.]*\)"$/\1/p' configs/reefy_defconfig)
@@ -168,6 +196,14 @@ jobs:
             echo "NVIDIA provider modules leaked into the Reefy OS image"
             exit 1
           fi
+          if find "$module_dir" -name 'amdgpu.ko*' | grep -q .; then
+            echo "in-tree AMD provider module leaked into the Reefy OS image"
+            exit 1
+          fi
+          for helper in drm_suballoc_helper drm_panel_backlight_quirks; do
+            find "$module_dir" -name "${helper}.ko*" | grep -q . \
+              || { echo "missing shared DRM helper ${helper}"; exit 1; }
+          done
           for path in \
               "$BR_OUTPUT/target/usr/bin/nvidia-smi" \
               "$BR_OUTPUT/target/usr/bin/nvidia-ctk" \
@@ -243,15 +279,28 @@ jobs:
           mkdir -p "$intel"
           cp "$nvidia/metadata.env" "$intel/metadata.env"
 
+          amd="$BR_OUTPUT/reefy-artifacts/amd"
+          for module in amdgpu amdkcl amdxcp amdttm amd-sched \
+              amddrm_ttm_helper amddrm_buddy amddrm_exec; do
+            find "$amd/modules-root/lib/modules/$kernel_release" \
+              -name "${module}.ko" | grep -q . \
+              || { echo "missing AMD provider input ${module}"; exit 1; }
+          done
+          if find "$amd/modules-root" -name 'amddrm_suballoc_helper.ko' \
+              | grep -q .; then
+            echo "conflicting AMD suballocator helper was staged"
+            exit 1
+          fi
+          cp "$nvidia/metadata.env" "$amd/metadata.env"
+
           fixture="$BR_OUTPUT/reefy-artifacts/fixture"
           mkdir -p "$fixture"
           cp "$nvidia/metadata.env" "$fixture/metadata.env"
           kernel_build=''
           for candidate in "$BR_OUTPUT"/build/linux-*; do
-            test -f "$candidate/include/config/auto.conf" || continue
-            test -f "$candidate/include/generated/autoconf.h" || continue
+            test "$(cat "$candidate/include/config/kernel.release" 2>/dev/null || true)" = "$kernel_release" || continue
+            test -z "$kernel_build" || { echo "multiple exact kernel build trees"; exit 1; }
             kernel_build=$candidate
-            break
           done
           test -n "$kernel_build"
           make -C "$kernel_build" \
@@ -280,6 +329,15 @@ jobs:
         with:
           name: reefy-intel-inputs
           path: ${{ env.BR_OUTPUT }}/reefy-artifacts/intel/metadata.env
+
+      - name: Upload AMD provider inputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: reefy-amd-inputs
+          compression-level: 1
+          path: |
+            ${{ env.BR_OUTPUT }}/reefy-artifacts/amd/modules-root
+            ${{ env.BR_OUTPUT }}/reefy-artifacts/amd/metadata.env
 
       - name: Upload synthetic artifact fixture inputs
         uses: actions/upload-artifact@v4
@@ -356,6 +414,13 @@ jobs:
       input_artifact: reefy-intel-inputs
     secrets: inherit
 
+  publish-amd-provider:
+    needs: build
+    uses: reefyai/reefy-amd/.github/workflows/publish.yml@main
+    with:
+      input_artifact: reefy-amd-inputs
+    secrets: inherit
+
   publish-artifact-fixture:
     needs: build
     uses: reefyai/reefy-artifact-fixtures/.github/workflows/publish.yml@main
@@ -364,7 +429,7 @@ jobs:
     secrets: inherit
 
   provider-catalog:
-    needs: [build, publish-nvidia-provider, publish-intel-provider, publish-artifact-fixture]
+    needs: [build, publish-nvidia-provider, publish-amd-provider, publish-intel-provider, publish-artifact-fixture]
     runs-on: ubuntu-24.04
     steps:
       - name: Build exact provider catalog
@@ -373,6 +438,7 @@ jobs:
           KERNEL_ABI_SHA256: ${{ needs.build.outputs.kernel_abi_sha256 }}
           IMAGE_VERSION: ${{ needs.build.outputs.image_version }}
           NVIDIA_DIGEST: ${{ needs.publish-nvidia-provider.outputs.digest }}
+          AMD_DIGEST: ${{ needs.publish-amd-provider.outputs.digest }}
           INTEL_DIGEST: ${{ needs.publish-intel-provider.outputs.digest }}
           FIXTURE_DIGEST: ${{ needs.publish-artifact-fixture.outputs.digest }}
           FIXTURE_WRONG_ABI_DIGEST: ${{ needs.publish-artifact-fixture.outputs.wrong_abi_digest }}
@@ -393,6 +459,7 @@ jobs:
             --arg abi "sha256:$KERNEL_ABI_SHA256" \
             --arg image_version "$IMAGE_VERSION" \
             --arg nvidia "ghcr.io/reefyai/reefy-nvidia@$NVIDIA_DIGEST" \
+            --arg amd "ghcr.io/reefyai/reefy-amd@$AMD_DIGEST" \
             --arg intel "ghcr.io/reefyai/reefy-intel@$INTEL_DIGEST" \
             --arg fixture "ghcr.io/reefyai/reefy-artifact-fixtures@$FIXTURE_DIGEST" \
             --arg fixture_wrong_abi "ghcr.io/reefyai/reefy-artifact-fixtures@$FIXTURE_WRONG_ABI_DIGEST" \
@@ -408,6 +475,7 @@ jobs:
               image_version: $image_version,
               providers: {
                 "nvidia-driver": {ref: $nvidia},
+                "amd-driver": {ref: $amd},
                 "intel-accelerator": {ref: $intel}
               },
               fixtures: {

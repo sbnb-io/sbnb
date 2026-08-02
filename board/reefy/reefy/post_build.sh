@@ -28,13 +28,18 @@ echo "REEFY_DESIRED_STATE_SCHEMA=2" >> "${OS_RELEASE}"
 # the public IMAGE_VERSION format unchanged. Hash the actual kernel image,
 # configuration, and exported symbol CRCs so an incremental rebuild cannot
 # accidentally select modules from different bytes with the same uname -r.
+PINNED_KERNEL=$(sed -n 's/^BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION="v\([0-9.]*\)"$/\1/p' "${BR2_CONFIG}")
 LINUX_BUILD_DIR=''
 for candidate in "${BUILD_DIR}"/linux-*; do
-  if [ -f "${candidate}/arch/x86/boot/bzImage" ] \
+  if [ "$(cat "${candidate}/include/config/kernel.release" 2>/dev/null || true)" = "${PINNED_KERNEL}" ] \
+      && [ -f "${candidate}/arch/x86/boot/bzImage" ] \
       && [ -f "${candidate}/.config" ] \
       && [ -f "${candidate}/Module.symvers" ]; then
+    if [ -n "${LINUX_BUILD_DIR}" ]; then
+      echo "ERROR: multiple exact kernel build trees for ${PINNED_KERNEL}" >&2
+      exit 1
+    fi
     LINUX_BUILD_DIR=${candidate}
-    break
   fi
 done
 if [ -n "${LINUX_BUILD_DIR}" ] \
@@ -125,7 +130,6 @@ rm -f "${TARGET_DIR}/usr/bin/reefy-mqtt-reconciler" \
 # r8125/26/27/8168, nvidia-open-gpu) is dircleaned on version change and
 # reinstalls under the pinned version, so purging old dirs here is safe.
 # Fail-safe: if the pin can't be read, purge nothing - CI verify catches it.
-PINNED_KERNEL=$(sed -n 's/^BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION="v\([0-9.]*\)"$/\1/p' "${BR2_CONFIG}")
 if [ -n "${PINNED_KERNEL}" ] && [ -d "${TARGET_DIR}/lib/modules" ]; then
   find "${TARGET_DIR}/lib/modules" -mindepth 1 -maxdepth 1 -type d \
     ! -name "${PINNED_KERNEL}" -exec rm -rf {} +
@@ -160,6 +164,10 @@ rm -rf "${TARGET_DIR}/lib/firmware/nvidia" \
        "${TARGET_DIR}/usr/lib/firmware/nvidia"
 if [ -d "${TARGET_DIR}/lib/modules" ]; then
   find "${TARGET_DIR}/lib/modules" -type f -name 'nvidia*.ko*' -delete
+  # The in-tree AMD module is enabled only to expose the exact shared DRM
+  # kernel ABI used by the separately published AMD 31.40 provider. Never
+  # ship that older in-tree driver beside the external provider module.
+  find "${TARGET_DIR}/lib/modules" -type f -name 'amdgpu.ko*' -delete
   find "${TARGET_DIR}/lib/modules" -depth -type d -empty -delete
 fi
 if [ -n "${PINNED_KERNEL}" ] && [ -x "${HOST_DIR}/sbin/depmod" ]; then

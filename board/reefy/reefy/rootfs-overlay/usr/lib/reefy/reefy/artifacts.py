@@ -34,6 +34,7 @@ HOST_EXTENSION_REPOSITORIES = {
 }
 HOST_EXTENSION_NAMES = {
     'nvidia-driver',
+    'amd-driver',
     'intel-accelerator',
     'e2e-host-extension',
 }

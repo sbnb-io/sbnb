@@ -1613,10 +1613,16 @@ class BestEffortCdiTests(unittest.TestCase):
                 '    containerEdits: {}\n'
                 '  - name: all\n'
                 '    containerEdits: {}\n')
+            Path(directory, 'amd.json').write_text(json.dumps({
+                'cdiVersion': '0.6.0',
+                'kind': 'amd.com/gpu',
+                'devices': [{'name': 'all', 'containerEdits': {}}],
+            }))
 
             resources = dataplane._cdi_resources((directory,))
 
         self.assertEqual(resources, {
+            'amd.com/gpu=all',
             'intel.com/npu=all',
             'nvidia.com/gpu=0',
             'nvidia.com/gpu=all',
