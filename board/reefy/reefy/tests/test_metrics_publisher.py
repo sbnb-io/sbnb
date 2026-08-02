@@ -2,6 +2,7 @@
 
 import importlib.machinery
 import importlib.util
+import json
 import os
 import sys
 import types
@@ -114,6 +115,74 @@ class NvidiaGpuTests(unittest.TestCase):
                                return_value=False), \
              mock.patch.object(self.publisher.subprocess, 'run') as run:
             samples = self.publisher._collect_nvidia_gpu()
+
+        self.assertEqual(samples, [])
+        run.assert_not_called()
+
+
+class AmdGpuTests(unittest.TestCase):
+    def setUp(self):
+        self.publisher = _load_publisher()
+
+    def test_amd_metrics_use_existing_dashboard_metric_names(self):
+        static = json.dumps({'gpu_data': [{
+            'gpu': 0,
+            'asic': {
+                'market_name': 'AMD Radeon RX Synthetic',
+                'asic_serial': '0x1234',
+            },
+            'bus': {'bdf': '0000:02:00.0'},
+        }]})
+        metric = json.dumps({'gpu_data': [{
+            'gpu': 0,
+            'usage': {'gfx_activity': {'value': 73, 'unit': '%'}},
+            'mem_usage': {
+                'used_vram': {'value': 2048, 'unit': 'MB'},
+                'total_vram': {'value': 16384, 'unit': 'MB'},
+            },
+            'temperature': {'edge': {'value': 64, 'unit': 'C'}},
+            'power': {'socket_power': {'value': 187.42, 'unit': 'W'}},
+        }]})
+        results = iter([
+            types.SimpleNamespace(returncode=0, stdout=static),
+            types.SimpleNamespace(returncode=0, stdout=metric),
+        ])
+        with mock.patch.object(self.publisher.shutil, 'which',
+                               return_value='/usr/bin/amd-smi'), \
+             mock.patch.object(self.publisher, '_path_exists',
+                               return_value=True), \
+             mock.patch.object(self.publisher.subprocess, 'run',
+                               side_effect=lambda *_args, **_kwargs: next(results)):
+            samples = self.publisher._collect_amd_gpu(start_idx=1)
+
+        by_name = {sample['name']: sample for sample in samples}
+        labels = by_name['reefy_gpu_util_pct']['labels']
+        self.assertEqual(labels, {
+            'gpu': '1',
+            'name': 'AMD Radeon RX Synthetic',
+            'pci': '0000:02:00.0',
+            'uuid': '0x1234',
+            'driver': 'amdgpu',
+        })
+        self.assertEqual(by_name['reefy_gpu_util_pct']['value'], 73.0)
+        self.assertEqual(
+            by_name['reefy_gpu_mem_used_bytes']['value'], 2048 * 1024 * 1024)
+        self.assertEqual(
+            by_name['reefy_gpu_mem_total_bytes']['value'], 16384 * 1024 * 1024)
+        self.assertEqual(by_name['reefy_gpu_mem_used_pct']['value'], 12.5)
+        self.assertEqual(by_name['reefy_gpu_temp_celsius']['value'], 64.0)
+        self.assertEqual(by_name['reefy_gpu_power_watts']['value'], 187.42)
+        self.assertEqual(by_name['reefy_power_watts']['value'], 187.42)
+        self.assertEqual(
+            by_name['reefy_power_watts']['labels']['source'], 'gpu')
+
+    def test_amd_collector_skips_when_provider_published_no_cdi(self):
+        with mock.patch.object(self.publisher.shutil, 'which',
+                               return_value='/usr/bin/amd-smi'), \
+             mock.patch.object(self.publisher, '_path_exists',
+                               return_value=False), \
+             mock.patch.object(self.publisher.subprocess, 'run') as run:
+            samples = self.publisher._collect_amd_gpu()
 
         self.assertEqual(samples, [])
         run.assert_not_called()

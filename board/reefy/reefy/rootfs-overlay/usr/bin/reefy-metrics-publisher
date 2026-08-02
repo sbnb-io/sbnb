@@ -127,6 +127,7 @@ _prev_cpu: list[int] | None = None
 _prev_net: dict[str, tuple[int, int]] = {}
 _prev_xe_gt_idle: dict[str, tuple[int, float]] = {}
 _prev_xe_energy: dict[str, tuple[float, float]] = {}
+_amd_gpu_identity_cache: dict[int, dict[str, str]] = {}
 _prev_power_energy: dict[str, tuple[float, float]] = {}
 
 
@@ -179,8 +180,8 @@ def collect_system() -> list[dict]:
     # All temperatures + fans via psutil. psutil wraps
     # /sys/class/hwmon and /sys/class/thermal so a single call covers
     # CPU (coretemp/k10temp/etc.), NVMe, motherboard super-I/O chips
-    # (nct67xx, it87, ...), wifi cards, and AMD GPU. NVIDIA GPU temp
-    # is collected separately by collect_gpu() via nvidia-smi.
+    # (nct67xx, it87, ...), wifi cards, and AMD GPU. Vendor-specific
+    # GPU dashboard temperatures are also collected by collect_gpu().
     # Drop garbage values: some acpitz zones report ~-273°C as an
     # "unavailable" sentinel, and stopped fans report 0 RPM.
     try:
@@ -323,7 +324,7 @@ def _parse_mem(s: str) -> float | None:
 
 
 def collect_gpu() -> list[dict]:
-    """GPU metrics for NVIDIA and Intel xe. Empty if no GPU.
+    """GPU metrics for NVIDIA, AMD, and Intel xe. Empty if no GPU.
 
     Labels emitted on every sample so multi-GPU devices can be told
     apart in the dashboard:
@@ -333,6 +334,8 @@ def collect_gpu() -> list[dict]:
       uuid : nvml GPU UUID ("GPU-abc...") - stable per physical card
     """
     samples = _collect_nvidia_gpu()
+    next_gpu_idx = _next_gpu_index(samples)
+    samples.extend(_collect_amd_gpu(next_gpu_idx))
     next_gpu_idx = _next_gpu_index(samples)
     samples.extend(_collect_intel_xe_gpu(next_gpu_idx))
     return samples
@@ -433,6 +436,132 @@ def _has_nvidia_pci_device() -> bool:
         except OSError:
             continue
     return False
+
+
+def _amd_value(group: dict, key: str) -> float | None:
+    value = group.get(key)
+    if isinstance(value, dict):
+        value = value.get('value')
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _amd_gpu_identities() -> dict[int, dict[str, str]]:
+    global _amd_gpu_identity_cache
+    if _amd_gpu_identity_cache:
+        return _amd_gpu_identity_cache
+    try:
+        result = subprocess.run(
+            ['amd-smi', 'static', '-a', '-b', '--json'],
+            capture_output=True, text=True, timeout=2)
+        if result.returncode != 0:
+            return {}
+        payload = json.loads(result.stdout)
+    except (subprocess.TimeoutExpired, FileNotFoundError,
+            json.JSONDecodeError):
+        return {}
+
+    identities = {}
+    if not isinstance(payload, dict):
+        return {}
+    for item in payload.get('gpu_data') or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            native_idx = int(item.get('gpu'))
+        except (TypeError, ValueError):
+            continue
+        asic = item.get('asic') or {}
+        bus = item.get('bus') or {}
+        pci = str(bus.get('bdf') or '')
+        identities[native_idx] = {
+            'name': str(asic.get('market_name') or 'AMD GPU'),
+            'pci': pci,
+            'uuid': str(asic.get('asic_serial') or pci),
+        }
+    if identities:
+        _amd_gpu_identity_cache = identities
+    return identities
+
+
+def _collect_amd_gpu(start_idx: int = 0) -> list[dict]:
+    """amd-smi metrics for utilization, VRAM, temperature, and power."""
+    if not shutil.which('amd-smi') or not _path_exists('/run/cdi/amd.json'):
+        return []
+    identities = _amd_gpu_identities()
+    try:
+        result = subprocess.run(
+            ['amd-smi', 'metric', '-m', '-u', '-p', '-t', '--json'],
+            capture_output=True, text=True, timeout=2)
+        if result.returncode != 0:
+            return []
+        payload = json.loads(result.stdout)
+    except (subprocess.TimeoutExpired, FileNotFoundError,
+            json.JSONDecodeError):
+        return []
+
+    if not isinstance(payload, dict):
+        return []
+    records = []
+    for item in payload.get('gpu_data') or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            native_idx = int(item.get('gpu'))
+        except (TypeError, ValueError):
+            continue
+        records.append((native_idx, item))
+
+    samples = []
+    for ordinal, (native_idx, item) in enumerate(
+            sorted(records, key=lambda record: record[0])):
+        identity = identities.get(native_idx, {})
+        pci = identity.get('pci', '')
+        labels = {
+            'gpu': str(start_idx + ordinal),
+            'name': identity.get('name', 'AMD GPU'),
+            'pci': pci,
+            'uuid': identity.get('uuid', pci),
+            'driver': 'amdgpu',
+        }
+        usage = item.get('usage') or {}
+        memory = item.get('mem_usage') or {}
+        temperature = item.get('temperature') or {}
+        power = item.get('power') or {}
+
+        util = _amd_value(usage, 'gfx_activity')
+        used_mb = _amd_value(memory, 'used_vram')
+        total_mb = _amd_value(memory, 'total_vram')
+        temp = _amd_value(temperature, 'edge')
+        watts = _amd_value(power, 'socket_power')
+        if util is not None:
+            samples.append({'name': 'reefy_gpu_util_pct',
+                            'labels': labels, 'value': util})
+        if used_mb is not None:
+            samples.append({'name': 'reefy_gpu_mem_used_bytes',
+                            'labels': labels,
+                            'value': used_mb * 1024 * 1024})
+        if total_mb is not None:
+            total_bytes = total_mb * 1024 * 1024
+            samples.append({'name': 'reefy_gpu_mem_total_bytes',
+                            'labels': labels, 'value': total_bytes})
+            if used_mb is not None and total_bytes > 0:
+                samples.append({'name': 'reefy_gpu_mem_used_pct',
+                                'labels': labels,
+                                'value': used_mb / total_mb * 100})
+        if temp is not None:
+            samples.append({'name': 'reefy_gpu_temp_celsius',
+                            'labels': labels, 'value': temp})
+        if watts is not None:
+            samples.append({'name': 'reefy_gpu_power_watts',
+                            'labels': labels, 'value': watts})
+            power_labels = dict(labels)
+            power_labels['source'] = 'gpu'
+            samples.append({'name': 'reefy_power_watts',
+                            'labels': power_labels, 'value': watts})
+    return samples
 
 
 def _read_float(path: str) -> float | None:
