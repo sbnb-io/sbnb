@@ -35,6 +35,7 @@ def _fixture(kind='app', name='sample-data', version='1', layer=None):
         config.update({
             'reefy_build_id': 'synthetic-build',
             'kernel_abi_digest': 'sha256:synthetic-abi',
+            'activation_hook': 'usr/lib/reefy/activate',
         })
     config_bytes = json.dumps(config, sort_keys=True).encode()
     config_digest = _blob(root, config_bytes)
@@ -130,24 +131,53 @@ def test_host_extension_requires_exact_build_and_abi():
         raise AssertionError('wrong-build host extension was admitted')
 
 
-def test_artifact_supplied_hook_is_never_executed():
+def test_provider_hook_uses_the_fixed_payload_path():
     manager = _manager()
     admitted = {
         'digest': 'sha256:' + ('a' * 64),
         'config': {
             'name': 'nvidia-driver',
             'version': '1',
-            'activation_hook': 'malicious/from-artifact',
+            'activation_hook': 'usr/lib/reefy/activate',
         },
     }
     result = mock.Mock(returncode=0)
     with mock.patch.object(artifacts.os.path, 'isfile', return_value=True), \
+            mock.patch.object(artifacts.os, 'access', return_value=True), \
             mock.patch.object(
                 artifacts.subprocess, 'run', return_value=result) as run:
         manager._activate(admitted, ['/admitted/layer'])
 
     assert run.call_args.args[0] == [
-        '/usr/lib/reefy/activators/nvidia-driver']
+        '/admitted/layer/usr/lib/reefy/activate']
+
+
+def test_host_extension_rejects_nonstandard_activation_hook():
+    root, reference, _config = _fixture(
+        kind='host-extension', name='nvidia-driver')
+    digest = reference.rsplit('@', 1)[1]
+    manifest_path = os.path.join(
+        root, 'blobs', 'sha256', digest.split(':', 1)[1])
+    manifest = json.load(open(manifest_path))
+    config_path = os.path.join(
+        root, 'blobs', 'sha256',
+        manifest['config']['digest'].split(':', 1)[1])
+    config = json.load(open(config_path))
+    config['activation_hook'] = 'arbitrary/root-command'
+    config_bytes = json.dumps(config, sort_keys=True).encode()
+    config_digest = _blob(root, config_bytes)
+    manifest['config']['digest'] = config_digest
+    manifest['config']['size'] = len(config_bytes)
+    manifest_bytes = json.dumps(manifest, sort_keys=True).encode()
+    reference = f'oci://{root}@{_blob(root, manifest_bytes)}'
+
+    manager = _manager()
+    try:
+        manager.prepare(reference, kind='host-extension')
+    except artifacts.ArtifactError as exception:
+        assert 'activation hook is invalid' in str(exception)
+    else:
+        raise AssertionError('nonstandard activation hook was admitted')
 
 
 def test_equivalent_host_extension_manifest_needs_no_reactivation():
@@ -228,29 +258,6 @@ def test_changed_host_extension_layer_still_requires_reboot():
             raise AssertionError('changed host payload was accepted live')
 
     run.assert_not_called()
-
-
-def test_nvidia_activator_replaces_the_runtime_cdi_definition():
-    path = os.path.join(
-        os.path.dirname(__file__), '..', 'rootfs-overlay', 'usr', 'lib',
-        'reefy', 'activators', 'nvidia-driver')
-    with open(path, encoding='utf-8') as stream:
-        script = stream.read()
-
-    assert '--output=/run/cdi/nvidia.tmp.yaml' in script
-    assert '--driver-root="$DRIVER_ROOT" --dev-root=/' in script
-    assert 'DRIVER_ROOT=/run/reefy-artifacts/providers/nvidia-driver' in script
-    assert ('mount -o remount,bind,ro,nodev,nosuid '
-            '"$source" "$target"') in script
-    assert ('mount -o remount,bind,ro,nodev,nosuid "$target"'
-            not in script)
-    assert '"$DRIVER_ROOT/usr/share/vulkan/implicit_layer.d"' in script
-    assert '"$DRIVER_ROOT/usr/share/egl/egl_external_platform.d"' in script
-    assert '"$DRIVER_ROOT/usr/share/nvidia"' in script
-    assert 'mknod -m 666 /dev/nvidia-modeset c "$NVIDIA_MAJOR" 254' in script
-    assert 'mv -f /run/cdi/nvidia.tmp.yaml /run/cdi/nvidia.yaml' in script
-    assert 'rm -f /etc/cdi/nvidia.yaml' in script
-    assert '--output=/etc/cdi/nvidia.yaml' not in script
 
 
 def test_same_digest_concurrent_requests_share_one_admission():

@@ -67,6 +67,7 @@ def build(arguments):
         config.update({
             'reefy_build_id': arguments.reefy_build_id,
             'kernel_abi_digest': arguments.kernel_abi_digest,
+            'activation_hook': 'usr/lib/reefy/activate',
         })
     config_digest, config_size = _put_bytes(root, _json_bytes(config))
 

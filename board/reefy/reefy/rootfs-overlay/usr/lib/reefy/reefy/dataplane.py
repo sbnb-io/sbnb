@@ -31,6 +31,11 @@ from reefy.shared import _part_dev, log
 from reefy.storage import Storage
 
 
+CDI_SPEC_DIRS = ('/etc/cdi', '/var/run/cdi', '/run/cdi')
+_CDI_REQUEST = re.compile(
+    r'^[a-z0-9][a-z0-9.-]*/[a-z0-9][a-z0-9_.-]*=[^=]+$')
+
+
 def _drop_absent_devices(compose, exists=os.path.exists):
     """Remove device-passthrough entries whose /dev node is absent on this
     host, in place. Docker hard-fails the container start on a missing
@@ -51,6 +56,93 @@ def _drop_absent_devices(compose, exists=os.path.exists):
                 continue
             kept.append(d)
         svc['devices'] = kept
+    return skipped
+
+
+def _cdi_resources(spec_dirs=CDI_SPEC_DIRS):
+    """Return exact CDI resource names published by provider hooks.
+
+    CDI permits JSON or YAML specifications. Reefy's Intel provider emits
+    JSON, while NVIDIA Container Toolkit emits a small YAML document. This
+    parser deliberately extracts only the top-level kind and device names;
+    it does not interpret vendor hardware or container edits.
+    """
+    resources = set()
+    paths = []
+    for directory in spec_dirs:
+        try:
+            paths.extend(
+                entry.path for entry in os.scandir(directory)
+                if entry.is_file()
+                and entry.name.rsplit('.', 1)[-1].lower()
+                in ('json', 'yaml', 'yml'))
+        except OSError:
+            continue
+    for path in sorted(set(paths)):
+        try:
+            with open(path, encoding='utf-8') as stream:
+                content = stream.read(4 * 1024 * 1024 + 1)
+        except OSError:
+            continue
+        if len(content) > 4 * 1024 * 1024:
+            continue
+        try:
+            document = json.loads(content)
+        except ValueError:
+            document = None
+        if isinstance(document, dict):
+            kind = document.get('kind')
+            devices = document.get('devices') or []
+            if isinstance(kind, str):
+                resources.update(
+                    f'{kind}={device["name"]}'
+                    for device in devices
+                    if isinstance(device, dict)
+                    and isinstance(device.get('name'), str))
+            continue
+
+        kind = ''
+        names = []
+        in_devices = False
+        for line in content.splitlines():
+            if line.startswith('kind:'):
+                kind = line.split(':', 1)[1].strip().strip('"\'')
+                continue
+            if line == 'devices:':
+                in_devices = True
+                continue
+            if in_devices and line and not line[0].isspace():
+                in_devices = False
+            if in_devices:
+                match = re.match(r'^\s*-\s+name:\s*(.+?)\s*$', line)
+                if match:
+                    names.append(match.group(1).strip().strip('"\''))
+        if kind:
+            resources.update(f'{kind}={name}' for name in names if name)
+    return resources
+
+
+def _drop_unavailable_cdi_devices(compose, available=None):
+    """Remove requested CDI devices not published by an activation hook.
+
+    Provider activation is best effort. Docker rejects an unresolved CDI
+    request before starting the container, so omit only those exact requests
+    and let the application use its non-accelerated fallback.
+    """
+    available = _cdi_resources() if available is None else set(available)
+    skipped = []
+    for service_name, service in (compose.get('services') or {}).items():
+        devices = service.get('devices')
+        if not devices:
+            continue
+        kept = []
+        for device in devices:
+            if (isinstance(device, str) and _CDI_REQUEST.fullmatch(device)
+                    and device not in available):
+                skipped.append((service_name, device))
+                continue
+            kept.append(device)
+        service['devices'] = kept
     return skipped
 
 
@@ -886,6 +978,11 @@ class DataPlane:
         if not self._prepare_app_artifacts(app):
             return False, 'artifact_prepare_failed'
 
+        for _service, resource in _drop_unavailable_cdi_devices(compose):
+            log('reconciler',
+                f'{project_name}: skipping unavailable CDI resource '
+                f'{resource}')
+
         # Keep a runnable legacy service alive while its new image or host
         # artifact prepares. Stop it only at the final per-app handoff.
         if migration:
@@ -903,25 +1000,52 @@ class DataPlane:
         return ok, ('' if ok else 'app_project_failed', optional_failures)
 
     def _prepare_app_artifacts(self, app):
-        for artifact in app.get('artifacts') or []:
-            ref = artifact.get('ref') or ''
-            if not ref:
-                return False
-            self._publish_health_status(
-                app.get('instance_uuid') or '', 'waiting_artifacts')
-            try:
-                result = subprocess.run(
-                    ['reefy-artifacts', 'prepare', '--ref', ref,
-                     '--kind', artifact.get('kind') or 'app'],
-                    capture_output=True, text=True, timeout=3600)
-            except (OSError, subprocess.TimeoutExpired) as exception:
-                log('reconciler',
-                    f'artifact prepare failed ({type(exception).__name__})')
-                return False
-            if result.returncode != 0:
-                log('reconciler',
-                    f'artifact prepare failed (exit {result.returncode})')
-                return False
+        artifacts = app.get('artifacts') or []
+        if not artifacts:
+            return True
+        self._publish_health_status(
+            app.get('instance_uuid') or '', 'waiting_artifacts')
+        with ThreadPoolExecutor(max_workers=min(2, len(artifacts))) as pool:
+            futures = [
+                pool.submit(self._prepare_one_app_artifact, app, artifact)
+                for artifact in artifacts
+            ]
+            return all([future.result() for future in futures])
+
+    def _prepare_one_app_artifact(self, app, artifact):
+        ref = artifact.get('ref') or ''
+        required = artifact.get('required', True) is not False
+        name = artifact.get('name') or artifact.get('id') or 'artifact'
+        digest = ref.rpartition('@')[2] or 'unpinned'
+        prefix = f'{app.get("project_name") or "app"}: {name}@{digest}'
+        if not ref:
+            log('reconciler', f'{prefix}: missing artifact reference')
+            return not required
+        try:
+            result = subprocess.run(
+                ['reefy-artifacts', 'prepare', '--ref', ref,
+                 '--kind', artifact.get('kind') or 'app'],
+                capture_output=True, text=True, timeout=3600)
+        except (OSError, subprocess.TimeoutExpired) as exception:
+            log('reconciler',
+                f'{prefix}: artifact prepare failed '
+                f'({type(exception).__name__})')
+            for output in (
+                    getattr(exception, 'stdout', None),
+                    getattr(exception, 'stderr', None)):
+                if output:
+                    for line in str(output).splitlines():
+                        log('reconciler', f'{prefix}: {line}')
+            return not required
+        for stream_name, output in (
+                ('stdout', result.stdout), ('stderr', result.stderr)):
+            for line in (output or '').splitlines():
+                log('reconciler', f'{prefix} [{stream_name}]: {line}')
+        if result.returncode != 0:
+            log('reconciler',
+                f'{prefix}: artifact prepare failed '
+                f'(exit {result.returncode})')
+            return not required
         return True
 
     @staticmethod

@@ -1,8 +1,8 @@
 """Digest-pinned OCI artifact cache and read-only SquashFS mounting.
 
-This client is independent of Docker. Provider activation is deliberately
-implemented by narrowly allow-listed Reefy OS commands, never by executing
-code supplied by a downloaded artifact.
+This client is independent of Docker. Host extensions come only from
+allow-listed Reefy repositories and carry a fixed-path activation hook inside
+their digest-verified, read-only payload.
 """
 
 import argparse
@@ -32,10 +32,8 @@ HOST_EXTENSION_REPOSITORIES = {
     'ghcr.io/reefyai/reefy-intel',
     'ghcr.io/reefyai/reefy-artifact-fixtures',
 }
-HOST_ACTIVATORS = {
-    'nvidia-driver': '/usr/lib/reefy/activators/nvidia-driver',
-    'intel-accelerator': '/usr/lib/reefy/activators/intel-accelerator',
-}
+HOST_EXTENSION_NAMES = {'nvidia-driver', 'intel-accelerator'}
+HOST_ACTIVATION_HOOK = 'usr/lib/reefy/activate'
 MANIFEST_ACCEPT = ', '.join((
     'application/vnd.oci.image.manifest.v1+json',
     'application/vnd.oci.artifact.manifest.v1+json',
@@ -363,8 +361,10 @@ class ArtifactManager:
             raise ArtifactError('artifact architecture mismatch')
         if kind != 'host-extension':
             return
-        if config.get('name') not in HOST_ACTIVATORS:
-            raise ArtifactError('host-extension activator is not allowed')
+        if config.get('name') not in HOST_EXTENSION_NAMES:
+            raise ArtifactError('host-extension name is not allowed')
+        if config.get('activation_hook') != HOST_ACTIVATION_HOOK:
+            raise ArtifactError('host-extension activation hook is invalid')
         running = _os_release(self.os_release_path)
         if config.get('reefy_build_id') != running.get('REEFY_BUILD_ID'):
             raise ArtifactError('Reefy build identity mismatch')
@@ -401,9 +401,7 @@ class ArtifactManager:
         name = config['name']
         provider_lock = os.path.join(
             self.run_dir, 'locks', 'providers', name)
-        activation_lock = os.path.join(
-            self.run_dir, 'locks', 'activation', 'host-extensions')
-        with _flock(provider_lock), _flock(activation_lock):
+        with _flock(provider_lock):
             active_path = os.path.join(
                 self.run_dir, 'active', f'{name}.json')
             active = _read_json(active_path)
@@ -415,9 +413,14 @@ class ArtifactManager:
                 if self._same_payload(active_admitted, admitted):
                     return
                 raise ArtifactError('different provider is active; reboot required')
-            activator = HOST_ACTIVATORS[name]
-            if not os.path.isfile(activator):
-                raise ArtifactError('built-in provider activator is unavailable')
+            activators = [
+                os.path.join(mount, HOST_ACTIVATION_HOOK)
+                for mount in mounts
+                if os.path.isfile(os.path.join(mount, HOST_ACTIVATION_HOOK))
+            ]
+            if len(activators) != 1 or not os.access(activators[0], os.X_OK):
+                raise ArtifactError('provider activation hook is unavailable')
+            activator = activators[0]
             environment = {
                 'PATH': '/usr/sbin:/usr/bin:/sbin:/bin',
                 'LANG': 'C.UTF-8',
@@ -425,12 +428,21 @@ class ArtifactManager:
                 'REEFY_ARTIFACT_CONFIG': json.dumps(config, sort_keys=True),
                 'REEFY_ARTIFACT_MOUNTS': ':'.join(mounts),
             }
-            result = subprocess.run(
-                [activator], env=environment, capture_output=True, text=True,
-                timeout=300, close_fds=True)
+            try:
+                # Inherit reefy-artifacts stdout and stderr. The reconciler
+                # forwards both streams through the normal Reefy log, while
+                # the boot-time one-shot service writes them to journald.
+                result = subprocess.run(
+                    [activator], env=environment, timeout=300,
+                    close_fds=True)
+            except (OSError, subprocess.TimeoutExpired) as exception:
+                raise ArtifactError(
+                    f'provider activation hook failed '
+                    f'({type(exception).__name__})') from exception
             if result.returncode != 0:
                 raise ArtifactError(
-                    f'built-in activator failed with exit {result.returncode}')
+                    f'provider activation hook failed with exit '
+                    f'{result.returncode}')
             _atomic_json(active_path, {
                 'name': name, 'version': config.get('version'),
                 'digest': admitted['digest'], 'mounts': mounts,

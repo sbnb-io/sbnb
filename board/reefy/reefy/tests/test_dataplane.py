@@ -1448,5 +1448,117 @@ class DropAbsentDevicesTests(unittest.TestCase):
         self.assertNotIn('devices', compose['services']['a'])
 
 
+class BestEffortCdiTests(unittest.TestCase):
+    def test_reads_json_and_yaml_provider_resources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, 'intel.json').write_text(json.dumps({
+                'cdiVersion': '0.6.0',
+                'kind': 'intel.com/npu',
+                'devices': [{'name': 'all', 'containerEdits': {}}],
+            }))
+            Path(directory, 'nvidia.yaml').write_text(
+                'cdiVersion: 0.6.0\n'
+                'kind: nvidia.com/gpu\n'
+                'devices:\n'
+                '  - name: "0"\n'
+                '    containerEdits: {}\n'
+                '  - name: all\n'
+                '    containerEdits: {}\n')
+
+            resources = dataplane._cdi_resources((directory,))
+
+        self.assertEqual(resources, {
+            'intel.com/npu=all',
+            'nvidia.com/gpu=0',
+            'nvidia.com/gpu=all',
+        })
+
+    def test_only_unavailable_cdi_requests_are_removed(self):
+        compose = {'services': {'app': {'devices': [
+            '/dev/dri:/dev/dri',
+            'intel.com/gpu=all',
+            'intel.com/npu=all',
+            'synthetic-non-cdi',
+        ]}}}
+
+        skipped = dataplane._drop_unavailable_cdi_devices(
+            compose, {'intel.com/npu=all'})
+
+        self.assertEqual(compose['services']['app']['devices'], [
+            '/dev/dri:/dev/dri',
+            'intel.com/npu=all',
+            'synthetic-non-cdi',
+        ])
+        self.assertEqual(skipped, [('app', 'intel.com/gpu=all')])
+
+    def test_optional_artifact_failure_does_not_block_app(self):
+        dp = _make_dp()
+        failed = mock.Mock(returncode=1, stdout='activation details\n',
+                           stderr='provider failed\n')
+        app = {
+            'project_name': 'reefy-app-synthetic',
+            'instance_uuid': 'synthetic',
+            'artifacts': [{
+                'name': 'intel-accelerator',
+                'kind': 'host-extension',
+                'ref': 'example.invalid/provider@sha256:' + ('a' * 64),
+                'required': False,
+            }],
+        }
+        with mock.patch.object(
+                dataplane.subprocess, 'run', return_value=failed), \
+                mock.patch.object(dp, '_publish_health_status'), \
+                mock.patch.object(dataplane, 'log') as logger:
+            self.assertTrue(dp._prepare_app_artifacts(app))
+
+        messages = [call.args[1] for call in logger.call_args_list]
+        self.assertTrue(any('activation details' in value for value in messages))
+        self.assertTrue(any('provider failed' in value for value in messages))
+        self.assertTrue(any('exit 1' in value for value in messages))
+
+    def test_required_artifact_failure_still_blocks_app(self):
+        dp = _make_dp()
+        failed = mock.Mock(returncode=1, stdout='', stderr='')
+        app = {
+            'project_name': 'reefy-app-synthetic',
+            'instance_uuid': 'synthetic',
+            'artifacts': [{
+                'name': 'required-data',
+                'kind': 'app',
+                'ref': 'example.invalid/data@sha256:' + ('b' * 64),
+            }],
+        }
+        with mock.patch.object(
+                dataplane.subprocess, 'run', return_value=failed), \
+                mock.patch.object(dp, '_publish_health_status'):
+            self.assertFalse(dp._prepare_app_artifacts(app))
+
+    def test_different_artifacts_for_one_app_prepare_concurrently(self):
+        dp = _make_dp()
+        barrier = threading.Barrier(2)
+
+        def prepare(*_args, **_kwargs):
+            barrier.wait(timeout=2)
+            return mock.Mock(returncode=0, stdout='', stderr='')
+
+        app = {
+            'project_name': 'reefy-app-synthetic',
+            'instance_uuid': 'synthetic',
+            'artifacts': [{
+                'name': name,
+                'kind': 'host-extension',
+                'ref': f'example.invalid/{name}@sha256:' + character * 64,
+                'required': False,
+            } for name, character in (
+                ('nvidia-driver', 'a'),
+                ('intel-accelerator', 'b'),
+            )],
+        }
+        with mock.patch.object(
+                dataplane.subprocess, 'run', side_effect=prepare), \
+                mock.patch.object(dp, '_publish_health_status'):
+            self.assertTrue(dp._prepare_app_artifacts(app))
+
+
 if __name__ == '__main__':
     unittest.main()

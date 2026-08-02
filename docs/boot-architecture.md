@@ -164,8 +164,14 @@ Other parallel branches include:
 
 The boot artifact pass never downloads and does not block Docker. The per-app
 reconciler prepares each missing artifact before starting only that app. A
-trusted provider activator performs host-global work such as loading NVIDIA
-modules and atomically generating the runtime CDI definition.
+digest-verified provider-owned hook at the fixed path
+`usr/lib/reefy/activate` performs host-global work such as loading modules and
+atomically generating runtime CDI definitions. Reefy OS contains the generic
+hook runner, provider identity allowlist, and CDI-result inspection, but no
+vendor activation logic. Accelerator providers are best effort. Their stdout
+and stderr flow through the Reefy reconciler log; a failed provider does not
+block its app, and an unpublished CDI resource is removed from that app's
+runtime Compose before startup.
 
 ## First boot and adoption
 
