@@ -94,6 +94,25 @@ class AppsV2Tests(unittest.TestCase):
             ],
         }
 
+    def _seed_legacy_state(self):
+        legacy = {
+            'services': {
+                'app-a': {'image': 'a:0'},
+                'app-b': {'image': 'b:0'},
+                'reefy-llm-proxy': {
+                    'image': 'llm-proxy:0',
+                    'container_name': 'reefy-llm-proxy',
+                },
+                'reefy-app-api': {
+                    'image': 'app-api:0',
+                    'container_name': 'reefy-app-api',
+                },
+            },
+        }
+        Path(self.dp.DESIRED_STATE_PATH).write_text('{}')
+        Path(self.dp.COMPOSE_PATH).write_text(json.dumps(legacy))
+        return legacy
+
     def test_v2_state_is_saved_separately_and_blocks_downgrade(self):
         state = self._state()
         with mock.patch.object(
@@ -230,6 +249,136 @@ class AppsV2Tests(unittest.TestCase):
         self.assertEqual(calls, ['reefy-system'])
         self.assertEqual(apply_app.call_count, 2)
         self.assertEqual(warnings[0]['code'], 'system_project_failed')
+
+    def test_migration_removes_legacy_system_before_starting_v2(self):
+        self._seed_legacy_state()
+        commands = []
+        order = []
+
+        def run(path, project, args, timeout):
+            commands.append((path, project, args, timeout))
+            order.append(f'{project}:{args[0]}')
+            return True, ''
+
+        def apply_system(*_args, **_kwargs):
+            order.append('reefy-system:up')
+            return True
+
+        with mock.patch.object(
+                self.dp, '_run_compose_command', side_effect=run), \
+                mock.patch.object(
+                    self.dp, '_apply_project_compose',
+                    side_effect=apply_system), \
+                mock.patch.object(
+                    self.dp, '_reconcile_v2_app',
+                    return_value=(True, ('', []))), \
+                mock.patch.object(self.dp, '_remove_absent_v2_projects'), \
+                mock.patch.object(self.dp, '_commit_v2_migration') as commit:
+            warnings = self.dp._apply_v2_projects(self._state())
+
+        self.assertEqual(warnings, [])
+        self.assertEqual(order[:4], [
+            'reefy-system:rm',
+            'state:stop',
+            'state:rm',
+            'reefy-system:up',
+        ])
+        self.assertEqual(commands[1][2], [
+            'stop', 'reefy-llm-proxy', 'reefy-app-api'])
+        self.assertEqual(commands[2][2], [
+            'rm', '-f', 'reefy-llm-proxy', 'reefy-app-api'])
+        commit.assert_called_once()
+
+    def test_migration_system_failure_restores_legacy_and_skips_apps(self):
+        self._seed_legacy_state()
+        commands = []
+
+        def run(path, project, args, timeout):
+            commands.append((path, project, args, timeout))
+            return True, ''
+
+        with mock.patch.object(
+                self.dp, '_run_compose_command', side_effect=run), \
+                mock.patch.object(
+                    self.dp, '_apply_project_compose', return_value=False), \
+                mock.patch.object(
+                    self.dp, '_reconcile_v2_app') as apply_app, \
+                mock.patch.object(self.dp, '_remove_absent_v2_projects'), \
+                mock.patch.object(self.dp, '_commit_v2_migration') as commit:
+            warnings = self.dp._apply_v2_projects(self._state())
+
+        self.assertEqual(warnings, [{
+            'code': 'system_project_failed',
+            'instance_uuid': '',
+            'volume': '',
+        }])
+        apply_app.assert_not_called()
+        commit.assert_not_called()
+        self.assertIn(
+            (self.dp.COMPOSE_PATH, 'state',
+             ['up', '-d', '--pull', 'missing'], 300),
+            commands)
+
+    def test_migration_app_failure_rolls_back_every_v2_project(self):
+        self._seed_legacy_state()
+        state = self._state()
+        for app in state['apps']:
+            self.dp._write_project_compose(
+                app['project_name'], app['compose'])
+        commands = []
+
+        def run(path, project, args, timeout):
+            commands.append((path, project, args, timeout))
+            return True, ''
+
+        def reconcile(app, migration, restore_failed):
+            if app['instance_uuid'] == 'app-b':
+                return False, ('app_project_failed', [])
+            return True, ('', [])
+
+        with mock.patch.object(
+                self.dp, '_run_compose_command', side_effect=run), \
+                mock.patch.object(
+                    self.dp, '_apply_project_compose', return_value=True), \
+                mock.patch.object(
+                    self.dp, '_reconcile_v2_app', side_effect=reconcile), \
+                mock.patch.object(self.dp, '_remove_absent_v2_projects'), \
+                mock.patch.object(self.dp, '_commit_v2_migration') as commit:
+            warnings = self.dp._apply_v2_projects(state)
+
+        self.assertEqual(warnings, [{
+            'code': 'app_project_failed',
+            'instance_uuid': 'app-b',
+            'volume': '',
+        }])
+        commit.assert_not_called()
+        for project in ('reefy-app-a', 'reefy-app-b'):
+            self.assertTrue(any(
+                call[1] == project and call[2] == ['stop']
+                for call in commands))
+        self.assertIn(
+            (self.dp.COMPOSE_PATH, 'state',
+             ['up', '-d', '--pull', 'missing'], 300),
+            commands)
+
+    def test_migration_clears_sticky_system_failure_after_name_release(self):
+        self._seed_legacy_state()
+        system_dir = Path(self.dp.PROJECTS_DIR) / 'reefy-system'
+        system_dir.mkdir(parents=True)
+        failed = system_dir / '.failed-compose-sig'
+        optional = system_dir / '.failed-compose-sig.optional'
+        failed.write_text('same-signature\ncontainer name conflict')
+        optional.write_text('same-signature\ncontainer name conflict')
+
+        with mock.patch.object(
+                self.dp, '_run_compose_command', return_value=(True, '')):
+            ok = self.dp._prepare_v2_system_handoff(
+                'reefy-system', self._state()['system_project']['compose'],
+                ['reefy-llm-proxy', 'reefy-app-api'])
+
+        self.assertTrue(ok)
+        self.assertFalse(failed.exists())
+        self.assertFalse(optional.exists())
 
     def test_migration_prepares_artifact_before_stopping_legacy_app(self):
         app = self._state()['apps'][0]

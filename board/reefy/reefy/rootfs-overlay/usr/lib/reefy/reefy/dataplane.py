@@ -822,6 +822,10 @@ class DataPlane:
 
         Returns structured ApplyWarning records. A project failure does not
         block unrelated projects or make the device-wide desired state fail.
+        The one-time v1-to-v2 handoff is stricter: apps remain on the legacy
+        project until the v2 system project is running, and any app failure
+        rolls the whole handoff back so platform DNS never splits across the
+        legacy and v2 networks.
         """
         failed_restores = set(failed_restores or ())
         warnings = []
@@ -837,16 +841,21 @@ class DataPlane:
             if row.get('instance_uuid')
         }
 
-        legacy_system_services = []
-        if migration and legacy_compose:
-            legacy_system_services = [
-                name for name in (legacy_compose.get('services') or {})
-                if name not in legacy_instances
-            ]
-            if legacy_system_services:
-                self._run_compose_command(
-                    self.COMPOSE_PATH, 'state',
-                    ['stop', *legacy_system_services], timeout=180)
+        legacy_system_services = [
+            name for name in (legacy_compose.get('services') or {})
+            if name not in legacy_instances
+        ]
+
+        if migration and not self._prepare_v2_system_handoff(
+                system_name, system_compose, legacy_system_services):
+            warnings.append({
+                'code': 'system_project_failed',
+                'instance_uuid': '',
+                'volume': '',
+            })
+            self._rollback_v2_migration(state, system_name)
+            self._reset_artifact_retry()
+            return warnings
 
         if not self._apply_project_compose(
                 system_name, system_compose, instance_uuid=None):
@@ -856,10 +865,10 @@ class DataPlane:
                 'instance_uuid': '',
                 'volume': '',
             })
-            if migration and legacy_system_services:
-                self._run_compose_command(
-                    self.COMPOSE_PATH, 'state',
-                    ['start', *legacy_system_services], timeout=180)
+            if migration:
+                self._rollback_v2_migration(state, system_name)
+                self._reset_artifact_retry()
+                return warnings
 
         desired_projects = {
             app.get('project_name') for app in (state.get('apps') or [])
@@ -904,8 +913,11 @@ class DataPlane:
                         'volume': service_name,
                     } for service_name in optional_failures)
 
-        if migration and not migration_failed:
-            self._commit_v2_migration()
+        if migration:
+            if migration_failed:
+                self._rollback_v2_migration(state, system_name)
+            else:
+                self._commit_v2_migration()
         if any(
                 warning.get('code') == 'artifact_prepare_failed'
                 for warning in warnings):
@@ -913,6 +925,88 @@ class DataPlane:
         else:
             self._reset_artifact_retry()
         return warnings
+
+    def _prepare_v2_system_handoff(
+            self, system_name, system_compose, legacy_system_services):
+        """Release legacy system container names before starting v2.
+
+        `docker compose stop` is insufficient for services with an explicit
+        `container_name`: the stopped container still reserves that name and
+        prevents the v2 system project from creating its replacement. Remove
+        only legacy system services here. Legacy app containers stay stopped
+        at their individual final handoffs and remain available for rollback.
+        """
+        compose_path = self._write_project_compose(
+            system_name, system_compose)
+
+        # Remove debris from a prior partial attempt before releasing the
+        # working legacy services. This is safe because migration has not
+        # committed and the legacy compose file remains authoritative.
+        ok, output = self._run_compose_command(
+            compose_path, system_name, ['rm', '-s', '-f'], timeout=180)
+        if not ok:
+            reason = self._failure_reason(
+                self._classify_compose_failure(output), output)
+            log('reconciler',
+                f'{system_name}: could not remove partial system project: '
+                f'{reason}')
+            return False
+
+        if legacy_system_services:
+            ok, _ = self._run_compose_command(
+                self.COMPOSE_PATH, 'state',
+                ['stop', *legacy_system_services], timeout=180)
+            if not ok:
+                return False
+            ok, _ = self._run_compose_command(
+                self.COMPOSE_PATH, 'state',
+                ['rm', '-f', *legacy_system_services], timeout=180)
+            if not ok:
+                return False
+
+        # A previous name collision may have cached this exact Compose
+        # signature as failed. Removing the legacy containers changes the
+        # runtime precondition, so the same desired Compose must be retried.
+        self._clear_project_failed_sigs(system_name)
+        return True
+
+    def _rollback_v2_migration(self, state, system_name):
+        """Restore the monolithic v1 project after a handoff failure."""
+        for app in state.get('apps') or []:
+            project_name = app.get('project_name') or ''
+            compose_path = self._project_compose_path(project_name)
+            if project_name and os.path.exists(compose_path):
+                self._run_compose_command(
+                    compose_path, project_name, ['stop'], timeout=180)
+
+        system_path = self._project_compose_path(system_name)
+        if os.path.exists(system_path):
+            self._run_compose_command(
+                system_path, system_name, ['rm', '-s', '-f'], timeout=180)
+
+        ok, output = self._run_compose_command(
+            self.COMPOSE_PATH, 'state',
+            ['up', '-d', '--pull', 'missing'], timeout=300)
+        if not ok:
+            reason = self._failure_reason(
+                self._classify_compose_failure(output), output)
+            log('reconciler', f'Apps-v2 migration rollback failed: {reason}')
+        return ok
+
+    def _clear_project_failed_sigs(self, project_name):
+        project_dir = os.path.dirname(self._project_compose_path(project_name))
+        try:
+            entries = os.scandir(project_dir)
+        except OSError:
+            return
+        with entries:
+            for entry in entries:
+                if not entry.name.startswith('.failed-compose-sig'):
+                    continue
+                try:
+                    os.unlink(entry.path)
+                except FileNotFoundError:
+                    pass
 
     def _schedule_artifact_retry(self):
         """Queue one exponential, event-driven retry for unavailable bytes.
