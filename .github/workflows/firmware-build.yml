@@ -78,7 +78,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: reefyai/reefy-artifact-fixtures
-          ref: main
+          ref: artifact-fixture-reproducibility
           path: artifact-fixtures
 
       - name: Checkout AMD provider builder
@@ -439,7 +439,7 @@ jobs:
 
   publish-artifact-fixture:
     needs: build
-    uses: reefyai/reefy-artifact-fixtures/.github/workflows/publish.yml@main
+    uses: reefyai/reefy-artifact-fixtures/.github/workflows/publish.yml@artifact-fixture-reproducibility
     with:
       input_artifact: reefy-artifact-fixture-inputs
     secrets: inherit
