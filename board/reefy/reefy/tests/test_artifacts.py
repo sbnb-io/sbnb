@@ -160,6 +160,10 @@ def test_nvidia_activator_replaces_the_runtime_cdi_definition():
     assert '--output=/run/cdi/nvidia.tmp.yaml' in script
     assert '--driver-root="$DRIVER_ROOT" --dev-root=/' in script
     assert 'DRIVER_ROOT=/run/reefy-artifacts/providers/nvidia-driver' in script
+    assert '"$DRIVER_ROOT/usr/share/vulkan/implicit_layer.d"' in script
+    assert '"$DRIVER_ROOT/usr/share/egl/egl_external_platform.d"' in script
+    assert '"$DRIVER_ROOT/usr/share/nvidia"' in script
+    assert 'mknod -m 666 /dev/nvidia-modeset c "$NVIDIA_MAJOR" 254' in script
     assert 'mv -f /run/cdi/nvidia.tmp.yaml /run/cdi/nvidia.yaml' in script
     assert 'rm -f /etc/cdi/nvidia.yaml' in script
     assert '--output=/etc/cdi/nvidia.yaml' not in script

@@ -38,6 +38,9 @@ mkdir -p "$DRIVER_ROOT/usr/lib/x86_64-linux-gnu" \
     "$DRIVER_ROOT/usr/bin" \
     "$DRIVER_ROOT/etc/vulkan/icd.d" \
     "$DRIVER_ROOT/etc/glvnd/egl_vendor.d" \
+    "$DRIVER_ROOT/usr/share/vulkan/implicit_layer.d" \
+    "$DRIVER_ROOT/usr/share/egl/egl_external_platform.d" \
+    "$DRIVER_ROOT/usr/share/nvidia" \
     "$DRIVER_ROOT/lib/firmware/nvidia"
 bind_read_only "$COMMON/usr/lib" \
     "$DRIVER_ROOT/usr/lib/x86_64-linux-gnu"
@@ -46,6 +49,12 @@ bind_read_only "$COMMON/usr/share/vulkan/icd.d" \
     "$DRIVER_ROOT/etc/vulkan/icd.d"
 bind_read_only "$COMMON/usr/share/glvnd/egl_vendor.d" \
     "$DRIVER_ROOT/etc/glvnd/egl_vendor.d"
+bind_read_only "$COMMON/usr/share/vulkan/implicit_layer.d" \
+    "$DRIVER_ROOT/usr/share/vulkan/implicit_layer.d"
+bind_read_only "$COMMON/usr/share/egl/egl_external_platform.d" \
+    "$DRIVER_ROOT/usr/share/egl/egl_external_platform.d"
+bind_read_only "$COMMON/usr/share/nvidia" \
+    "$DRIVER_ROOT/usr/share/nvidia"
 bind_read_only "$FIRMWARE_SOURCE" "$DRIVER_ROOT/lib/firmware/nvidia"
 
 mkdir -p /usr/lib /usr/bin /etc/vulkan/icd.d \
@@ -88,6 +97,8 @@ modprobe nvidia-drm
 NVIDIA_MAJOR=$(awk '/^[0-9]+ nvidiactl$/{print $1}' /proc/devices)
 [ -n "$NVIDIA_MAJOR" ]
 [ -e /dev/nvidiactl ] || mknod -m 666 /dev/nvidiactl c "$NVIDIA_MAJOR" 255
+[ -e /dev/nvidia-modeset ] || \
+    mknod -m 666 /dev/nvidia-modeset c "$NVIDIA_MAJOR" 254
 GPU_INDEX=0
 for gpu_dir in /proc/driver/nvidia/gpus/*/; do
     [ -d "$gpu_dir" ] || continue
