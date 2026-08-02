@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import signal
 import tempfile
 import threading
 import time
@@ -331,6 +332,35 @@ def test_different_artifact_admissions_are_limited_to_two():
 
     assert len(results) == 3
     assert maximum == 2
+
+
+def test_artifact_flock_is_released_when_holder_is_killed():
+    manager = _manager()
+    lock_path = os.path.join(
+        manager.run_dir, 'locks', 'manifests', 'a' * 64)
+    ready_read, ready_write = os.pipe()
+    child = os.fork()
+    if child == 0:
+        os.close(ready_read)
+        with artifacts._flock(lock_path):
+            os.write(ready_write, b'1')
+            time.sleep(60)
+        os._exit(0)
+
+    os.close(ready_write)
+    try:
+        assert os.read(ready_read, 1) == b'1'
+        os.kill(child, signal.SIGKILL)
+        os.waitpid(child, 0)
+        descriptor = os.open(lock_path, os.O_RDWR | os.O_CLOEXEC)
+        try:
+            artifacts.fcntl.flock(
+                descriptor, artifacts.fcntl.LOCK_EX
+                | artifacts.fcntl.LOCK_NB)
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(ready_read)
 
 
 def test_host_extension_mount_is_executable_but_app_mount_is_noexec():
