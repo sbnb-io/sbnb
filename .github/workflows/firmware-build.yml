@@ -85,7 +85,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: reefyai/reefy-amd
-          ref: main
+          ref: shared-host-libdrm
           path: amd-provider
 
       - name: Validate E2E build identity salt
