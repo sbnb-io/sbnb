@@ -4,7 +4,7 @@
 #
 ################################################################################
 
-NVIDIA_OPEN_GPU_VERSION = 595.45.04
+NVIDIA_OPEN_GPU_VERSION = 595.84
 NVIDIA_OPEN_GPU_SITE = https://github.com/NVIDIA/open-gpu-kernel-modules/archive/refs/tags
 NVIDIA_OPEN_GPU_SOURCE = $(NVIDIA_OPEN_GPU_VERSION).tar.gz
 NVIDIA_OPEN_GPU_LICENSE = MIT, GPL-2.0
@@ -37,10 +37,11 @@ define NVIDIA_OPEN_GPU_BUILD_CMDS
 endef
 
 define NVIDIA_OPEN_GPU_INSTALL_TARGET_CMDS
+	rm -rf $(BASE_DIR)/reefy-artifacts/nvidia/modules-root
 	$(NVIDIA_OPEN_GPU_MAKE_ENV) $(MAKE) -C $(LINUX_DIR) \
 		$(LINUX_MAKE_FLAGS) \
 		M=$(@D)/kernel-open \
-		INSTALL_MOD_PATH=$(TARGET_DIR) \
+		INSTALL_MOD_PATH=$(BASE_DIR)/reefy-artifacts/nvidia/modules-root \
 		modules_install
 endef
 

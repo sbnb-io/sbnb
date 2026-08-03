@@ -22,6 +22,12 @@ name: Build reefy firmware (self-hosted)
 
 on:
   workflow_dispatch:
+    inputs:
+      e2e_build_identity_salt:
+        description: Test-only salt for a distinct build ID with unchanged kernel ABI
+        required: false
+        default: ''
+        type: string
   push:
     paths-ignore:
       - '**/README*.md'
@@ -35,6 +41,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
   # For actions/attest-build-provenance@v2: write attestations to
   # the repo's transparency log. id-token: write is what fetches
   # the OIDC JWT used to sign.
@@ -45,6 +52,10 @@ jobs:
   build:
     runs-on: [self-hosted, large]
     timeout-minutes: 360
+    outputs:
+      reefy_build_id: ${{ steps.provider_metadata.outputs.reefy_build_id }}
+      kernel_abi_sha256: ${{ steps.provider_metadata.outputs.kernel_abi_sha256 }}
+      image_version: ${{ steps.provider_metadata.outputs.image_version }}
     env:
       # Persistent caches in the github-runner Reefy app's
       # buildroot-cache volume. dl/ = source tarballs (~2 GB),
@@ -55,12 +66,36 @@ jobs:
       BR2_DL_DIR: /buildroot-cache/dl
       BR2_CCACHE_DIR: /buildroot-cache/ccache
       BR_OUTPUT: /buildroot-cache/output
+      REEFY_E2E_BUILD_IDENTITY_SALT: ${{ inputs.e2e_build_identity_salt || '' }}
 
     steps:
       - name: Checkout (with buildroot submodule)
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Checkout synthetic artifact fixture module
+        uses: actions/checkout@v4
+        with:
+          repository: reefyai/reefy-artifact-fixtures
+          ref: 1e51a8edb8547ce173cf67b5973eb1ff61f88f50
+          path: artifact-fixtures
+
+      - name: Checkout AMD provider builder
+        uses: actions/checkout@v4
+        with:
+          repository: reefyai/reefy-amd
+          ref: ccaf743c5dd77af5aaab91ee8300d1d5402ee1f9
+          path: amd-provider
+
+      - name: Validate E2E build identity salt
+        shell: bash
+        run: |
+          if [ -n "$REEFY_E2E_BUILD_IDENTITY_SALT" ] \
+              && [[ ! "$REEFY_E2E_BUILD_IDENTITY_SALT" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
+            echo "invalid e2e_build_identity_salt"
+            exit 1
+          fi
 
       - name: Install buildroot prereqs
         run: |
@@ -111,8 +146,9 @@ jobs:
           done
 
           for module in nvidia nvidia-drm nvidia-modeset nvidia-uvm; do
-            if ! find "$module_dir" -name "${module}.ko*" 2>/dev/null | grep -q .; then
-              echo "missing ${module} module under $module_dir"
+            if ! find "$BR_OUTPUT/reefy-artifacts/nvidia/modules-root/lib/modules/$expected_kernel" \
+                -name "${module}.ko*" 2>/dev/null | grep -q .; then
+              echo "missing staged provider ${module} module"
               needs_clean=true
             fi
           done
@@ -129,9 +165,36 @@ jobs:
             echo "kernel module cache is current for $expected_kernel"
           fi
 
+          if [ ! -x "$BR_OUTPUT/reefy-artifacts/nvidia/toolkit/nvidia-ctk" ] \
+              || [ ! -x "$BR_OUTPUT/reefy-artifacts/nvidia/toolkit/nvidia-cdi-hook" ]; then
+            echo "missing staged NVIDIA Container Toolkit provider inputs"
+            make O="$BR_OUTPUT" nvidia-container-toolkit-dirclean
+          fi
+
       - name: Build (post_image.sh loops flavors)
         working-directory: buildroot
         run: make O="$BR_OUTPUT" -j$(nproc)
+
+      - name: Build exact AMD provider modules
+        run: |
+          expected_kernel=$(sed -n 's/^BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION="v\([0-9.]*\)"$/\1/p' configs/reefy_defconfig)
+          test -n "$expected_kernel"
+          kernel_build=''
+          for candidate in "$BR_OUTPUT"/build/linux-*; do
+            test "$(cat "$candidate/include/config/kernel.release" 2>/dev/null || true)" = "$expected_kernel" || continue
+            test -z "$kernel_build" || { echo "multiple exact kernel build trees"; exit 1; }
+            kernel_build=$candidate
+          done
+          test -n "$kernel_build"
+          driver_url=$(python3 -c 'import json; print(json.load(open("amd-provider/versions.json"))["amd_gpu_driver"]["package_url"])')
+          mkdir -p "$BR_OUTPUT/reefy-artifacts/amd"
+          curl -fL --retry 3 -o "$BR_OUTPUT/reefy-artifacts/amd/amdgpu-dkms.deb" "$driver_url"
+          python3 amd-provider/scripts/build_modules.py \
+            --driver-package "$BR_OUTPUT/reefy-artifacts/amd/amdgpu-dkms.deb" \
+            --kernel-dir "$kernel_build" \
+            --kernel-release "$expected_kernel" \
+            --toolchain-prefix "$BR_OUTPUT/host/bin/x86_64-buildroot-linux-gnu-" \
+            --output "$BR_OUTPUT/reefy-artifacts/amd/modules-root"
 
       - name: Verify pinned kernel version
         run: |
@@ -145,10 +208,36 @@ jobs:
             find "$module_dir" -name "${module}.ko*" | grep -q . \
               || { echo "missing ${module} module under $module_dir"; exit 1; }
           done
-          for module in nvidia nvidia-drm nvidia-modeset nvidia-uvm; do
-            find "$module_dir" -name "${module}.ko*" | grep -q . \
-              || { echo "missing ${module} module under $module_dir"; exit 1; }
+          if find "$module_dir" -name 'nvidia*.ko*' | grep -q .; then
+            echo "NVIDIA provider modules leaked into the Reefy OS image"
+            exit 1
+          fi
+          if find "$module_dir" -name 'amdgpu.ko*' | grep -q .; then
+            echo "in-tree AMD provider module leaked into the Reefy OS image"
+            exit 1
+          fi
+          for helper in drm_suballoc_helper drm_panel_backlight_quirks; do
+            find "$module_dir" -name "${helper}.ko*" | grep -q . \
+              || { echo "missing shared DRM helper ${helper}"; exit 1; }
           done
+          for path in \
+              "$BR_OUTPUT/target/usr/bin/nvidia-smi" \
+              "$BR_OUTPUT/target/usr/bin/nvidia-ctk" \
+              "$BR_OUTPUT/target/usr/bin/nvidia-cdi-hook" \
+              "$BR_OUTPUT/target/lib/firmware/nvidia" \
+              "$BR_OUTPUT/target/usr/lib/systemd/system/nvidia-cdi-generate.service"; do
+            if [ -e "$path" ]; then
+              echo "NVIDIA provider payload leaked into the Reefy OS image: $path"
+              exit 1
+            fi
+          done
+          if find "$BR_OUTPUT/target/usr/lib" -maxdepth 1 \
+              \( -name 'libnvidia*.so*' -o -name 'libcuda.so*' \
+                 -o -name 'libnvcuvid.so*' -o -name 'libnvoptix.so*' \) \
+              -print -quit | grep -q .; then
+            echo "NVIDIA provider libraries leaked into the Reefy OS image"
+            exit 1
+          fi
 
       - name: Verify multi-flavor outputs
         run: |
@@ -172,6 +261,107 @@ jobs:
       # isn't a meaningful release tag.
       - name: Stage os-release alongside images
         run: cp "$BR_OUTPUT/target/usr/lib/os-release" "$BR_OUTPUT/images/os-release"
+
+      - name: Stage exact provider inputs
+        id: provider_metadata
+        run: |
+          os_release="$BR_OUTPUT/target/usr/lib/os-release"
+          kernel_release=$(find "$BR_OUTPUT/target/lib/modules" \
+            -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+          reefy_build_id=$(sed -n 's/^REEFY_BUILD_ID=//p' "$os_release")
+          kernel_abi_sha256=$(sed -n 's/^REEFY_KERNEL_ABI_SHA256=//p' "$os_release")
+          image_version=$(sed -n 's/^IMAGE_VERSION=//p' "$os_release")
+          test -n "$kernel_release"
+          test -n "$reefy_build_id"
+          test -n "$kernel_abi_sha256"
+          test -n "$image_version"
+
+          nvidia="$BR_OUTPUT/reefy-artifacts/nvidia"
+          test -x "$nvidia/toolkit/nvidia-ctk"
+          test -x "$nvidia/toolkit/nvidia-cdi-hook"
+          for module in nvidia nvidia-drm nvidia-modeset nvidia-uvm; do
+            find "$nvidia/modules-root/lib/modules/$kernel_release" \
+              -name "${module}.ko*" | grep -q . \
+              || { echo "missing provider input ${module}"; exit 1; }
+          done
+          cat > "$nvidia/metadata.env" <<EOF
+          KERNEL_RELEASE=$kernel_release
+          REEFY_BUILD_ID=$reefy_build_id
+          REEFY_KERNEL_ABI_SHA256=$kernel_abi_sha256
+          IMAGE_VERSION=$image_version
+          EOF
+
+          intel="$BR_OUTPUT/reefy-artifacts/intel"
+          mkdir -p "$intel"
+          cp "$nvidia/metadata.env" "$intel/metadata.env"
+
+          amd="$BR_OUTPUT/reefy-artifacts/amd"
+          for module in amdgpu amdkcl amdxcp amdttm amd-sched \
+              amddrm_ttm_helper amddrm_buddy amddrm_exec; do
+            find "$amd/modules-root/lib/modules/$kernel_release" \
+              -name "${module}.ko" | grep -q . \
+              || { echo "missing AMD provider input ${module}"; exit 1; }
+          done
+          if find "$amd/modules-root" -name 'amddrm_suballoc_helper.ko' \
+              | grep -q .; then
+            echo "conflicting AMD suballocator helper was staged"
+            exit 1
+          fi
+          cp "$nvidia/metadata.env" "$amd/metadata.env"
+
+          fixture="$BR_OUTPUT/reefy-artifacts/fixture"
+          mkdir -p "$fixture"
+          cp "$nvidia/metadata.env" "$fixture/metadata.env"
+          kernel_build=''
+          for candidate in "$BR_OUTPUT"/build/linux-*; do
+            test "$(cat "$candidate/include/config/kernel.release" 2>/dev/null || true)" = "$kernel_release" || continue
+            test -z "$kernel_build" || { echo "multiple exact kernel build trees"; exit 1; }
+            kernel_build=$candidate
+          done
+          test -n "$kernel_build"
+          make -C "$kernel_build" \
+            ARCH=x86 \
+            CROSS_COMPILE="$BR_OUTPUT/host/bin/x86_64-buildroot-linux-gnu-" \
+            M="$GITHUB_WORKSPACE/artifact-fixtures/module" modules
+          cp "$GITHUB_WORKSPACE/artifact-fixtures/module/reefy_e2e_artifact.ko" \
+            "$fixture/reefy_e2e_artifact.ko"
+
+          echo "reefy_build_id=$reefy_build_id" >> "$GITHUB_OUTPUT"
+          echo "kernel_abi_sha256=$kernel_abi_sha256" >> "$GITHUB_OUTPUT"
+          echo "image_version=$image_version" >> "$GITHUB_OUTPUT"
+
+      - name: Upload NVIDIA provider inputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: reefy-nvidia-inputs
+          compression-level: 1
+          path: |
+            ${{ env.BR_OUTPUT }}/reefy-artifacts/nvidia/modules-root
+            ${{ env.BR_OUTPUT }}/reefy-artifacts/nvidia/toolkit
+            ${{ env.BR_OUTPUT }}/reefy-artifacts/nvidia/metadata.env
+
+      - name: Upload Intel provider inputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: reefy-intel-inputs
+          path: ${{ env.BR_OUTPUT }}/reefy-artifacts/intel/metadata.env
+
+      - name: Upload AMD provider inputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: reefy-amd-inputs
+          compression-level: 1
+          path: |
+            ${{ env.BR_OUTPUT }}/reefy-artifacts/amd/modules-root
+            ${{ env.BR_OUTPUT }}/reefy-artifacts/amd/metadata.env
+
+      - name: Upload synthetic artifact fixture inputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: reefy-artifact-fixture-inputs
+          path: |
+            ${{ env.BR_OUTPUT }}/reefy-artifacts/fixture/metadata.env
+            ${{ env.BR_OUTPUT }}/reefy-artifacts/fixture/reefy_e2e_artifact.ko
 
       # Per-flavor artifact upload. Naming convention `reefy-<flavor>`
       # is the contract reefy-deploy queries against
@@ -225,3 +415,98 @@ jobs:
             ${{ env.BR_OUTPUT }}/images/reefy-prod.raw
             ${{ env.BR_OUTPUT }}/images/reefy-dev.efi
             ${{ env.BR_OUTPUT }}/images/reefy-dev.raw
+
+  publish-nvidia-provider:
+    needs: build
+    uses: reefyai/reefy-nvidia/.github/workflows/publish.yml@bae37235695f797f86c05efc06daa0b927752a19
+    with:
+      input_artifact: reefy-nvidia-inputs
+    secrets: inherit
+
+  publish-intel-provider:
+    needs: build
+    uses: reefyai/reefy-intel/.github/workflows/publish.yml@e1d0b67643663cfbf24ce0eb0d2de82f2935e0d2
+    with:
+      input_artifact: reefy-intel-inputs
+    secrets: inherit
+
+  publish-amd-provider:
+    needs: build
+    uses: reefyai/reefy-amd/.github/workflows/publish.yml@ccaf743c5dd77af5aaab91ee8300d1d5402ee1f9
+    with:
+      input_artifact: reefy-amd-inputs
+    secrets: inherit
+
+  publish-artifact-fixture:
+    needs: build
+    uses: reefyai/reefy-artifact-fixtures/.github/workflows/publish.yml@1e51a8edb8547ce173cf67b5973eb1ff61f88f50
+    with:
+      input_artifact: reefy-artifact-fixture-inputs
+    secrets: inherit
+
+  provider-catalog:
+    needs: [build, publish-nvidia-provider, publish-amd-provider, publish-intel-provider, publish-artifact-fixture]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build exact provider catalog
+        env:
+          REEFY_BUILD_ID: ${{ needs.build.outputs.reefy_build_id }}
+          KERNEL_ABI_SHA256: ${{ needs.build.outputs.kernel_abi_sha256 }}
+          IMAGE_VERSION: ${{ needs.build.outputs.image_version }}
+          NVIDIA_DIGEST: ${{ needs.publish-nvidia-provider.outputs.digest }}
+          AMD_DIGEST: ${{ needs.publish-amd-provider.outputs.digest }}
+          INTEL_DIGEST: ${{ needs.publish-intel-provider.outputs.digest }}
+          FIXTURE_DIGEST: ${{ needs.publish-artifact-fixture.outputs.digest }}
+          FIXTURE_WRONG_ABI_DIGEST: ${{ needs.publish-artifact-fixture.outputs.wrong_abi_digest }}
+          FIXTURE_MISSING_HOOK_DIGEST: ${{ needs.publish-artifact-fixture.outputs.missing_hook_digest }}
+          FIXTURE_FAILING_HOOK_DIGEST: ${{ needs.publish-artifact-fixture.outputs.failing_hook_digest }}
+          FIXTURE_APP_DIGESTS: ${{ needs.publish-artifact-fixture.outputs.app_digests }}
+        run: |
+          fixture_app_1=$(printf '%s' "$FIXTURE_APP_DIGESTS" | cut -d, -f1)
+          fixture_app_2=$(printf '%s' "$FIXTURE_APP_DIGESTS" | cut -d, -f2)
+          fixture_app_3=$(printf '%s' "$FIXTURE_APP_DIGESTS" | cut -d, -f3)
+          fixture_app_4=$(printf '%s' "$FIXTURE_APP_DIGESTS" | cut -d, -f4)
+          for digest in "$fixture_app_1" "$fixture_app_2" \
+              "$fixture_app_3" "$fixture_app_4"; do
+            test -n "$digest"
+          done
+          jq -n \
+            --arg build_id "$REEFY_BUILD_ID" \
+            --arg abi "sha256:$KERNEL_ABI_SHA256" \
+            --arg image_version "$IMAGE_VERSION" \
+            --arg nvidia "ghcr.io/reefyai/reefy-nvidia@$NVIDIA_DIGEST" \
+            --arg amd "ghcr.io/reefyai/reefy-amd@$AMD_DIGEST" \
+            --arg intel "ghcr.io/reefyai/reefy-intel@$INTEL_DIGEST" \
+            --arg fixture "ghcr.io/reefyai/reefy-artifact-fixtures@$FIXTURE_DIGEST" \
+            --arg fixture_wrong_abi "ghcr.io/reefyai/reefy-artifact-fixtures@$FIXTURE_WRONG_ABI_DIGEST" \
+            --arg fixture_missing_hook "ghcr.io/reefyai/reefy-artifact-fixtures@$FIXTURE_MISSING_HOOK_DIGEST" \
+            --arg fixture_failing_hook "ghcr.io/reefyai/reefy-artifact-fixtures@$FIXTURE_FAILING_HOOK_DIGEST" \
+            --arg fixture_app_1 "ghcr.io/reefyai/reefy-artifact-fixtures@$fixture_app_1" \
+            --arg fixture_app_2 "ghcr.io/reefyai/reefy-artifact-fixtures@$fixture_app_2" \
+            --arg fixture_app_3 "ghcr.io/reefyai/reefy-artifact-fixtures@$fixture_app_3" \
+            --arg fixture_app_4 "ghcr.io/reefyai/reefy-artifact-fixtures@$fixture_app_4" \
+            '{schema_version: 1,
+              reefy_build_id: $build_id,
+              kernel_abi_digest: $abi,
+              image_version: $image_version,
+              providers: {
+                "nvidia-driver": {ref: $nvidia},
+                "amd-driver": {ref: $amd},
+                "intel-accelerator": {ref: $intel}
+              },
+              fixtures: {
+                "e2e-host-extension": {ref: $fixture},
+                "e2e-wrong-abi": {ref: $fixture_wrong_abi},
+                "e2e-missing-hook": {ref: $fixture_missing_hook},
+                "e2e-failing-hook": {ref: $fixture_failing_hook},
+                "e2e-app-1": {ref: $fixture_app_1},
+                "e2e-app-2": {ref: $fixture_app_2},
+                "e2e-app-3": {ref: $fixture_app_3},
+                "e2e-app-4": {ref: $fixture_app_4}
+              }}' > provider-artifacts.json
+
+      - name: Upload exact provider catalog
+        uses: actions/upload-artifact@v4
+        with:
+          name: reefy-provider-catalog
+          path: provider-artifacts.json
