@@ -1438,15 +1438,30 @@ class Storage:
         pruning, migration, and other housekeeping belong to normal runtime
         reconciliation and must not delay container startup.
         """
-        if not os.path.exists(self.DESIRED_STATE_PATH):
-            log('mqtt', '[boot-mount] no desired-state.json; nothing to mount')
+        state_path = shared.desired_state_path()
+        if not os.path.exists(state_path):
+            log('mqtt', '[boot-mount] no desired state; nothing to mount')
             return
         try:
-            with open(self.DESIRED_STATE_PATH) as f:
+            with open(state_path) as f:
                 state = json.load(f)
         except (OSError, json.JSONDecodeError) as e:
             log('mqtt', f'[boot-mount] cannot read desired-state: {e}')
             return
+        if state.get('schema_version') == 2:
+            app_volumes = []
+            volume_caps = {}
+            backup_instances = []
+            for app in state.get('apps') or []:
+                app_volumes.extend(app.get('volumes') or [])
+                volume_caps.update(app.get('volume_caps') or {})
+                if app.get('backup'):
+                    backup_instances.append(app['backup'])
+            state = {
+                'app_volumes': app_volumes,
+                'volume_caps': volume_caps,
+                'backup': {'instances': backup_instances},
+            }
         self._volume_caps = state.get('volume_caps') or {}
         backup = state.get('backup') or {}
         # Mount backup-flagged paths AND fair-share-capped paths (e.g.

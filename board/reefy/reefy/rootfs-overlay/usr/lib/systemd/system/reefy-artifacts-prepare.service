@@ -1,0 +1,15 @@
+[Unit]
+Description=Activate cached Reefy host artifacts
+Documentation=https://github.com/reefyai/reefy
+After=reefy-storage.service
+RequiresMountsFor=/mnt/reefy-data
+
+[Service]
+Type=oneshot
+PrivateMounts=no
+ExecStart=/usr/bin/reefy-artifacts activate-cached
+TimeoutStartSec=10min
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

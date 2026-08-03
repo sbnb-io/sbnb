@@ -22,6 +22,61 @@ fi
 echo "${IMAGE_VERSION}" > "${VERSION_FILE}"
 echo "IMAGE_ID=reefy-linux" >> "${OS_RELEASE}"
 echo "IMAGE_VERSION=${IMAGE_VERSION}" >> "${OS_RELEASE}"
+echo "REEFY_DESIRED_STATE_SCHEMA=2" >> "${OS_RELEASE}"
+
+# Internal exact-build identity for externally packaged kernel modules. Keep
+# the public IMAGE_VERSION format unchanged. Hash the actual kernel image,
+# configuration, and exported symbol CRCs so an incremental rebuild cannot
+# accidentally select modules from different bytes with the same uname -r.
+PINNED_KERNEL=$(sed -n 's/^BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION="v\([0-9.]*\)"$/\1/p' "${BR2_CONFIG}")
+LINUX_BUILD_DIR=''
+for candidate in "${BUILD_DIR}"/linux-*; do
+  if [ "$(cat "${candidate}/include/config/kernel.release" 2>/dev/null || true)" = "${PINNED_KERNEL}" ] \
+      && [ -f "${candidate}/arch/x86/boot/bzImage" ] \
+      && [ -f "${candidate}/.config" ] \
+      && [ -f "${candidate}/Module.symvers" ]; then
+    if [ -n "${LINUX_BUILD_DIR}" ]; then
+      echo "ERROR: multiple exact kernel build trees for ${PINNED_KERNEL}" >&2
+      exit 1
+    fi
+    LINUX_BUILD_DIR=${candidate}
+  fi
+done
+if [ -n "${LINUX_BUILD_DIR}" ] \
+    && [ -f "${LINUX_BUILD_DIR}/arch/x86/boot/bzImage" ] \
+    && [ -f "${LINUX_BUILD_DIR}/.config" ] \
+    && [ -f "${LINUX_BUILD_DIR}/Module.symvers" ]; then
+  KERNEL_ABI_SHA256=$(sha256sum \
+    "${LINUX_BUILD_DIR}/.config" "${LINUX_BUILD_DIR}/Module.symvers" \
+    | sha256sum | awk '{print $1}')
+  BUILD_IDENTITY_SALT=${REEFY_E2E_BUILD_IDENTITY_SALT:-}
+  if [ -n "${BUILD_IDENTITY_SALT}" ] \
+      && [[ ! "${BUILD_IDENTITY_SALT}" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
+    echo "ERROR: invalid E2E build identity salt" >&2
+    exit 1
+  fi
+  if [ -z "${REEFY_BUILD_ID:-}" ]; then
+    BASE_REEFY_BUILD_ID=$(sha256sum \
+      "${LINUX_BUILD_DIR}/arch/x86/boot/bzImage" \
+      "${LINUX_BUILD_DIR}/.config" \
+      "${LINUX_BUILD_DIR}/Module.symvers" \
+      | sha256sum | awk '{print $1}')
+    REEFY_BUILD_ID=${BASE_REEFY_BUILD_ID}
+    if [ -n "${BUILD_IDENTITY_SALT}" ]; then
+      REEFY_BUILD_ID=$(printf '%s\0%s\0%s\0' \
+        reefy-e2e-build-id-v1 "${BASE_REEFY_BUILD_ID}" \
+        "${BUILD_IDENTITY_SALT}" | sha256sum | awk '{print $1}')
+    fi
+  elif [ -n "${BUILD_IDENTITY_SALT}" ]; then
+    echo "ERROR: cannot combine REEFY_BUILD_ID with an E2E identity salt" >&2
+    exit 1
+  fi
+  echo "REEFY_BUILD_ID=${REEFY_BUILD_ID}" >> "${OS_RELEASE}"
+  echo "REEFY_KERNEL_ABI_SHA256=${KERNEL_ABI_SHA256}" >> "${OS_RELEASE}"
+else
+  echo "ERROR: cannot calculate Reefy kernel build identity" >&2
+  exit 1
+fi
 
 # Mount efivarfs to access UEFI variables
 # Remount as read-write as needed
@@ -90,8 +145,46 @@ rm -f "${TARGET_DIR}/usr/bin/reefy-mqtt-reconciler" \
 # r8125/26/27/8168, nvidia-open-gpu) is dircleaned on version change and
 # reinstalls under the pinned version, so purging old dirs here is safe.
 # Fail-safe: if the pin can't be read, purge nothing - CI verify catches it.
-PINNED_KERNEL=$(sed -n 's/^BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION="v\([0-9.]*\)"$/\1/p' "${BR2_CONFIG}")
 if [ -n "${PINNED_KERNEL}" ] && [ -d "${TARGET_DIR}/lib/modules" ]; then
   find "${TARGET_DIR}/lib/modules" -mindepth 1 -maxdepth 1 -type d \
     ! -name "${PINNED_KERNEL}" -exec rm -rf {} +
+fi
+
+# NVIDIA packages in the Buildroot configuration produce exact inputs for the
+# external provider artifact. None of their driver payload belongs in the
+# immutable Reefy OS image. Remove stale files from incremental TARGET_DIR
+# builds as well as files installed by older package recipes.
+rm -f "${TARGET_DIR}/usr/bin/nvidia-smi" \
+      "${TARGET_DIR}/usr/bin/nvidia-ctk" \
+      "${TARGET_DIR}/usr/bin/nvidia-cdi-hook" \
+      "${TARGET_DIR}/usr/bin/nvidia-cdi-setup.sh" \
+      "${TARGET_DIR}/usr/sbin/nvidia-smi" \
+      "${TARGET_DIR}/usr/lib/systemd/system/nvidia-cdi-generate.service" \
+      "${TARGET_DIR}/etc/systemd/system/nvidia-cdi-generate.service" \
+      "${TARGET_DIR}/etc/systemd/system/multi-user.target.wants/nvidia-cdi-generate.service" \
+      "${TARGET_DIR}"/usr/lib/libcuda.so* \
+      "${TARGET_DIR}"/usr/lib/libnvcuvid.so* \
+      "${TARGET_DIR}"/usr/lib/libnvidia-*.so* \
+      "${TARGET_DIR}"/usr/lib/libEGL_nvidia.so* \
+      "${TARGET_DIR}"/usr/lib/libGLESv1_CM_nvidia.so* \
+      "${TARGET_DIR}"/usr/lib/libGLESv2_nvidia.so* \
+      "${TARGET_DIR}"/usr/lib/libGLX_nvidia.so* \
+      "${TARGET_DIR}"/usr/lib/libnvoptix.so* \
+      "${TARGET_DIR}"/usr/lib/libvdpau_nvidia.so* \
+      "${TARGET_DIR}"/usr/lib/libnvidia-drm_gbm.so \
+      "${TARGET_DIR}"/usr/lib/_nvngx.dll \
+      "${TARGET_DIR}"/etc/vulkan/icd.d/nvidia*.json \
+      "${TARGET_DIR}"/etc/glvnd/egl_vendor.d/10_nvidia.json
+rm -rf "${TARGET_DIR}/lib/firmware/nvidia" \
+       "${TARGET_DIR}/usr/lib/firmware/nvidia"
+if [ -d "${TARGET_DIR}/lib/modules" ]; then
+  find "${TARGET_DIR}/lib/modules" -type f -name 'nvidia*.ko*' -delete
+  # The in-tree AMD module is enabled only to expose the exact shared DRM
+  # kernel ABI used by the separately published AMD 31.40 provider. Never
+  # ship that older in-tree driver beside the external provider module.
+  find "${TARGET_DIR}/lib/modules" -type f -name 'amdgpu.ko*' -delete
+  find "${TARGET_DIR}/lib/modules" -depth -type d -empty -delete
+fi
+if [ -n "${PINNED_KERNEL}" ] && [ -x "${HOST_DIR}/sbin/depmod" ]; then
+  "${HOST_DIR}/sbin/depmod" -a -b "${TARGET_DIR}" "${PINNED_KERNEL}"
 fi
