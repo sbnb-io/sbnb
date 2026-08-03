@@ -1,9 +1,11 @@
 """Unit tests for the Docker-independent Reefy artifact manager."""
 
 import hashlib
+import io
 import json
 import os
 import signal
+import ssl
 import tempfile
 import threading
 import time
@@ -139,6 +141,44 @@ def test_failed_blob_download_never_leaves_final_or_partial_content():
         else:
             raise AssertionError('interrupted transfer unexpectedly passed')
     assert not os.path.exists(destination)
+
+
+def test_transient_blob_download_is_retried_from_a_clean_partial_file():
+    source = artifacts.OciSource(
+        'registry.example/fixtures@sha256:' + ('a' * 64))
+    destination = os.path.join(tempfile.mkdtemp(), 'partial')
+    payload = b'complete verified payload'
+    digest = 'sha256:' + hashlib.sha256(payload).hexdigest()
+
+    class InterruptedResponse:
+        calls = 0
+
+        def read(self, _size):
+            self.calls += 1
+            if self.calls == 1:
+                return b'unverified prefix'
+            raise ssl.SSLError('synthetic record-layer failure')
+
+        def close(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    with mock.patch.object(
+            source, '_request', side_effect=(
+                InterruptedResponse(), io.BytesIO(payload))) as request, \
+            mock.patch.object(artifacts.time, 'sleep') as sleep:
+        source.download_blob(
+            digest, destination, expected_size=len(payload))
+
+    assert request.call_count == 2
+    sleep.assert_called_once_with(1)
+    with open(destination, 'rb') as stream:
+        assert stream.read() == payload
 
 
 def test_blob_digest_failure_removes_partial_content():

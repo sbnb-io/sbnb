@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import time
@@ -25,6 +26,8 @@ DEFAULT_STORE = '/mnt/reefy-data/artifacts'
 DEFAULT_RUN_DIR = '/run/reefy-artifacts'
 MAX_METADATA = 4 * 1024 * 1024
 MAX_BLOB = 16 * 1024 * 1024 * 1024
+BLOB_DOWNLOAD_ATTEMPTS = 4
+BLOB_RETRY_DELAYS = (1, 2, 4)
 HEX_DIGEST = re.compile(r'^[0-9a-f]{64}$')
 HOST_EXTENSION_REPOSITORIES = {
     'ghcr.io/reefyai/reefy-nvidia',
@@ -77,6 +80,21 @@ def _read_json(path):
             return json.load(stream)
     except (OSError, ValueError):
         return {}
+
+
+def _transient_download_error(exception):
+    current = exception
+    while current is not None:
+        if isinstance(current, urllib.error.HTTPError):
+            return current.code in (408, 429) or current.code >= 500
+        if isinstance(current, (ssl.SSLError, TimeoutError, ConnectionError)):
+            return True
+        if isinstance(current, urllib.error.URLError):
+            return True
+        if isinstance(current, OSError) and getattr(current, 'errno', None):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _os_release(path='/etc/os-release'):
@@ -145,33 +163,44 @@ class OciSource:
     def download_blob(self, digest, destination, expected_size):
         if expected_size is not None and not 0 <= expected_size <= MAX_BLOB:
             raise ArtifactError('blob exceeds size policy')
-        if self.local_root:
-            source_path = self._local_path(digest)
-            response = open(source_path, 'rb')
-        else:
-            response = self._request(
-                f'/v2/{self.repository}/blobs/{digest}')
-        hasher = hashlib.sha256()
-        count = 0
-        try:
-            with response, open(destination, 'wb') as output:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    count += len(chunk)
-                    if count > MAX_BLOB:
-                        raise ArtifactError('blob exceeds size policy')
-                    hasher.update(chunk)
-                    output.write(chunk)
-                output.flush()
-                os.fsync(output.fileno())
-        except Exception:
+        attempts = 1 if self.local_root else BLOB_DOWNLOAD_ATTEMPTS
+        for attempt in range(1, attempts + 1):
+            hasher = hashlib.sha256()
+            count = 0
             try:
-                os.remove(destination)
-            except OSError:
-                pass
-            raise
+                if self.local_root:
+                    response = open(self._local_path(digest), 'rb')
+                else:
+                    response = self._request(
+                        f'/v2/{self.repository}/blobs/{digest}')
+                with response, open(destination, 'wb') as output:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        count += len(chunk)
+                        if count > MAX_BLOB:
+                            raise ArtifactError('blob exceeds size policy')
+                        hasher.update(chunk)
+                        output.write(chunk)
+                    output.flush()
+                    os.fsync(output.fileno())
+            except Exception as exception:
+                try:
+                    os.remove(destination)
+                except OSError:
+                    pass
+                if (attempt >= attempts
+                        or not _transient_download_error(exception)):
+                    raise
+                delay = BLOB_RETRY_DELAYS[attempt - 1]
+                print(
+                    'transient artifact blob download failure; '
+                    f'retry {attempt + 1}/{attempts} in {delay}s: '
+                    f'{exception}', file=sys.stderr, flush=True)
+                time.sleep(delay)
+                continue
+            break
         if expected_size is not None and count != expected_size:
             try:
                 os.remove(destination)
