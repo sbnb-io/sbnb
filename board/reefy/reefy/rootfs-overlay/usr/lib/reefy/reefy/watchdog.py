@@ -18,6 +18,7 @@ COOLDOWN_SECONDS = 300
 PROBE_TIMEOUT_SECONDS = 3
 RESTART_TIMEOUT_SECONDS = 15
 STATE_DIR = '/run/reefy-watchdog'
+COMPOSE_PROJECTS = ('reefy-system', 'state')
 
 CHECKS = (
     {
@@ -56,23 +57,29 @@ def probe(url, kind, timeout=PROBE_TIMEOUT_SECONDS):
 
 
 def find_container(service):
-    """Find a Compose service container by labels, including stopped ones."""
-    try:
-        result = subprocess.run(
-            [
-                'docker', 'ps', '-aq',
-                '--filter', 'label=com.docker.compose.project=state',
-                '--filter', f'label=com.docker.compose.service={service}',
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    return next((line for line in result.stdout.splitlines() if line), None)
+    """Find a system Compose service, preferring the Apps v2 project."""
+    for project in COMPOSE_PROJECTS:
+        try:
+            result = subprocess.run(
+                [
+                    'docker', 'ps', '-aq',
+                    '--filter',
+                    f'label=com.docker.compose.project={project}',
+                    '--filter', f'label=com.docker.compose.service={service}',
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode != 0:
+            return None
+        container = next(
+            (line for line in result.stdout.splitlines() if line), None)
+        if container:
+            return container
+    return None
 
 
 def _read_int(path, default=0):
