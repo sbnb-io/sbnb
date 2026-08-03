@@ -2,11 +2,9 @@ config BR2_PACKAGE_NVIDIA_CONTAINER_TOOLKIT
 	bool "nvidia-container-toolkit"
 	depends on BR2_x86_64
 	depends on BR2_PACKAGE_HOST_GO_TARGET_CGO_LINKING_SUPPORTS
-	select BR2_PACKAGE_NVIDIA_USERSPACE
 	help
-	  NVIDIA Container Toolkit provides CDI (Container Device Interface)
-	  support for GPU access in containers. Includes nvidia-ctk for
-	  generating CDI specs and nvidia-cdi-hook for container lifecycle
-	  hooks. Use with: docker run --device=nvidia.com/gpu=all
+	  Build NVIDIA Container Toolkit binaries for the Reefy NVIDIA
+	  provider artifact. The binaries are staged outside TARGET_DIR and
+	  are not embedded in the Reefy OS image.
 
 	  https://github.com/NVIDIA/nvidia-container-toolkit

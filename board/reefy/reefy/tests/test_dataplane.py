@@ -50,6 +50,492 @@ class ImportIsolationTests(unittest.TestCase):
             'else lvremove fails "filesystem in use"')
 
 
+class AppsV2Tests(unittest.TestCase):
+    def setUp(self):
+        self.dp = _make_dp()
+        self.tempdir = tempfile.mkdtemp()
+        self.dp.DESIRED_STATE_PATH = os.path.join(
+            self.tempdir, 'desired-state.json')
+        self.dp.DESIRED_STATE_V2_PATH = os.path.join(
+            self.tempdir, 'desired-state-v2.json')
+        self.dp.COMPOSE_PATH = os.path.join(
+            self.tempdir, 'docker-compose.json')
+        self.dp.PROJECTS_DIR = os.path.join(self.tempdir, 'projects')
+
+    @staticmethod
+    def _state():
+        return {
+            'schema_version': 2,
+            'revision': 'sha256:' + ('a' * 64),
+            'host': {'hostname': 'synthetic-device'},
+            'system_project': {
+                'project_name': 'reefy-system',
+                'compose': {'services': {'proxy': {'image': 'proxy:1'}}},
+            },
+            'instances': [
+                {'instance_uuid': 'app-a', 'instance_name': 'a'},
+                {'instance_uuid': 'app-b', 'instance_name': 'b'},
+            ],
+            'apps': [
+                {
+                    'instance_uuid': 'app-a',
+                    'project_name': 'reefy-app-a',
+                    'desired_status': 'running',
+                    'compose': {'services': {'app': {'image': 'a:1'}}},
+                    'volumes': [], 'files': [], 'artifacts': [],
+                },
+                {
+                    'instance_uuid': 'app-b',
+                    'project_name': 'reefy-app-b',
+                    'desired_status': 'running',
+                    'compose': {'services': {'app': {'image': 'b:1'}}},
+                    'volumes': [], 'files': [], 'artifacts': [],
+                },
+            ],
+        }
+
+    def _seed_legacy_state(self):
+        legacy = {
+            'services': {
+                'app-a': {'image': 'a:0'},
+                'app-b': {'image': 'b:0'},
+                'reefy-llm-proxy': {
+                    'image': 'llm-proxy:0',
+                    'container_name': 'reefy-llm-proxy',
+                },
+                'reefy-app-api': {
+                    'image': 'app-api:0',
+                    'container_name': 'reefy-app-api',
+                },
+            },
+        }
+        Path(self.dp.DESIRED_STATE_PATH).write_text('{}')
+        Path(self.dp.COMPOSE_PATH).write_text(json.dumps(legacy))
+        return legacy
+
+    def test_v2_state_is_saved_separately_and_blocks_downgrade(self):
+        state = self._state()
+        with mock.patch.object(
+                self.dp, '_apply_desired_state', return_value=True):
+            self.assertTrue(self.dp._apply_state({'state': state}))
+            self.assertTrue(os.path.exists(self.dp.DESIRED_STATE_V2_PATH))
+            self.assertFalse(os.path.exists(self.dp.DESIRED_STATE_PATH))
+            self.assertFalse(self.dp._apply_state({
+                'state': {'hostname': 'legacy', 'compose': {'services': {}}},
+            }))
+
+    def test_app_projects_start_concurrently(self):
+        barrier = threading.Barrier(2)
+        entered = []
+
+        def apply_app(name, compose, instance_uuid, primary_service):
+            entered.append(name)
+            barrier.wait(timeout=2)
+            return True, []
+
+        with mock.patch.object(
+                self.dp, '_v2_migration_pending', return_value=False), \
+                mock.patch.object(
+                    self.dp, '_apply_project_compose',
+                    return_value=True), \
+                mock.patch.object(
+                    self.dp, '_apply_app_project_compose',
+                    side_effect=apply_app), \
+                mock.patch.object(self.dp, '_remove_absent_v2_projects'), \
+                mock.patch.object(
+                    self.dp, '_prepare_app_artifacts', return_value=True):
+            warnings = self.dp._apply_v2_projects(self._state())
+
+        self.assertEqual(warnings, [])
+        self.assertCountEqual(entered, ['reefy-app-a', 'reefy-app-b'])
+
+    def test_one_app_failure_does_not_block_another(self):
+        calls = []
+
+        def apply_app(name, compose, instance_uuid, primary_service):
+            calls.append(name)
+            return instance_uuid != 'app-a', []
+
+        with mock.patch.object(
+                self.dp, '_v2_migration_pending', return_value=False), \
+                mock.patch.object(
+                    self.dp, '_apply_project_compose',
+                    return_value=True), \
+                mock.patch.object(
+                    self.dp, '_apply_app_project_compose',
+                    side_effect=apply_app), \
+                mock.patch.object(self.dp, '_remove_absent_v2_projects'), \
+                mock.patch.object(
+                    self.dp, '_prepare_app_artifacts', return_value=True):
+            warnings = self.dp._apply_v2_projects(self._state())
+
+        self.assertIn('reefy-app-b', calls)
+        self.assertEqual(warnings, [{
+            'code': 'app_project_failed',
+            'instance_uuid': 'app-a',
+            'volume': '',
+        }])
+
+    def test_artifact_failure_schedules_one_shot_backoff_retry(self):
+        state = self._state()
+        state['apps'] = [state['apps'][0]]
+        timer = mock.Mock()
+        timer.is_alive.return_value = True
+        with mock.patch.object(
+                self.dp, '_v2_migration_pending', return_value=False), \
+                mock.patch.object(
+                    self.dp, '_apply_project_compose', return_value=True), \
+                mock.patch.object(self.dp, '_remove_absent_v2_projects'), \
+                mock.patch.object(
+                    self.dp, '_prepare_app_artifacts', return_value=False), \
+                mock.patch.object(
+                    dataplane.threading, 'Timer', return_value=timer) as factory:
+            warnings = self.dp._apply_v2_projects(state)
+
+        self.assertEqual(warnings[0]['code'], 'artifact_prepare_failed')
+        factory.assert_called_once()
+        self.assertEqual(factory.call_args.args[0], 10)
+        self.assertTrue(timer.daemon)
+        timer.start.assert_called_once()
+
+        self.dp._schedule_artifact_retry()
+        factory.assert_called_once()
+
+    def test_artifact_retry_callback_queues_reconcile_without_polling(self):
+        callbacks = []
+
+        class FakeTimer:
+            daemon = False
+
+            def __init__(self, _delay, callback):
+                callbacks.append(callback)
+
+            def start(self):
+                pass
+
+            def cancel(self):
+                pass
+
+            def is_alive(self):
+                return False
+
+        with mock.patch.object(dataplane.threading, 'Timer', FakeTimer), \
+                mock.patch.object(self.dp, '_submit_apply_job') as submit:
+            self.dp._schedule_artifact_retry()
+            callbacks[0]()
+
+        submit.assert_called_once_with('reconcile')
+
+    def test_system_project_failure_does_not_block_apps(self):
+        calls = []
+
+        def apply_project(name, compose, instance_uuid=None, **_kwargs):
+            calls.append(name)
+            return name != 'reefy-system'
+
+        with mock.patch.object(
+                self.dp, '_v2_migration_pending', return_value=False), \
+                mock.patch.object(
+                    self.dp, '_apply_project_compose',
+                    side_effect=apply_project), \
+                mock.patch.object(
+                    self.dp, '_apply_app_project_compose',
+                    return_value=(True, [])) as apply_app, \
+                mock.patch.object(self.dp, '_remove_absent_v2_projects'), \
+                mock.patch.object(
+                    self.dp, '_prepare_app_artifacts', return_value=True):
+            warnings = self.dp._apply_v2_projects(self._state())
+
+        self.assertEqual(calls, ['reefy-system'])
+        self.assertEqual(apply_app.call_count, 2)
+        self.assertEqual(warnings[0]['code'], 'system_project_failed')
+
+    def test_migration_removes_legacy_system_before_starting_v2(self):
+        self._seed_legacy_state()
+        commands = []
+        order = []
+
+        def run(path, project, args, timeout):
+            commands.append((path, project, args, timeout))
+            order.append(f'{project}:{args[0]}')
+            return True, ''
+
+        def apply_system(*_args, **_kwargs):
+            order.append('reefy-system:up')
+            return True
+
+        with mock.patch.object(
+                self.dp, '_run_compose_command', side_effect=run), \
+                mock.patch.object(
+                    self.dp, '_apply_project_compose',
+                    side_effect=apply_system), \
+                mock.patch.object(
+                    self.dp, '_reconcile_v2_app',
+                    return_value=(True, ('', []))), \
+                mock.patch.object(self.dp, '_remove_absent_v2_projects'), \
+                mock.patch.object(self.dp, '_commit_v2_migration') as commit:
+            warnings = self.dp._apply_v2_projects(self._state())
+
+        self.assertEqual(warnings, [])
+        self.assertEqual(order[:4], [
+            'reefy-system:rm',
+            'state:stop',
+            'state:rm',
+            'reefy-system:up',
+        ])
+        self.assertEqual(commands[1][2], [
+            'stop', 'reefy-llm-proxy', 'reefy-app-api'])
+        self.assertEqual(commands[2][2], [
+            'rm', '-f', 'reefy-llm-proxy', 'reefy-app-api'])
+        commit.assert_called_once()
+
+    def test_migration_system_failure_restores_legacy_and_skips_apps(self):
+        self._seed_legacy_state()
+        commands = []
+
+        def run(path, project, args, timeout):
+            commands.append((path, project, args, timeout))
+            return True, ''
+
+        with mock.patch.object(
+                self.dp, '_run_compose_command', side_effect=run), \
+                mock.patch.object(
+                    self.dp, '_apply_project_compose', return_value=False), \
+                mock.patch.object(
+                    self.dp, '_reconcile_v2_app') as apply_app, \
+                mock.patch.object(self.dp, '_remove_absent_v2_projects'), \
+                mock.patch.object(self.dp, '_commit_v2_migration') as commit:
+            warnings = self.dp._apply_v2_projects(self._state())
+
+        self.assertEqual(warnings, [{
+            'code': 'system_project_failed',
+            'instance_uuid': '',
+            'volume': '',
+        }])
+        apply_app.assert_not_called()
+        commit.assert_not_called()
+        self.assertIn(
+            (self.dp.COMPOSE_PATH, 'state',
+             ['up', '-d', '--pull', 'missing'], 300),
+            commands)
+
+    def test_migration_app_failure_rolls_back_every_v2_project(self):
+        self._seed_legacy_state()
+        state = self._state()
+        for app in state['apps']:
+            self.dp._write_project_compose(
+                app['project_name'], app['compose'])
+        commands = []
+
+        def run(path, project, args, timeout):
+            commands.append((path, project, args, timeout))
+            return True, ''
+
+        def reconcile(app, migration, restore_failed):
+            if app['instance_uuid'] == 'app-b':
+                return False, ('app_project_failed', [])
+            return True, ('', [])
+
+        with mock.patch.object(
+                self.dp, '_run_compose_command', side_effect=run), \
+                mock.patch.object(
+                    self.dp, '_apply_project_compose', return_value=True), \
+                mock.patch.object(
+                    self.dp, '_reconcile_v2_app', side_effect=reconcile), \
+                mock.patch.object(self.dp, '_remove_absent_v2_projects'), \
+                mock.patch.object(self.dp, '_commit_v2_migration') as commit:
+            warnings = self.dp._apply_v2_projects(state)
+
+        self.assertEqual(warnings, [{
+            'code': 'app_project_failed',
+            'instance_uuid': 'app-b',
+            'volume': '',
+        }])
+        commit.assert_not_called()
+        for project in ('reefy-app-a', 'reefy-app-b'):
+            self.assertTrue(any(
+                call[1] == project and call[2] == ['stop']
+                for call in commands))
+        self.assertIn(
+            (self.dp.COMPOSE_PATH, 'state',
+             ['up', '-d', '--pull', 'missing'], 300),
+            commands)
+
+    def test_migration_clears_sticky_system_failure_after_name_release(self):
+        self._seed_legacy_state()
+        system_dir = Path(self.dp.PROJECTS_DIR) / 'reefy-system'
+        system_dir.mkdir(parents=True)
+        failed = system_dir / '.failed-compose-sig'
+        optional = system_dir / '.failed-compose-sig.optional'
+        failed.write_text('same-signature\ncontainer name conflict')
+        optional.write_text('same-signature\ncontainer name conflict')
+
+        with mock.patch.object(
+                self.dp, '_run_compose_command', return_value=(True, '')):
+            ok = self.dp._prepare_v2_system_handoff(
+                'reefy-system', self._state()['system_project']['compose'],
+                ['reefy-llm-proxy', 'reefy-app-api'])
+
+        self.assertTrue(ok)
+        self.assertFalse(failed.exists())
+        self.assertFalse(optional.exists())
+
+    def test_migration_prepares_artifact_before_stopping_legacy_app(self):
+        app = self._state()['apps'][0]
+        order = []
+
+        def run(_path, project, args, timeout):
+            if project == 'state' and args[:1] == ['stop']:
+                order.append('stop-legacy')
+            return True, ''
+
+        with mock.patch.object(
+                self.dp, '_prepare_app_artifacts',
+                side_effect=lambda _app: order.append('prepare') or True), \
+                mock.patch.object(
+                    self.dp, '_run_compose_command', side_effect=run), \
+                mock.patch.object(
+                    self.dp, '_apply_app_project_compose',
+                    side_effect=lambda *_args, **_kwargs:
+                    (order.append('start-v2') or True, [])):
+            result = self.dp._reconcile_v2_app(
+                app, migration=True, restore_failed=False)
+
+        self.assertEqual(result, (True, ('', [])))
+        self.assertEqual(order, ['prepare', 'stop-legacy', 'start-v2'])
+
+    def test_optional_warning_does_not_block_migration_commit(self):
+        with mock.patch.object(
+                self.dp, '_v2_migration_pending', return_value=True), \
+                mock.patch.object(
+                    self.dp, '_read_json', return_value={}), \
+                mock.patch.object(
+                    self.dp, '_apply_project_compose', return_value=True), \
+                mock.patch.object(
+                    self.dp, '_apply_app_project_compose',
+                    return_value=(True, ['diagnostics'])), \
+                mock.patch.object(self.dp, '_remove_absent_v2_projects'), \
+                mock.patch.object(
+                    self.dp, '_prepare_app_artifacts', return_value=True), \
+                mock.patch.object(
+                    self.dp, '_run_compose_command', return_value=(True, '')), \
+                mock.patch.object(self.dp, '_commit_v2_migration') as commit:
+            warnings = self.dp._apply_v2_projects(self._state())
+
+        commit.assert_called_once()
+        self.assertEqual(
+            [warning['code'] for warning in warnings],
+            ['optional_service_failed', 'optional_service_failed'])
+
+    def test_service_die_event_immediately_queues_repair(self):
+        with open(self.dp.DESIRED_STATE_V2_PATH, 'w') as stream:
+            json.dump(self._state(), stream)
+        event = {
+            'Action': 'die',
+            'Actor': {'Attributes': {
+                'ai.reefy.lifecycle': 'service',
+                'ai.reefy.instance_uuid': 'app-a',
+                'com.docker.compose.project': 'reefy-app-a',
+            }},
+        }
+        worker = mock.Mock()
+        with mock.patch.object(
+                dataplane.threading, 'Thread', return_value=worker) as thread:
+            self.assertTrue(self.dp._handle_docker_event(event))
+        thread.assert_called_once()
+        worker.start.assert_called_once()
+
+        event['Actor']['Attributes']['exitCode'] = '17'
+        self.assertFalse(self.dp._handle_docker_event(event))
+        event['Actor']['Attributes']['exitCode'] = '0'
+        event['Actor']['Attributes']['ai.reefy.lifecycle'] = 'init'
+        self.assertFalse(self.dp._handle_docker_event(event))
+
+    def test_runtime_compose_strips_completed_init_and_dependency(self):
+        compose = {'services': {
+            'setup': {
+                'image': 'setup:1',
+                'labels': {'ai.reefy.lifecycle': 'init'},
+            },
+            'web': {
+                'image': 'web:1',
+                'depends_on': {
+                    'setup': {'condition': 'service_completed_successfully'},
+                    'database': {'condition': 'service_healthy'},
+                },
+            },
+            'database': {'image': 'database:1'},
+        }}
+
+        runtime = self.dp._runtime_app_compose(compose)
+
+        self.assertNotIn('setup', runtime['services'])
+        self.assertEqual(
+            runtime['services']['web']['depends_on'],
+            {'database': {'condition': 'service_healthy'}})
+        self.assertIn('setup', compose['services'])
+
+    def test_init_fingerprint_prevents_rerun(self):
+        compose = {'services': {
+            'setup': {
+                'image': 'setup:1',
+                'labels': {
+                    'ai.reefy.lifecycle': 'init',
+                    'ai.reefy.optional': 'false',
+                },
+            },
+            'web': {'image': 'web:1'},
+        }}
+        calls = []
+
+        def run(_path, _project, args, timeout):
+            calls.append(args)
+            return True, ''
+
+        with mock.patch.object(
+                self.dp, '_run_compose_command', side_effect=run):
+            self.assertEqual(
+                self.dp._run_app_init_services(
+                    'reefy-app-a', compose, 'app-a'),
+                (True, []))
+            self.assertEqual(
+                self.dp._run_app_init_services(
+                    'reefy-app-a', compose, 'app-a'),
+                (True, []))
+
+        self.assertEqual(calls, [['run', '--rm', 'setup']])
+
+    def test_optional_service_failure_keeps_app_running(self):
+        compose = {'services': {
+            'web': {
+                'image': 'web:1',
+                'labels': {
+                    'ai.reefy.lifecycle': 'service',
+                    'ai.reefy.optional': 'false',
+                },
+            },
+            'diagnostics': {
+                'image': 'missing.invalid/diagnostics:1',
+                'labels': {
+                    'ai.reefy.lifecycle': 'service',
+                    'ai.reefy.optional': 'true',
+                },
+            },
+        }}
+
+        def apply(_project, _compose, instance_uuid=None,
+                  primary_service='app', services=None, **_kwargs):
+            return services != ['diagnostics']
+
+        with mock.patch.object(
+                self.dp, '_apply_project_compose', side_effect=apply), \
+                mock.patch.object(self.dp, '_publish_health_status'):
+            result = self.dp._apply_app_project_compose(
+                'reefy-app-a', compose, 'app-a', 'web')
+
+        self.assertEqual(result, (True, ['diagnostics']))
+
+
 class EventPublishingTests(unittest.TestCase):
     def setUp(self):
         self.dp = _make_dp()
@@ -1109,6 +1595,124 @@ class DropAbsentDevicesTests(unittest.TestCase):
         compose = {'services': {'a': {'image': 'x'}}}
         self.assertEqual(dataplane._drop_absent_devices(compose), [])
         self.assertNotIn('devices', compose['services']['a'])
+
+
+class BestEffortCdiTests(unittest.TestCase):
+    def test_reads_json_and_yaml_provider_resources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, 'intel.json').write_text(json.dumps({
+                'cdiVersion': '0.6.0',
+                'kind': 'intel.com/npu',
+                'devices': [{'name': 'all', 'containerEdits': {}}],
+            }))
+            Path(directory, 'nvidia.yaml').write_text(
+                'cdiVersion: 0.6.0\n'
+                'kind: nvidia.com/gpu\n'
+                'devices:\n'
+                '  - name: "0"\n'
+                '    containerEdits: {}\n'
+                '  - name: all\n'
+                '    containerEdits: {}\n')
+            Path(directory, 'amd.json').write_text(json.dumps({
+                'cdiVersion': '0.6.0',
+                'kind': 'amd.com/gpu',
+                'devices': [{'name': 'all', 'containerEdits': {}}],
+            }))
+
+            resources = dataplane._cdi_resources((directory,))
+
+        self.assertEqual(resources, {
+            'amd.com/gpu=all',
+            'intel.com/npu=all',
+            'nvidia.com/gpu=0',
+            'nvidia.com/gpu=all',
+        })
+
+    def test_only_unavailable_cdi_requests_are_removed(self):
+        compose = {'services': {'app': {'devices': [
+            '/dev/dri:/dev/dri',
+            'intel.com/gpu=all',
+            'intel.com/npu=all',
+            'synthetic-non-cdi',
+        ]}}}
+
+        skipped = dataplane._drop_unavailable_cdi_devices(
+            compose, {'intel.com/npu=all'})
+
+        self.assertEqual(compose['services']['app']['devices'], [
+            '/dev/dri:/dev/dri',
+            'intel.com/npu=all',
+            'synthetic-non-cdi',
+        ])
+        self.assertEqual(skipped, [('app', 'intel.com/gpu=all')])
+
+    def test_optional_artifact_failure_does_not_block_app(self):
+        dp = _make_dp()
+        failed = mock.Mock(returncode=1, stdout='activation details\n',
+                           stderr='provider failed\n')
+        app = {
+            'project_name': 'reefy-app-synthetic',
+            'instance_uuid': 'synthetic',
+            'artifacts': [{
+                'name': 'intel-accelerator',
+                'kind': 'host-extension',
+                'ref': 'example.invalid/provider@sha256:' + ('a' * 64),
+                'required': False,
+            }],
+        }
+        with mock.patch.object(
+                dataplane.subprocess, 'run', return_value=failed), \
+                mock.patch.object(dp, '_publish_health_status'), \
+                mock.patch.object(dataplane, 'log') as logger:
+            self.assertTrue(dp._prepare_app_artifacts(app))
+
+        messages = [call.args[1] for call in logger.call_args_list]
+        self.assertTrue(any('activation details' in value for value in messages))
+        self.assertTrue(any('provider failed' in value for value in messages))
+        self.assertTrue(any('exit 1' in value for value in messages))
+
+    def test_required_artifact_failure_still_blocks_app(self):
+        dp = _make_dp()
+        failed = mock.Mock(returncode=1, stdout='', stderr='')
+        app = {
+            'project_name': 'reefy-app-synthetic',
+            'instance_uuid': 'synthetic',
+            'artifacts': [{
+                'name': 'required-data',
+                'kind': 'app',
+                'ref': 'example.invalid/data@sha256:' + ('b' * 64),
+            }],
+        }
+        with mock.patch.object(
+                dataplane.subprocess, 'run', return_value=failed), \
+                mock.patch.object(dp, '_publish_health_status'):
+            self.assertFalse(dp._prepare_app_artifacts(app))
+
+    def test_different_artifacts_for_one_app_prepare_concurrently(self):
+        dp = _make_dp()
+        barrier = threading.Barrier(2)
+
+        def prepare(*_args, **_kwargs):
+            barrier.wait(timeout=2)
+            return mock.Mock(returncode=0, stdout='', stderr='')
+
+        app = {
+            'project_name': 'reefy-app-synthetic',
+            'instance_uuid': 'synthetic',
+            'artifacts': [{
+                'name': name,
+                'kind': 'host-extension',
+                'ref': f'example.invalid/{name}@sha256:' + character * 64,
+                'required': False,
+            } for name, character in (
+                ('nvidia-driver', 'a'),
+                ('intel-accelerator', 'b'),
+            )],
+        }
+        with mock.patch.object(
+                dataplane.subprocess, 'run', side_effect=prepare), \
+                mock.patch.object(dp, '_publish_health_status'):
+            self.assertTrue(dp._prepare_app_artifacts(app))
 
 
 if __name__ == '__main__':

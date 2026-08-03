@@ -4,7 +4,7 @@
 #
 ################################################################################
 
-NVIDIA_USERSPACE_VERSION = 595.45.04
+NVIDIA_USERSPACE_VERSION = 595.84
 NVIDIA_USERSPACE_SITE = https://us.download.nvidia.com/XFree86/Linux-x86_64/$(NVIDIA_USERSPACE_VERSION)
 NVIDIA_USERSPACE_SOURCE = NVIDIA-Linux-x86_64-$(NVIDIA_USERSPACE_VERSION).run
 NVIDIA_USERSPACE_LICENSE = NVIDIA Proprietary

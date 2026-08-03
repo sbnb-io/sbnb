@@ -107,5 +107,47 @@ class RecoveryTests(unittest.TestCase):
         probe.assert_not_called()
 
 
+class ContainerDiscoveryTests(unittest.TestCase):
+    @mock.patch.object(watchdog.subprocess, 'run')
+    def test_prefers_apps_v2_system_project(self, run):
+        run.return_value = types.SimpleNamespace(
+            returncode=0, stdout='v2-container\n')
+
+        self.assertEqual(
+            watchdog.find_container('reefy-proxy'), 'v2-container')
+        run.assert_called_once_with(
+            [
+                'docker', 'ps', '-aq',
+                '--filter',
+                'label=com.docker.compose.project=reefy-system',
+                '--filter',
+                'label=com.docker.compose.service=reefy-proxy',
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+    @mock.patch.object(watchdog.subprocess, 'run')
+    def test_falls_back_to_legacy_system_project(self, run):
+        run.side_effect = [
+            types.SimpleNamespace(returncode=0, stdout=''),
+            types.SimpleNamespace(returncode=0, stdout='v1-container\n'),
+        ]
+
+        self.assertEqual(
+            watchdog.find_container('cloudflared'), 'v1-container')
+        self.assertEqual(
+            run.call_args_list[1].args[0][4],
+            'label=com.docker.compose.project=state')
+
+    @mock.patch.object(watchdog.subprocess, 'run')
+    def test_returns_none_when_service_is_absent(self, run):
+        run.return_value = types.SimpleNamespace(returncode=0, stdout='')
+
+        self.assertIsNone(watchdog.find_container('reefy-proxy'))
+        self.assertEqual(run.call_count, len(watchdog.COMPOSE_PROJECTS))
+
+
 if __name__ == '__main__':
     unittest.main()

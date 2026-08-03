@@ -3,7 +3,8 @@
 # Ensures WiFi connectivity is available even if ethernet is not connected.
 # The reconciler will re-apply WiFi config later (idempotent).
 
-STATE_FILE="/mnt/reefy-data/state/desired-state.json"
+STATE_FILE="/mnt/reefy-data/state/desired-state-v2.json"
+[ -f "$STATE_FILE" ] || STATE_FILE="/mnt/reefy-data/state/desired-state.json"
 
 if [ ! -f "$STATE_FILE" ]; then
     echo "[wifi-early] No saved desired state, skipping"
@@ -15,7 +16,7 @@ SSID=$(python3 -c "
 import json, sys
 try:
     s = json.load(open('$STATE_FILE'))
-    w = s.get('wifi', {})
+    w = (s.get('host', {}) if s.get('schema_version') == 2 else s).get('wifi', {})
     print(w.get('ssid', ''))
 except Exception:
     pass
@@ -30,7 +31,7 @@ PASSWORD=$(python3 -c "
 import json, sys
 try:
     s = json.load(open('$STATE_FILE'))
-    w = s.get('wifi', {})
+    w = (s.get('host', {}) if s.get('schema_version') == 2 else s).get('wifi', {})
     print(w.get('password', ''))
 except Exception:
     pass
