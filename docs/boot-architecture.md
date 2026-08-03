@@ -34,12 +34,12 @@ local-fs.target
         |-- reefy-init.service
         |-- reefy-cmds.service
         |-- reefy-tunnel.service, when configured
-        `-- nvidia-cdi-generate.service
+        `-- reefy-artifacts-prepare.service
 ```
 
 The diagram shows the ordering constraints, not a single serial chain. The
-hostname, Wi-Fi, initialization, command, tunnel, and NVIDIA setup branches can
-run in parallel after base storage is ready.
+hostname, Wi-Fi, initialization, command, tunnel, and cached artifact branches
+can run in parallel after base storage is ready.
 
 `reefy-control` does not wait for `network-online.target`, Docker, or the data
 plane. It applies cached identity, starts its reconnect loop, and remains the
@@ -158,12 +158,20 @@ Other parallel branches include:
 
 - `reefy-cmds.service` for boot-device custom commands;
 - `reefy-tunnel.service` when `/mnt/reefy/tunnel-start.sh` exists;
-- `nvidia-cdi-generate.service` for NVIDIA device nodes and CDI metadata; and
+- `reefy-artifacts-prepare.service` for cached host-extension activation; and
 - `reefy-hostname.service`, which waits for a physical interface and derives a
   stable hostname before control registration.
 
-NVIDIA CDI generation is ordered before `reefy-control` so a saved GPU app is
-not reconciled before its CDI device name exists.
+The boot artifact pass never downloads and does not block Docker. The per-app
+reconciler prepares each missing artifact before starting only that app. A
+digest-verified provider-owned hook at the fixed path
+`usr/lib/reefy/activate` performs host-global work such as loading modules and
+atomically generating runtime CDI definitions. Reefy OS contains the generic
+hook runner, provider identity allowlist, and CDI-result inspection, but no
+vendor activation logic. Accelerator providers are best effort. Their stdout
+and stderr flow through the Reefy reconciler log; a failed provider does not
+block its app, and an unpublished CDI resource is removed from that app's
+runtime Compose before startup.
 
 ## First boot and adoption
 
