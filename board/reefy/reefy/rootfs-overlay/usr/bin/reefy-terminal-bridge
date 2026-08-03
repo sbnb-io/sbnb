@@ -31,6 +31,15 @@ import termios
 import threading
 import time
 
+for reefy_lib in (
+        '/usr/lib/reefy',
+        os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
+                                     'lib', 'reefy'))):
+    if reefy_lib not in sys.path:
+        sys.path.insert(0, reefy_lib)
+
+from reefy.containers import resolve_app_container as resolve_container
+
 try:
     import paho.mqtt.client as mqtt
 except ImportError:
@@ -108,7 +117,10 @@ def _get_app_uid(session_id):
     in sync. Returns 0 (root) if not declared or state is missing, so
     apps that pre-date the uid field stay backwards-compatible."""
     try:
-        with open(os.path.join(STATE_DIR, 'desired-state.json')) as f:
+        v2_path = os.path.join(STATE_DIR, 'desired-state-v2.json')
+        state_path = (v2_path if os.path.exists(v2_path)
+                      else os.path.join(STATE_DIR, 'desired-state.json'))
+        with open(state_path) as f:
             state = json.load(f)
         for i in state.get('instances', []):
             if i.get('instance_uuid') == session_id:
@@ -116,6 +128,17 @@ def _get_app_uid(session_id):
     except (OSError, json.JSONDecodeError, ValueError, TypeError):
         pass
     return 0
+
+
+def _resolve_app_container(session_id, requested):
+    """Resolve the live primary container across a guarded v1/v2 handoff."""
+    try:
+        with open(os.path.join(STATE_DIR, 'desired-state-v2.json')) as f:
+            state = json.load(f)
+        return resolve_container(state, session_id, requested)
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+    return requested
 
 
 def spawn_pty(session_id, container=None, name=None):
@@ -221,7 +244,8 @@ def subscribe_session(session_id, data, now=None):
             s['legacy_subscribers'] += 1
         s['last_activity'] = now
         if data.get('container'):
-            s['container'] = data['container']
+            s['container'] = _resolve_app_container(
+                session_id, data['container'])
         if data.get('name'):
             s['name'] = data['name']
         return subscriber_count(s)

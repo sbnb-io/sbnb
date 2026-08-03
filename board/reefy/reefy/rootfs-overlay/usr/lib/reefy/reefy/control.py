@@ -580,7 +580,8 @@ class ControlPlane:
                        capture_output=True, timeout=60)
 
         # Remove old desired state (may have stale auth_secret from previous device)
-        for stale in ['desired-state.json', 'docker-compose.json']:
+        for stale in ['desired-state.json', 'desired-state-v2.json',
+                      'docker-compose.json', 'apps-v2-migrated']:
             stale_path = os.path.join('/mnt/reefy-data/state', stale)
             if os.path.exists(stale_path):
                 os.remove(stale_path)
@@ -894,10 +895,12 @@ class ControlPlane:
         print("[mqtt] Reset identity — removing device certs, restarting in bootstrap mode")
         state_dir = '/mnt/reefy-data/state'
         for f in ['device-uuid', 'device.crt', 'device.key',
-                   'mqtt.conf', 'desired-state.json', 'docker-compose.json']:
+                  'mqtt.conf', 'desired-state.json', 'desired-state-v2.json',
+                  'docker-compose.json', 'apps-v2-migrated']:
             path = os.path.join(state_dir, f)
             if os.path.exists(path):
                 os.remove(path)
+        shutil.rmtree(os.path.join(state_dir, 'projects'), ignore_errors=True)
         log('mqtt', 'Identity reset — restarting in bootstrap mode')
         self.client.disconnect()
         subprocess.run(['systemctl', 'restart', 'reefy-control.service'])
@@ -1581,10 +1584,11 @@ class ControlPlane:
     def _get_state_hash(self):
         """Compute hash of the saved desired state file.
         Must match server-side compute_state_hash()."""
-        if not os.path.exists(self.DESIRED_STATE_PATH):
+        state_path = shared.desired_state_path()
+        if not os.path.exists(state_path):
             return None
         try:
-            with open(self.DESIRED_STATE_PATH) as f:
+            with open(state_path) as f:
                 state = json.load(f)
             return hashlib.sha256(json.dumps(state, sort_keys=True).encode()).hexdigest()[:16]
         except (OSError, json.JSONDecodeError):
