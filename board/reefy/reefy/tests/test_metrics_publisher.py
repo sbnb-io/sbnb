@@ -2,6 +2,7 @@
 
 import importlib.machinery
 import importlib.util
+import json
 import os
 import sys
 import types
@@ -66,7 +67,7 @@ class NvidiaGpuTests(unittest.TestCase):
     def test_nvidia_power_draw_is_published(self):
         stdout = (
             '0, NVIDIA RTX 6000, 00000000:01:00.0, GPU-abc, '
-            '73, 2048, 24576, 64, 187.42\n'
+            '73, 2048, 24576, 64, 42, 187.42\n'
         )
         with mock.patch.object(self.publisher.shutil, 'which',
                                return_value='/usr/bin/nvidia-smi'), \
@@ -85,11 +86,12 @@ class NvidiaGpuTests(unittest.TestCase):
         self.assertEqual(
             by_name['reefy_power_watts']['labels']['source'], 'gpu')
         self.assertEqual(by_name['reefy_gpu_util_pct']['value'], 73.0)
+        self.assertEqual(by_name['reefy_gpu_fan_pct']['value'], 42.0)
 
     def test_nvidia_na_power_does_not_drop_other_metrics(self):
         stdout = (
             '0, NVIDIA RTX 6000, 00000000:01:00.0, GPU-abc, '
-            '73, 2048, 24576, 64, N/A\n'
+            '73, 2048, 24576, 64, N/A, N/A\n'
         )
         with mock.patch.object(self.publisher.shutil, 'which',
                                return_value='/usr/bin/nvidia-smi'), \
@@ -104,6 +106,7 @@ class NvidiaGpuTests(unittest.TestCase):
         self.assertIn('reefy_gpu_util_pct', names)
         self.assertIn('reefy_gpu_mem_used_pct', names)
         self.assertIn('reefy_gpu_temp_celsius', names)
+        self.assertNotIn('reefy_gpu_fan_pct', names)
         self.assertNotIn('reefy_gpu_power_watts', names)
         self.assertNotIn('reefy_power_watts', names)
 
@@ -116,6 +119,99 @@ class NvidiaGpuTests(unittest.TestCase):
             samples = self.publisher._collect_nvidia_gpu()
 
         self.assertEqual(samples, [])
+        run.assert_not_called()
+
+
+class AmdGpuTests(unittest.TestCase):
+    def setUp(self):
+        self.publisher = _load_publisher()
+
+    def test_amd_metrics_use_existing_dashboard_metric_names(self):
+        static = json.dumps({'gpu_data': [{
+            'gpu': 0,
+            'asic': {
+                'market_name': 'AMD Radeon RX Synthetic',
+                'asic_serial': '0x1234',
+            },
+            'bus': {'bdf': '0000:02:00.0'},
+        }]})
+        metric = json.dumps({'gpu_data': [{
+            'gpu': 0,
+            'usage': {'gfx_activity': {'value': 73, 'unit': '%'}},
+            'mem_usage': {
+                'used_vram': {'value': 2048, 'unit': 'MB'},
+                'total_vram': {'value': 16384, 'unit': 'MB'},
+            },
+            'temperature': {'edge': {'value': 64, 'unit': 'C'}},
+            'fan': {'usage': {'value': 42, 'unit': '%'}},
+            'power': {'socket_power': {'value': 187.42, 'unit': 'W'}},
+        }]})
+        results = iter([
+            types.SimpleNamespace(returncode=0, stdout=static),
+            types.SimpleNamespace(returncode=0, stdout=metric),
+        ])
+        with mock.patch.object(self.publisher.shutil, 'which',
+                               return_value='/usr/bin/amd-smi'), \
+             mock.patch.object(self.publisher, '_path_exists',
+                               return_value=True), \
+             mock.patch.object(self.publisher.subprocess, 'run',
+                               side_effect=lambda *_args, **_kwargs: next(results)):
+            samples = self.publisher._collect_amd_gpu(start_idx=1)
+
+        by_name = {sample['name']: sample for sample in samples}
+        labels = by_name['reefy_gpu_util_pct']['labels']
+        self.assertEqual(labels, {
+            'gpu': '1',
+            'name': 'AMD Radeon RX Synthetic',
+            'pci': '0000:02:00.0',
+            'uuid': '0x1234',
+            'driver': 'amdgpu',
+        })
+        self.assertEqual(by_name['reefy_gpu_util_pct']['value'], 73.0)
+        self.assertEqual(
+            by_name['reefy_gpu_mem_used_bytes']['value'], 2048 * 1024 * 1024)
+        self.assertEqual(
+            by_name['reefy_gpu_mem_total_bytes']['value'], 16384 * 1024 * 1024)
+        self.assertEqual(by_name['reefy_gpu_mem_used_pct']['value'], 12.5)
+        self.assertEqual(by_name['reefy_gpu_temp_celsius']['value'], 64.0)
+        self.assertEqual(by_name['reefy_gpu_fan_pct']['value'], 42.0)
+        self.assertEqual(by_name['reefy_gpu_power_watts']['value'], 187.42)
+        self.assertEqual(by_name['reefy_power_watts']['value'], 187.42)
+        self.assertEqual(
+            by_name['reefy_power_watts']['labels']['source'], 'gpu')
+
+    def test_amd_collector_skips_when_provider_published_no_cdi(self):
+        with mock.patch.object(self.publisher.shutil, 'which',
+                               return_value='/usr/bin/amd-smi'), \
+             mock.patch.object(self.publisher, '_path_exists',
+                               return_value=False), \
+             mock.patch.object(self.publisher.subprocess, 'run') as run:
+            samples = self.publisher._collect_amd_gpu()
+
+        self.assertEqual(samples, [])
+        run.assert_not_called()
+
+    def test_generic_amd_name_uses_pci_model(self):
+        result = types.SimpleNamespace(
+            returncode=0,
+            stdout=('0000:02:00.0 VGA compatible controller: Advanced Micro '
+                    'Devices, Inc. [AMD/ATI] Navi 44 '
+                    '[Radeon RX 9060 XT] (rev c0)\n'))
+        with mock.patch.object(self.publisher.shutil, 'which',
+                               return_value='/usr/bin/lspci'), \
+             mock.patch.object(self.publisher.subprocess, 'run',
+                               return_value=result):
+            name = self.publisher._amd_gpu_model(
+                '0000:02:00.0', 'AMD Radeon Graphics')
+
+        self.assertEqual(name, 'AMD Radeon RX 9060 XT')
+
+    def test_specific_amd_name_does_not_run_lspci(self):
+        with mock.patch.object(self.publisher.subprocess, 'run') as run:
+            name = self.publisher._amd_gpu_model(
+                '0000:02:00.0', 'AMD Radeon RX Synthetic')
+
+        self.assertEqual(name, 'AMD Radeon RX Synthetic')
         run.assert_not_called()
 
 
