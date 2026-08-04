@@ -216,6 +216,13 @@ jobs:
             echo "in-tree AMD provider module leaked into the Reefy OS image"
             exit 1
           fi
+          if find "$module_dir" \
+              \( -name 'i915.ko*' -o -name 'xe.ko*' \
+                 -o -name 'intel_vpu.ko*' -o -name 'kvmgt.ko*' \) \
+              -print -quit | grep -q .; then
+            echo "Intel provider modules leaked into the Reefy OS image"
+            exit 1
+          fi
           for helper in drm_suballoc_helper drm_panel_backlight_quirks; do
             find "$module_dir" -name "${helper}.ko*" | grep -q . \
               || { echo "missing shared DRM helper ${helper}"; exit 1; }
@@ -238,13 +245,31 @@ jobs:
             echo "NVIDIA provider libraries leaked into the Reefy OS image"
             exit 1
           fi
+          for path in \
+              "$BR_OUTPUT/target/lib/firmware/i915" \
+              "$BR_OUTPUT/target/lib/firmware/xe" \
+              "$BR_OUTPUT/target/lib/firmware/intel/vpu"; do
+            if [ -e "$path" ]; then
+              echo "Intel provider firmware leaked into the Reefy OS image: $path"
+              exit 1
+            fi
+          done
 
       - name: Verify multi-flavor outputs
         run: |
-          test -f "$BR_OUTPUT/target/lib/firmware/xe/lnl_guc_70.bin" \
-            || { echo "missing xe/lnl_guc_70.bin"; exit 1; }
-          test -f "$BR_OUTPUT/target/lib/firmware/i915/xe2lpd_dmc.bin" \
-            || { echo "missing i915/xe2lpd_dmc.bin"; exit 1; }
+          intel="$BR_OUTPUT/reefy-artifacts/intel"
+          for module in i915 xe intel_vpu; do
+            find "$intel/modules-root" -name "${module}.ko*" | grep -q . \
+              || { echo "missing Intel provider module ${module}"; exit 1; }
+          done
+          test -f "$intel/firmware-root/lib/firmware/xe/lnl_guc_70.bin" \
+            || { echo "missing Intel provider xe/lnl_guc_70.bin"; exit 1; }
+          test -f "$intel/firmware-root/lib/firmware/i915/xe2lpd_dmc.bin" \
+            || { echo "missing Intel provider i915/xe2lpd_dmc.bin"; exit 1; }
+          find "$intel/firmware-root/lib/firmware/intel/vpu" \
+            -name 'vpu_*.bin' | grep -q . \
+            || { echo "missing Intel provider VPU firmware"; exit 1; }
+          du -h "$intel/modules-root" "$intel/firmware-root"
           ls -la "$BR_OUTPUT/images/"
           for flavor in prod dev debug-shell; do
             test -f "$BR_OUTPUT/images/reefy-${flavor}.efi" \
@@ -292,7 +317,14 @@ jobs:
           EOF
 
           intel="$BR_OUTPUT/reefy-artifacts/intel"
-          mkdir -p "$intel"
+          for module in i915 xe intel_vpu; do
+            find "$intel/modules-root/lib/modules/$kernel_release" \
+              -name "${module}.ko*" | grep -q . \
+              || { echo "missing Intel provider input ${module}"; exit 1; }
+          done
+          test -d "$intel/firmware-root/lib/firmware/i915"
+          test -d "$intel/firmware-root/lib/firmware/xe"
+          test -d "$intel/firmware-root/lib/firmware/intel/vpu"
           cp "$nvidia/metadata.env" "$intel/metadata.env"
 
           amd="$BR_OUTPUT/reefy-artifacts/amd"
@@ -344,7 +376,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: reefy-intel-inputs
-          path: ${{ env.BR_OUTPUT }}/reefy-artifacts/intel/metadata.env
+          compression-level: 1
+          path: |
+            ${{ env.BR_OUTPUT }}/reefy-artifacts/intel/modules-root
+            ${{ env.BR_OUTPUT }}/reefy-artifacts/intel/firmware-root
+            ${{ env.BR_OUTPUT }}/reefy-artifacts/intel/metadata.env
 
       - name: Upload AMD provider inputs
         uses: actions/upload-artifact@v4
@@ -425,7 +461,7 @@ jobs:
 
   publish-intel-provider:
     needs: build
-    uses: reefyai/reefy-intel/.github/workflows/publish.yml@e1d0b67643663cfbf24ce0eb0d2de82f2935e0d2
+    uses: reefyai/reefy-intel/.github/workflows/publish.yml@dd364f3897ae6c97455c389db8d9fb7982af2296
     with:
       input_artifact: reefy-intel-inputs
     secrets: inherit

@@ -150,6 +150,65 @@ if [ -n "${PINNED_KERNEL}" ] && [ -d "${TARGET_DIR}/lib/modules" ]; then
     ! -name "${PINNED_KERNEL}" -exec rm -rf {} +
 fi
 
+# Stage Intel GPU and NPU inputs from the exact kernel and firmware package
+# build trees before removing their vendor-specific payload from Reefy OS.
+# Reading the build trees, rather than TARGET_DIR, keeps incremental builds
+# reproducible after a previous post-build pass has already pruned the files.
+INTEL_STAGE="${BASE_DIR}/reefy-artifacts/intel"
+INTEL_MODULES="${INTEL_STAGE}/modules-root/lib/modules/${PINNED_KERNEL}/extra/intel"
+INTEL_FIRMWARE="${INTEL_STAGE}/firmware-root"
+LINUX_FIRMWARE_VERSION=$(sed -n \
+  's/^LINUX_FIRMWARE_VERSION = \(.*\)$/\1/p' \
+  "${BR2_EXTERNAL_REEFY_PATH}/buildroot/package/linux-firmware/linux-firmware.mk")
+INTEL_NPU_FIRMWARE_VERSION=$(sed -n \
+  's/^INTEL_NPU_FIRMWARE_VERSION = \(.*\)$/\1/p' \
+  "${BR2_EXTERNAL_REEFY_PATH}/package/intel-npu-firmware/intel-npu-firmware.mk")
+LINUX_FIRMWARE_BUILD="${BUILD_DIR}/linux-firmware-${LINUX_FIRMWARE_VERSION}"
+INTEL_NPU_FIRMWARE_BUILD="${BUILD_DIR}/intel-npu-firmware-${INTEL_NPU_FIRMWARE_VERSION}"
+rm -rf "${INTEL_STAGE}"
+mkdir -p "${INTEL_MODULES}" \
+  "${INTEL_FIRMWARE}/lib/firmware/i915" \
+  "${INTEL_FIRMWARE}/lib/firmware/xe" \
+  "${INTEL_FIRMWARE}/lib/firmware/intel/vpu" \
+  "${INTEL_FIRMWARE}/usr/share/licenses/intel-provider"
+
+for module in \
+    "${LINUX_BUILD_DIR}/drivers/gpu/drm/i915/i915.ko" \
+    "${LINUX_BUILD_DIR}/drivers/gpu/drm/xe/xe.ko" \
+    "${LINUX_BUILD_DIR}/drivers/accel/ivpu/intel_vpu.ko"; do
+  if [ ! -f "${module}" ]; then
+    echo "ERROR: missing Intel provider module ${module}" >&2
+    exit 1
+  fi
+  cp "${module}" "${INTEL_MODULES}/"
+done
+if [ -f "${LINUX_BUILD_DIR}/drivers/gpu/drm/i915/kvmgt.ko" ]; then
+  cp "${LINUX_BUILD_DIR}/drivers/gpu/drm/i915/kvmgt.ko" \
+    "${INTEL_MODULES}/"
+fi
+for module in "${INTEL_MODULES}"/*.ko; do
+  "${HOST_DIR}/bin/x86_64-buildroot-linux-gnu-strip" --strip-debug "${module}"
+done
+
+for directory in i915 xe; do
+  if [ ! -d "${LINUX_FIRMWARE_BUILD}/${directory}" ]; then
+    echo "ERROR: missing Intel firmware directory ${directory}" >&2
+    exit 1
+  fi
+  cp -a "${LINUX_FIRMWARE_BUILD}/${directory}/." \
+    "${INTEL_FIRMWARE}/lib/firmware/${directory}/"
+done
+if [ ! -d "${INTEL_NPU_FIRMWARE_BUILD}/intel/vpu" ]; then
+  echo "ERROR: missing Intel VPU firmware input" >&2
+  exit 1
+fi
+cp -a "${INTEL_NPU_FIRMWARE_BUILD}/intel/vpu/." \
+  "${INTEL_FIRMWARE}/lib/firmware/intel/vpu/"
+for license in LICENSE.i915 LICENSE.xe; do
+  cp "${LINUX_FIRMWARE_BUILD}/${license}" \
+    "${INTEL_FIRMWARE}/usr/share/licenses/intel-provider/${license}"
+done
+
 # NVIDIA packages in the Buildroot configuration produce exact inputs for the
 # external provider artifact. None of their driver payload belongs in the
 # immutable Reefy OS image. Remove stale files from incremental TARGET_DIR
@@ -183,7 +242,18 @@ if [ -d "${TARGET_DIR}/lib/modules" ]; then
   # kernel ABI used by the separately published AMD 31.40 provider. Never
   # ship that older in-tree driver beside the external provider module.
   find "${TARGET_DIR}/lib/modules" -type f -name 'amdgpu.ko*' -delete
+  # Intel GPU and NPU modules are staged above for the exact-build provider.
+  # Shared DRM helpers remain in the base OS for all vendors.
+  find "${TARGET_DIR}/lib/modules" -type f \
+    \( -name 'i915.ko*' -o -name 'xe.ko*' -o -name 'intel_vpu.ko*' \
+       -o -name 'kvmgt.ko*' \) -delete
   find "${TARGET_DIR}/lib/modules" -depth -type d -empty -delete
+fi
+rm -rf "${TARGET_DIR}/lib/firmware/i915" \
+       "${TARGET_DIR}/lib/firmware/xe" \
+       "${TARGET_DIR}/lib/firmware/intel/vpu"
+if [ -d "${TARGET_DIR}/lib/firmware/intel" ]; then
+  find "${TARGET_DIR}/lib/firmware/intel" -depth -type d -empty -delete
 fi
 if [ -n "${PINNED_KERNEL}" ] && [ -x "${HOST_DIR}/sbin/depmod" ]; then
   "${HOST_DIR}/sbin/depmod" -a -b "${TARGET_DIR}" "${PINNED_KERNEL}"
