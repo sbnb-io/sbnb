@@ -208,8 +208,19 @@ for license in LICENSE.i915 LICENSE.xe; do
   cp "${LINUX_FIRMWARE_BUILD}/${license}" \
     "${INTEL_FIRMWARE}/usr/share/licenses/intel-provider/${license}"
 done
-cp "${INTEL_NPU_FIRMWARE_BUILD}/LICENSE.intel_vpu" \
-  "${INTEL_FIRMWARE}/usr/share/licenses/intel-provider/LICENSE.intel_vpu"
+NPU_LICENSE=''
+for candidate in LICENSE.intel_vpu LICENSE.intel; do
+  if [ -f "${INTEL_NPU_FIRMWARE_BUILD}/${candidate}" ]; then
+    NPU_LICENSE="${INTEL_NPU_FIRMWARE_BUILD}/${candidate}"
+    break
+  fi
+done
+if [ -z "${NPU_LICENSE}" ]; then
+  echo "ERROR: missing Intel VPU firmware license" >&2
+  exit 1
+fi
+cp "${NPU_LICENSE}" \
+  "${INTEL_FIRMWARE}/usr/share/licenses/intel-provider/${NPU_LICENSE##*/}"
 
 # NVIDIA packages in the Buildroot configuration produce exact inputs for the
 # external provider artifact. None of their driver payload belongs in the
