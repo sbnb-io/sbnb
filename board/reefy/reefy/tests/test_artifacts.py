@@ -572,5 +572,8 @@ def test_gc_retains_three_versions_per_logical_identity():
 
     status = manager.status()
     assert len(status['manifests']) == 3
+    assert {
+        item['config']['version'] for item in status['manifests']
+    } == {'1', '2', '3'}
     assert len(os.listdir(os.path.join(
         manager.store, 'blobs', 'sha256'))) == 3

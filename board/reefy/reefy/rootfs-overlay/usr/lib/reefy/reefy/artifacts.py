@@ -689,7 +689,10 @@ class ArtifactManager:
         _atomic_json(os.path.join(
             self.store, 'leases', f'{digest_hex}.json'), {
                 'digest': admitted['digest'], 'ref': reference,
-                'last_used_at': int(time.time()),
+                # Multiple local or cached admissions can finish within one
+                # second. Preserve their real order so retention consistently
+                # keeps the three newest versions.
+                'last_used_at': time.time_ns(),
             })
 
     def _manifest_path(self, digest_hex):
