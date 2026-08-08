@@ -5,6 +5,7 @@ non-fatally) and the data-side behavior of the split methods."""
 
 import json
 import os
+import sys
 import tempfile
 import threading
 import types
@@ -128,10 +129,10 @@ class AppsV2Tests(unittest.TestCase):
         barrier = threading.Barrier(2)
         entered = []
 
-        def apply_app(name, compose, instance_uuid, primary_service):
-            entered.append(name)
+        def reconcile(app, migration, restore_failed, prepared=None):
+            entered.append(app['project_name'])
             barrier.wait(timeout=2)
-            return True, []
+            return True, ('', [])
 
         with mock.patch.object(
                 self.dp, '_v2_migration_pending', return_value=False), \
@@ -139,11 +140,10 @@ class AppsV2Tests(unittest.TestCase):
                     self.dp, '_apply_project_compose',
                     return_value=True), \
                 mock.patch.object(
-                    self.dp, '_apply_app_project_compose',
-                    side_effect=apply_app), \
+                    self.dp, '_reconcile_v2_app',
+                    side_effect=reconcile), \
                 mock.patch.object(self.dp, '_remove_absent_v2_projects'), \
-                mock.patch.object(
-                    self.dp, '_prepare_app_artifacts', return_value=True):
+                mock.patch.object(self.dp, '_prepare_app_artifacts'):
             warnings = self.dp._apply_v2_projects(self._state())
 
         self.assertEqual(warnings, [])
@@ -152,9 +152,11 @@ class AppsV2Tests(unittest.TestCase):
     def test_one_app_failure_does_not_block_another(self):
         calls = []
 
-        def apply_app(name, compose, instance_uuid, primary_service):
-            calls.append(name)
-            return instance_uuid != 'app-a', []
+        def reconcile(app, migration, restore_failed, prepared=None):
+            calls.append(app['project_name'])
+            if app['instance_uuid'] == 'app-a':
+                return False, ('app_project_failed', [])
+            return True, ('', [])
 
         with mock.patch.object(
                 self.dp, '_v2_migration_pending', return_value=False), \
@@ -162,11 +164,10 @@ class AppsV2Tests(unittest.TestCase):
                     self.dp, '_apply_project_compose',
                     return_value=True), \
                 mock.patch.object(
-                    self.dp, '_apply_app_project_compose',
-                    side_effect=apply_app), \
+                    self.dp, '_reconcile_v2_app',
+                    side_effect=reconcile), \
                 mock.patch.object(self.dp, '_remove_absent_v2_projects'), \
-                mock.patch.object(
-                    self.dp, '_prepare_app_artifacts', return_value=True):
+                mock.patch.object(self.dp, '_prepare_app_artifacts'):
             warnings = self.dp._apply_v2_projects(self._state())
 
         self.assertIn('reefy-app-b', calls)
@@ -239,11 +240,10 @@ class AppsV2Tests(unittest.TestCase):
                     self.dp, '_apply_project_compose',
                     side_effect=apply_project), \
                 mock.patch.object(
-                    self.dp, '_apply_app_project_compose',
-                    return_value=(True, [])) as apply_app, \
+                    self.dp, '_reconcile_v2_app',
+                    return_value=(True, ('', []))) as apply_app, \
                 mock.patch.object(self.dp, '_remove_absent_v2_projects'), \
-                mock.patch.object(
-                    self.dp, '_prepare_app_artifacts', return_value=True):
+                mock.patch.object(self.dp, '_prepare_app_artifacts'):
             warnings = self.dp._apply_v2_projects(self._state())
 
         self.assertEqual(calls, ['reefy-system'])
@@ -260,15 +260,29 @@ class AppsV2Tests(unittest.TestCase):
             order.append(f'{project}:{args[0]}')
             return True, ''
 
-        def apply_system(*_args, **_kwargs):
+        def prepare_system(*_args, **_kwargs):
+            order.append('reefy-system:pull')
+            return {'ok': True}
+
+        def prepare_app(app, _restore_failed):
+            order.append(f'{app["project_name"]}:pull')
+            return True, '', {'ok': True}
+
+        def start_system(_prepared, before_start=None):
+            self.assertTrue(before_start())
             order.append('reefy-system:up')
             return True
 
         with mock.patch.object(
                 self.dp, '_run_compose_command', side_effect=run), \
                 mock.patch.object(
-                    self.dp, '_apply_project_compose',
-                    side_effect=apply_system), \
+                    self.dp, '_prepare_system_project_compose',
+                    side_effect=prepare_system), \
+                mock.patch.object(
+                    self.dp, '_prepare_v2_app', side_effect=prepare_app), \
+                mock.patch.object(
+                    self.dp, '_start_prepared_system_project',
+                    side_effect=start_system), \
                 mock.patch.object(
                     self.dp, '_reconcile_v2_app',
                     return_value=(True, ('', []))), \
@@ -277,12 +291,14 @@ class AppsV2Tests(unittest.TestCase):
             warnings = self.dp._apply_v2_projects(self._state())
 
         self.assertEqual(warnings, [])
-        self.assertEqual(order[:4], [
-            'reefy-system:rm',
-            'state:stop',
-            'state:rm',
-            'reefy-system:up',
-        ])
+        first_legacy_mutation = min(
+            index for index, value in enumerate(order)
+            if value in ('reefy-system:rm', 'state:stop', 'state:rm'))
+        for project in ('reefy-system', 'reefy-app-a', 'reefy-app-b'):
+            self.assertLess(order.index(f'{project}:pull'),
+                            first_legacy_mutation)
+        self.assertLess(order.index('state:rm'),
+                        order.index('reefy-system:up'))
         self.assertEqual(commands[1][2], [
             'stop', 'reefy-llm-proxy', 'reefy-app-api'])
         self.assertEqual(commands[2][2], [
@@ -297,10 +313,21 @@ class AppsV2Tests(unittest.TestCase):
             commands.append((path, project, args, timeout))
             return True, ''
 
+        def fail_start(_prepared, before_start=None):
+            self.assertTrue(before_start())
+            return False
+
         with mock.patch.object(
                 self.dp, '_run_compose_command', side_effect=run), \
                 mock.patch.object(
-                    self.dp, '_apply_project_compose', return_value=False), \
+                    self.dp, '_prepare_system_project_compose',
+                    return_value={'ok': True}), \
+                mock.patch.object(
+                    self.dp, '_prepare_v2_app',
+                    return_value=(True, '', {'ok': True})), \
+                mock.patch.object(
+                    self.dp, '_start_prepared_system_project',
+                    side_effect=fail_start), \
                 mock.patch.object(
                     self.dp, '_reconcile_v2_app') as apply_app, \
                 mock.patch.object(self.dp, '_remove_absent_v2_projects'), \
@@ -331,15 +358,26 @@ class AppsV2Tests(unittest.TestCase):
             commands.append((path, project, args, timeout))
             return True, ''
 
-        def reconcile(app, migration, restore_failed):
+        def reconcile(app, migration, restore_failed, prepared=None):
             if app['instance_uuid'] == 'app-b':
                 return False, ('app_project_failed', [])
             return True, ('', [])
 
+        def start_system(_prepared, before_start=None):
+            self.assertTrue(before_start())
+            return True
+
         with mock.patch.object(
                 self.dp, '_run_compose_command', side_effect=run), \
                 mock.patch.object(
-                    self.dp, '_apply_project_compose', return_value=True), \
+                    self.dp, '_prepare_system_project_compose',
+                    return_value={'ok': True}), \
+                mock.patch.object(
+                    self.dp, '_prepare_v2_app',
+                    return_value=(True, '', {'ok': True})), \
+                mock.patch.object(
+                    self.dp, '_start_prepared_system_project',
+                    side_effect=start_system), \
                 mock.patch.object(
                     self.dp, '_reconcile_v2_app', side_effect=reconcile), \
                 mock.patch.object(self.dp, '_remove_absent_v2_projects'), \
@@ -360,6 +398,299 @@ class AppsV2Tests(unittest.TestCase):
             (self.dp.COMPOSE_PATH, 'state',
              ['up', '-d', '--pull', 'missing'], 300),
             commands)
+
+    def test_migration_commit_down_failure_keeps_legacy_source(self):
+        self._seed_legacy_state()
+        with mock.patch.object(
+                self.dp, '_run_compose_command',
+                return_value=(False, 'synthetic down failure')):
+            self.assertFalse(self.dp._commit_v2_migration())
+
+        self.assertTrue(os.path.exists(self.dp.DESIRED_STATE_PATH))
+        self.assertTrue(os.path.exists(self.dp.COMPOSE_PATH))
+        self.assertFalse((Path(self.tempdir) / 'apps-v2-migrated').exists())
+
+    def test_commit_failure_rolls_back_and_reports_system_warning(self):
+        legacy = self._seed_legacy_state()
+        state = self._state()
+        health_calls = []
+
+        def prepare_app(app, _restore_failed):
+            return True, '', {
+                'ok': True,
+                'project_name': app['project_name'],
+            }
+
+        with mock.patch.object(
+                self.dp, '_prepare_system_project_compose',
+                return_value={'ok': True}), \
+                mock.patch.object(
+                    self.dp, '_prepare_v2_app', side_effect=prepare_app), \
+                mock.patch.object(
+                    self.dp, '_start_prepared_system_project',
+                    side_effect=lambda _prepared, before_start=None:
+                    before_start()), \
+                mock.patch.object(
+                    self.dp, '_prepare_v2_system_handoff',
+                    return_value=True), \
+                mock.patch.object(
+                    self.dp, '_reconcile_v2_app',
+                    return_value=(True, ('', []))), \
+                mock.patch.object(self.dp, '_remove_absent_v2_projects'), \
+                mock.patch.object(
+                    self.dp, '_commit_v2_migration', return_value=False), \
+                mock.patch.object(
+                    self.dp, '_rollback_v2_migration', return_value=True), \
+                mock.patch.object(
+                    self.dp, '_publish_health_status',
+                    side_effect=lambda *args, **kwargs:
+                    health_calls.append((args, kwargs))):
+            warnings = self.dp._apply_v2_projects(state)
+
+        self.assertIn({
+            'code': 'system_project_failed',
+            'instance_uuid': '',
+            'volume': '',
+        }, warnings)
+        running = {
+            args[0]: kwargs.get('image')
+            for args, kwargs in health_calls
+            if args[1] == 'running'
+        }
+        self.assertEqual(
+            len([args for args, _kwargs in health_calls
+                 if args[1] == 'running']),
+            2)
+        self.assertEqual(running, {
+            'app-a': legacy['services']['app-a']['image'],
+            'app-b': legacy['services']['app-b']['image'],
+        })
+
+    def test_migration_preflight_abort_resets_only_prepared_bystander(self):
+        legacy = self._seed_legacy_state()
+        state = self._state()
+        events = []
+
+        def prepare_app(app, _restore_failed):
+            self.dp._publish_health_status(
+                app['instance_uuid'], 'starting')
+            if app['instance_uuid'] == 'app-b':
+                self.dp._publish_health_status(
+                    app['instance_uuid'], 'failed',
+                    message='synthetic preflight failure')
+                return False, 'app_project_failed', None
+            return True, '', {
+                'ok': True,
+                'project_name': app['project_name'],
+            }
+
+        with mock.patch.object(
+                self.dp, '_prepare_system_project_compose',
+                return_value={'ok': True}), \
+                mock.patch.object(
+                    self.dp, '_prepare_v2_app', side_effect=prepare_app), \
+                mock.patch.object(
+                    self.dp, '_publish_health_status',
+                    side_effect=lambda *args, **kwargs:
+                    events.append((args, kwargs))), \
+                mock.patch.object(
+                    self.dp, '_start_prepared_system_project') as start:
+            warnings = self.dp._apply_v2_projects(state)
+
+        start.assert_not_called()
+        self.assertEqual(
+            [args[1] for args, _kwargs in events if args[0] == 'app-a'],
+            ['starting', 'running'])
+        self.assertEqual(
+            [args[1] for args, _kwargs in events if args[0] == 'app-b'],
+            ['starting', 'failed'])
+        app_a_running = next(
+            kwargs for args, kwargs in events
+            if args[:2] == ('app-a', 'running'))
+        self.assertEqual(
+            app_a_running['image'], legacy['services']['app-a']['image'])
+        self.assertEqual(warnings[0]['instance_uuid'], 'app-b')
+
+    def test_migration_retry_intent_reaches_only_target_preflight(self):
+        self._seed_legacy_state()
+        state = self._state()
+        intent = {
+            'project_name': 'reefy-app-a',
+            'signature': 'synthetic-signature',
+        }
+
+        with mock.patch.object(
+                self.dp, '_prepare_system_project_compose',
+                return_value={'ok': True}), \
+                mock.patch.object(
+                    self.dp, '_prepare_v2_app',
+                    return_value=(False, 'app_project_failed', None)) as prepare:
+            self.dp._apply_v2_projects(state, force_retry=intent)
+
+        calls = {
+            call.args[0]['project_name']: call
+            for call in prepare.call_args_list
+        }
+        self.assertEqual(
+            calls['reefy-app-a'].kwargs['force_retry'], intent)
+        self.assertNotIn('force_retry', calls['reefy-app-b'].kwargs)
+
+    def test_migration_app_failure_rollback_resets_bystander_health(self):
+        legacy = self._seed_legacy_state()
+        state = self._state()
+        events = []
+
+        def prepare_app(app, _restore_failed):
+            self.dp._publish_health_status(app['instance_uuid'], 'starting')
+            return True, '', {
+                'ok': True,
+                'project_name': app['project_name'],
+            }
+
+        def reconcile(app, migration, restore_failed, prepared=None):
+            if app['instance_uuid'] == 'app-b':
+                self.dp._publish_health_status(
+                    'app-b', 'failed', message='synthetic start failure')
+                return False, ('app_project_failed', [])
+            return True, ('', [])
+
+        with mock.patch.object(
+                self.dp, '_prepare_system_project_compose',
+                return_value={'ok': True}), \
+                mock.patch.object(
+                    self.dp, '_prepare_v2_app', side_effect=prepare_app), \
+                mock.patch.object(
+                    self.dp, '_start_prepared_system_project',
+                    return_value=True), \
+                mock.patch.object(
+                    self.dp, '_reconcile_v2_app', side_effect=reconcile), \
+                mock.patch.object(self.dp, '_remove_absent_v2_projects'), \
+                mock.patch.object(
+                    self.dp, '_rollback_v2_migration', return_value=True), \
+                mock.patch.object(
+                    self.dp, '_publish_health_status',
+                    side_effect=lambda *args, **kwargs:
+                    events.append((args, kwargs))):
+            self.dp._apply_v2_projects(state)
+
+        app_a = [
+            (args[1], kwargs.get('image'))
+            for args, kwargs in events if args[0] == 'app-a'
+        ]
+        app_b = [
+            args[1] for args, _kwargs in events if args[0] == 'app-b'
+        ]
+        self.assertEqual(app_a, [
+            ('starting', None),
+            ('running', legacy['services']['app-a']['image']),
+        ])
+        self.assertEqual(app_b, ['starting', 'failed'])
+
+    def test_migration_success_publishes_one_committed_running_per_app(self):
+        self._seed_legacy_state()
+        state = self._state()
+        events = []
+
+        def prepare_app(app, _restore_failed):
+            self.dp._publish_health_status(app['instance_uuid'], 'starting')
+            return True, '', {
+                'ok': True,
+                'project_name': app['project_name'],
+                '_running_health': {
+                    'message': None,
+                    'image': app['compose']['services']['app']['image'],
+                },
+            }
+
+        with mock.patch.object(
+                self.dp, '_prepare_system_project_compose',
+                return_value={'ok': True}), \
+                mock.patch.object(
+                    self.dp, '_prepare_v2_app', side_effect=prepare_app), \
+                mock.patch.object(
+                    self.dp, '_start_prepared_system_project',
+                    return_value=True), \
+                mock.patch.object(
+                    self.dp, '_reconcile_v2_app',
+                    return_value=(True, ('', []))), \
+                mock.patch.object(self.dp, '_remove_absent_v2_projects'), \
+                mock.patch.object(
+                    self.dp, '_commit_v2_migration', return_value=True), \
+                mock.patch.object(
+                    self.dp, '_publish_health_status',
+                    side_effect=lambda *args, **kwargs:
+                    events.append((args, kwargs))):
+            warnings = self.dp._apply_v2_projects(state)
+
+        self.assertEqual(warnings, [])
+        for app in state['apps']:
+            instance_uuid = app['instance_uuid']
+            app_events = [
+                (args[1], kwargs.get('image'))
+                for args, kwargs in events if args[0] == instance_uuid
+            ]
+            self.assertEqual(app_events, [
+                ('starting', None),
+                ('running', app['compose']['services']['app']['image']),
+            ])
+
+    def test_legacy_app_stop_failure_is_sticky_and_terminal(self):
+        app = self._state()['apps'][0]
+        compose = app['compose']
+        context = self.dp._required_app_failure_context(
+            app['project_name'], compose, 'app')
+        prepared = {
+            'ok': True,
+            'project_name': app['project_name'],
+            'instance_uuid': app['instance_uuid'],
+            'required_context': context,
+        }
+
+        with mock.patch.object(
+                self.dp, '_run_compose_command',
+                return_value=(False, 'synthetic stop failure')), \
+                mock.patch.object(
+                    self.dp, '_start_prepared_app_project') as start, \
+                mock.patch.object(
+                    self.dp, '_publish_health_status') as health:
+            result = self.dp._reconcile_v2_app(
+                app, migration=True, restore_failed=False,
+                prepared=prepared)
+
+        self.assertEqual(result, (False, 'app_stop_failed'))
+        start.assert_not_called()
+        self.assertEqual(
+            [call.args[1] for call in health.call_args_list], ['failed'])
+        marker = self.dp._read_failed_sig_record(context['path'])
+        self.assertEqual(marker['phase'], 'start')
+
+    def test_rollback_cleanup_failure_does_not_confirm_legacy_running(self):
+        self._seed_legacy_state()
+        state = self._state()
+        for app in state['apps']:
+            self.dp._write_project_compose(
+                app['project_name'], app['compose'])
+        self.dp._write_project_compose(
+            'reefy-system', state['system_project']['compose'])
+        commands = []
+
+        def run(_path, project, args, timeout):
+            commands.append((project, args))
+            if project == 'reefy-app-a' and args == ['stop']:
+                return False, 'synthetic stop failure'
+            return True, ''
+
+        with mock.patch.object(
+                self.dp, '_run_compose_command', side_effect=run), \
+                mock.patch.object(dataplane, 'log') as logger:
+            self.assertFalse(self.dp._rollback_v2_migration(
+                state, 'reefy-system'))
+
+        self.assertIn(
+            ('state', ['up', '-d', '--pull', 'missing']), commands)
+        self.assertTrue(any(
+            'rollback cleanup failures' in str(call.args[1])
+            for call in logger.call_args_list))
 
     def test_migration_clears_sticky_system_failure_after_name_release(self):
         self._seed_legacy_state()
@@ -389,20 +720,30 @@ class AppsV2Tests(unittest.TestCase):
                 order.append('stop-legacy')
             return True, ''
 
+        def start_prepared(_prepared, publish_running=True):
+            self.assertFalse(publish_running)
+            order.append('start-v2')
+            return True, []
+
         with mock.patch.object(
                 self.dp, '_prepare_app_artifacts',
                 side_effect=lambda _app: order.append('prepare') or True), \
                 mock.patch.object(
                     self.dp, '_run_compose_command', side_effect=run), \
                 mock.patch.object(
-                    self.dp, '_apply_app_project_compose',
+                    self.dp, '_prepare_app_project_compose',
                     side_effect=lambda *_args, **_kwargs:
-                    (order.append('start-v2') or True, [])):
+                    (order.append('pull-images') or {
+                        'ok': True, 'project_name': 'reefy-app-a'})), \
+                mock.patch.object(
+                    self.dp, '_start_prepared_app_project',
+                    side_effect=start_prepared):
             result = self.dp._reconcile_v2_app(
                 app, migration=True, restore_failed=False)
 
         self.assertEqual(result, (True, ('', [])))
-        self.assertEqual(order, ['prepare', 'stop-legacy', 'start-v2'])
+        self.assertEqual(order, [
+            'prepare', 'pull-images', 'stop-legacy', 'start-v2'])
 
     def test_optional_warning_does_not_block_migration_commit(self):
         with mock.patch.object(
@@ -410,13 +751,19 @@ class AppsV2Tests(unittest.TestCase):
                 mock.patch.object(
                     self.dp, '_read_json', return_value={}), \
                 mock.patch.object(
-                    self.dp, '_apply_project_compose', return_value=True), \
+                    self.dp, '_prepare_system_project_compose',
+                    return_value={'ok': True}), \
                 mock.patch.object(
-                    self.dp, '_apply_app_project_compose',
-                    return_value=(True, ['diagnostics'])), \
+                    self.dp, '_prepare_v2_app',
+                    return_value=(True, '', {'ok': True})), \
+                mock.patch.object(
+                    self.dp, '_start_prepared_system_project',
+                    side_effect=lambda _prepared, before_start=None:
+                    before_start()), \
+                mock.patch.object(
+                    self.dp, '_reconcile_v2_app',
+                    return_value=(True, ('', ['diagnostics']))), \
                 mock.patch.object(self.dp, '_remove_absent_v2_projects'), \
-                mock.patch.object(
-                    self.dp, '_prepare_app_artifacts', return_value=True), \
                 mock.patch.object(
                     self.dp, '_run_compose_command', return_value=(True, '')), \
                 mock.patch.object(self.dp, '_commit_v2_migration') as commit:
@@ -450,6 +797,25 @@ class AppsV2Tests(unittest.TestCase):
         event['Actor']['Attributes']['exitCode'] = '0'
         event['Actor']['Attributes']['ai.reefy.lifecycle'] = 'init'
         self.assertFalse(self.dp._handle_docker_event(event))
+
+    def test_service_die_event_is_suppressed_during_pending_migration(self):
+        with open(self.dp.DESIRED_STATE_V2_PATH, 'w') as stream:
+            json.dump(self._state(), stream)
+        Path(self.dp.DESIRED_STATE_PATH).write_text('{}')
+        event = {
+            'Action': 'die',
+            'Actor': {'Attributes': {
+                'ai.reefy.lifecycle': 'service',
+                'ai.reefy.instance_uuid': 'app-a',
+                'com.docker.compose.project': 'reefy-app-a',
+                'exitCode': '0',
+            }},
+        }
+
+        with mock.patch.object(dataplane.threading, 'Thread') as thread:
+            self.assertFalse(self.dp._handle_docker_event(event))
+
+        thread.assert_not_called()
 
     def test_runtime_compose_strips_completed_init_and_dependency(self):
         compose = {'services': {
@@ -497,13 +863,14 @@ class AppsV2Tests(unittest.TestCase):
             self.assertEqual(
                 self.dp._run_app_init_services(
                     'reefy-app-a', compose, 'app-a'),
-                (True, []))
+                (True, {}, None))
             self.assertEqual(
                 self.dp._run_app_init_services(
                     'reefy-app-a', compose, 'app-a'),
-                (True, []))
+                (True, {}, None))
 
-        self.assertEqual(calls, [['run', '--rm', 'setup']])
+        self.assertEqual(calls, [
+            ['run', '--pull', 'never', '--rm', 'setup']])
 
     def test_optional_service_failure_keeps_app_running(self):
         compose = {'services': {
@@ -523,17 +890,1115 @@ class AppsV2Tests(unittest.TestCase):
             },
         }}
 
-        def apply(_project, _compose, instance_uuid=None,
-                  primary_service='app', services=None, **_kwargs):
-            return services != ['diagnostics']
+        def start(_path, _project, services, **_kwargs):
+            if services == ['diagnostics']:
+                return False, 'synthetic optional failure', (
+                    'docker compose up failed')
+            return True, '', ''
 
         with mock.patch.object(
-                self.dp, '_apply_project_compose', side_effect=apply), \
+                self.dp, '_pull_project_images',
+                return_value=(True, '', '')), \
+                mock.patch.object(
+                    self.dp, '_start_project_services', side_effect=start), \
                 mock.patch.object(self.dp, '_publish_health_status'):
             result = self.dp._apply_app_project_compose(
                 'reefy-app-a', compose, 'app-a', 'web')
 
         self.assertEqual(result, (True, ['diagnostics']))
+
+
+class AppsV2PullRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.dp = _make_dp()
+        self.tempdir = tempfile.mkdtemp()
+        self.dp.DESIRED_STATE_PATH = os.path.join(
+            self.tempdir, 'desired-state.json')
+        self.dp.DESIRED_STATE_V2_PATH = os.path.join(
+            self.tempdir, 'desired-state-v2.json')
+        self.dp.COMPOSE_PATH = os.path.join(
+            self.tempdir, 'docker-compose.json')
+        self.dp.PROJECTS_DIR = os.path.join(self.tempdir, 'projects')
+
+    @staticmethod
+    def _health_statuses(health):
+        return [call.args[1] for call in health.call_args_list]
+
+    @staticmethod
+    def _compose_with_init():
+        return {'services': {
+            'seed': {'image': 'synthetic/seed:1'},
+            'setup': {
+                'image': 'synthetic/setup:1',
+                'labels': {'ai.reefy.lifecycle': 'init'},
+                'depends_on': {'seed': {'condition': 'service_started'}},
+            },
+            'app': {
+                'image': 'synthetic/app:1',
+                'depends_on': {
+                    'setup': {
+                        'condition': 'service_completed_successfully'},
+                    'seed': {'condition': 'service_started'},
+                },
+            },
+        }}
+
+    def _write_v2_state(self, compose=None):
+        compose = compose or {'services': {
+            'app': {'image': 'synthetic/app:1'},
+        }}
+        state = {
+            'schema_version': 2,
+            'apps': [{
+                'instance_uuid': 'synthetic-app',
+                'project_name': 'reefy-synthetic-app',
+                'primary_service': 'app',
+                'desired_status': 'running',
+                'compose': compose,
+                'artifacts': [],
+            }],
+        }
+        Path(self.dp.DESIRED_STATE_V2_PATH).write_text(json.dumps(state))
+        return state
+
+    def test_app_pipeline_pulls_before_init_and_start_with_explicit_flags(self):
+        compose = self._compose_with_init()
+        calls = []
+
+        def pull(_path, _project, args, timeout):
+            calls.append(('pull', args, timeout))
+            return True, 'pull complete'
+
+        def run(_path, _project, args, timeout):
+            calls.append((args[0], args, timeout))
+            return True, 'complete'
+
+        with mock.patch.object(
+                self.dp, '_run_compose_command_streaming',
+                side_effect=pull), \
+                mock.patch.object(
+                    self.dp, '_run_compose_command', side_effect=run), \
+                mock.patch.object(self.dp, '_publish_health_status') as health:
+            result = self.dp._apply_app_project_compose(
+                'reefy-synthetic-app', compose, 'synthetic-app', 'app')
+
+        self.assertEqual(result, (True, []))
+        self.assertEqual(calls[0][0], 'pull')
+        self.assertEqual(calls[0][1], [
+            'pull', '--policy', 'missing', 'app', 'seed', 'setup'])
+        self.assertLessEqual(calls[0][2], 3600)
+        self.assertGreater(calls[0][2], 3500)
+        self.assertEqual(calls[1][1], [
+            'run', '--pull', 'never', '--rm', 'setup'])
+        up = next(call for call in calls if call[0] == 'up')
+        self.assertEqual(up[1][:4], ['up', '-d', '--pull', 'never'])
+        self.assertIn('--remove-orphans', up[1])
+        self.assertLessEqual(up[2], 180)
+        statuses = [call.args[1] for call in health.call_args_list]
+        self.assertEqual(statuses[0], 'starting')
+        self.assertEqual(statuses[-1], 'running')
+
+    def test_pull_failure_skips_compose_up_and_persists_pull_phase(self):
+        compose = {'services': {'app': {'image': 'synthetic/missing:1'}}}
+        with mock.patch.object(
+                self.dp, '_run_compose_command_streaming',
+                return_value=(False, 'manifest unknown')) as pull, \
+                mock.patch.object(
+                    self.dp, '_run_compose_command') as run, \
+                mock.patch.object(self.dp, '_publish_health_status'):
+            self.assertFalse(self.dp._apply_project_compose(
+                'reefy-synthetic-app', compose,
+                instance_uuid='synthetic-app'))
+
+        pull.assert_called_once()
+        run.assert_not_called()
+        marker = self.dp._read_failed_sig_record(os.path.join(
+            self.dp.PROJECTS_DIR, 'reefy-synthetic-app',
+            '.failed-compose-sig'))
+        self.assertEqual(marker['phase'], 'pull')
+        self.assertEqual(marker['services'], ['app'])
+        self.assertEqual(
+            marker['reason'], 'image not found or access denied')
+
+    def test_pull_retries_share_one_monotonic_deadline(self):
+        clock = [0.0]
+        timeouts = []
+
+        def monotonic():
+            return clock[0]
+
+        def pull(*_args, **kwargs):
+            timeouts.append(kwargs['timeout'])
+            clock[0] += 100
+            return False, 'temporary registry timeout'
+
+        def sleep(delay):
+            clock[0] += delay
+
+        with mock.patch.object(
+                dataplane.time, 'monotonic', side_effect=monotonic), \
+                mock.patch.object(
+                    dataplane.time, 'sleep', side_effect=sleep), \
+                mock.patch.object(
+                    self.dp, '_run_compose_command_streaming',
+                    side_effect=pull):
+            ok, _output, reason = self.dp._pull_project_images(
+                '/synthetic/compose.json', 'reefy-synthetic-app', ['app'],
+                deadline=360, max_retries=5)
+
+        self.assertFalse(ok)
+        self.assertEqual(timeouts, [360, 250, 130])
+        self.assertEqual(clock[0], 360)
+        self.assertEqual(reason, 'docker compose pull timed out')
+
+    def test_deterministic_pull_failure_does_not_retry(self):
+        with mock.patch.object(
+                self.dp, '_run_compose_command_streaming',
+                return_value=(
+                    False, 'unauthorized: authentication required')) as pull, \
+                mock.patch.object(dataplane.time, 'sleep') as sleep:
+            ok, _output, reason = self.dp._pull_project_images(
+                '/synthetic/compose.json', 'reefy-synthetic-app', ['app'],
+                deadline=dataplane.time.monotonic() + 3600)
+
+        self.assertFalse(ok)
+        pull.assert_called_once()
+        sleep.assert_not_called()
+        self.assertEqual(reason, 'image not found or access denied')
+
+    def test_pull_no_space_and_storage_corruption_fail_without_prune(self):
+        cases = (
+            ('no space left on device', 'out of disk space'),
+            ('failed to register layer', 'docker storage error'),
+        )
+        for output, expected_reason in cases:
+            with self.subTest(output=output), \
+                    mock.patch.object(
+                        self.dp, '_run_compose_command_streaming',
+                        return_value=(False, output)) as pull, \
+                    mock.patch.object(self.dp, '_prune_docker') as prune, \
+                    mock.patch.object(dataplane.time, 'sleep') as sleep:
+                ok, _output, reason = self.dp._pull_project_images(
+                    '/synthetic/compose.json', 'reefy-synthetic-app',
+                    ['app'], deadline=dataplane.time.monotonic() + 3600)
+
+            self.assertFalse(ok)
+            pull.assert_called_once()
+            prune.assert_not_called()
+            sleep.assert_not_called()
+            self.assertEqual(reason, expected_reason)
+
+    def test_start_retries_share_180_second_deadline(self):
+        clock = [0.0]
+        timeouts = []
+
+        def monotonic():
+            return clock[0]
+
+        def run(*_args, **kwargs):
+            timeouts.append(kwargs['timeout'])
+            clock[0] += 100
+            return False, 'temporary daemon timeout'
+
+        def sleep(delay):
+            clock[0] += delay
+
+        with mock.patch.object(
+                dataplane.time, 'monotonic', side_effect=monotonic), \
+                mock.patch.object(
+                    dataplane.time, 'sleep', side_effect=sleep), \
+                mock.patch.object(
+                    self.dp, '_run_compose_command', side_effect=run):
+            ok, _output, reason = self.dp._start_project_services(
+                '/synthetic/compose.json', 'reefy-synthetic-app', ['app'])
+
+        self.assertFalse(ok)
+        self.assertEqual(timeouts, [180, 70])
+        self.assertGreaterEqual(clock[0], 180)
+        self.assertEqual(reason, 'docker compose up timed out')
+
+    def test_start_deterministic_failures_do_not_backoff(self):
+        cases = (
+            ('manifest unknown', 'image not found or access denied'),
+            ('no space left on device', 'out of disk space'),
+            ('failed to register layer', 'docker storage error'),
+        )
+        for output, expected_reason in cases:
+            with self.subTest(output=output), \
+                    mock.patch.object(
+                        self.dp, '_run_compose_command',
+                        return_value=(False, output)) as run, \
+                    mock.patch.object(dataplane.time, 'sleep') as sleep:
+                ok, _output, reason = self.dp._start_project_services(
+                    '/synthetic/compose.json', 'reefy-synthetic-app',
+                    ['app'])
+
+            self.assertFalse(ok)
+            run.assert_called_once()
+            sleep.assert_not_called()
+            self.assertEqual(reason, expected_reason)
+
+    def test_completed_required_and_optional_init_images_are_not_pulled(self):
+        compose = self._compose_with_init()
+        compose['services']['optional-setup'] = {
+            'image': 'synthetic/optional-setup:1',
+            'labels': {
+                'ai.reefy.lifecycle': 'init',
+                'ai.reefy.optional': 'true',
+            },
+        }
+        project_name = 'reefy-synthetic-app'
+        project_dir = Path(self.dp.PROJECTS_DIR) / project_name
+        project_dir.mkdir(parents=True)
+        for service_name in ('setup', 'optional-setup'):
+            signature = self.dp._compose_sig({
+                'service': service_name,
+                'definition': compose['services'][service_name],
+            })
+            (project_dir / f'.init-{service_name}.sig').write_text(
+                signature + '\n')
+        pulled = []
+
+        def pull(_path, _project, services, _deadline, **_kwargs):
+            pulled.append(services)
+            return True, '', ''
+
+        with mock.patch.object(
+                self.dp, '_pull_project_images', side_effect=pull), \
+                mock.patch.object(self.dp, '_publish_health_status'):
+            prepared = self.dp._prepare_app_project_compose(
+                project_name, compose, 'synthetic-app', 'app')
+
+        self.assertTrue(prepared['ok'])
+        self.assertEqual(pulled, [['app', 'seed']])
+        self.assertNotIn('setup', pulled[0])
+        self.assertNotIn('optional-setup', pulled[0])
+
+    def test_pending_init_pull_includes_its_dependencies(self):
+        plan = self.dp._app_project_plan(
+            'reefy-synthetic-app', self._compose_with_init(), 'app')
+        self.assertEqual(plan['required_services'], [
+            'app', 'seed', 'setup'])
+
+    def test_completed_init_is_absent_from_pull_and_pending_run_compose(self):
+        compose = {'services': {
+            'bootstrap': {
+                'image': 'synthetic/bootstrap:1',
+                'labels': {'ai.reefy.lifecycle': 'init'},
+            },
+            'migrate': {
+                'image': 'synthetic/migrate:1',
+                'labels': {'ai.reefy.lifecycle': 'init'},
+                'depends_on': {
+                    'bootstrap': {
+                        'condition': 'service_completed_successfully'},
+                },
+            },
+            'app': {'image': 'synthetic/app:1'},
+        }}
+        project_name = 'reefy-synthetic-app'
+        project_dir = Path(self.dp.PROJECTS_DIR) / project_name
+        project_dir.mkdir(parents=True)
+        signature = self.dp._init_service_signature(
+            'bootstrap', compose['services']['bootstrap'])
+        (project_dir / '.init-bootstrap.sig').write_text(signature + '\n')
+
+        plan = self.dp._app_project_plan(project_name, compose, 'app')
+        self.assertEqual(plan['required_services'], ['app', 'migrate'])
+        run_composes = []
+        run_services = []
+
+        def run(compose_path, _project, args, timeout):
+            run_composes.append(json.loads(Path(compose_path).read_text()))
+            run_services.append(args[-1])
+            return True, ''
+
+        with mock.patch.object(
+                self.dp, '_run_compose_command', side_effect=run), \
+                mock.patch.object(self.dp, '_publish_health_status'):
+            result = self.dp._run_app_init_services(
+                project_name, compose, 'synthetic-app',
+                required_init_services=plan['required_init_services'])
+
+        self.assertEqual(result, (True, {}, None))
+        self.assertEqual(run_services, ['migrate'])
+        self.assertNotIn('bootstrap', run_composes[0]['services'])
+        self.assertNotIn(
+            'depends_on', run_composes[0]['services']['migrate'])
+
+    def test_optional_init_in_required_closure_is_required(self):
+        relationships = ('required_init', 'required_runtime')
+        for relationship in relationships:
+            with self.subTest(relationship=relationship):
+                bootstrap = {
+                    'image': 'synthetic/bootstrap:1',
+                    'labels': {
+                        'ai.reefy.lifecycle': 'init',
+                        'ai.reefy.optional': 'true',
+                    },
+                }
+                services = {
+                    'bootstrap': bootstrap,
+                    'app': {'image': 'synthetic/app:1'},
+                }
+                if relationship == 'required_init':
+                    services['migrate'] = {
+                        'image': 'synthetic/migrate:1',
+                        'labels': {'ai.reefy.lifecycle': 'init'},
+                        'depends_on': ['bootstrap'],
+                    }
+                else:
+                    services['app']['depends_on'] = ['bootstrap']
+                compose = {'services': services}
+                project_name = f'reefy-synthetic-{relationship}'
+                plan = self.dp._app_project_plan(
+                    project_name, compose, 'app')
+
+                self.assertIn('bootstrap', plan['required_services'])
+                self.assertIn(
+                    'bootstrap', plan['required_init_services'])
+                self.assertNotIn(
+                    'bootstrap', [entry['name']
+                                  for entry in plan['optional']])
+
+                init_calls = []
+
+                def run(_path, _project, args, timeout):
+                    init_calls.append(args[-1])
+                    if args[-1] == 'bootstrap':
+                        return False, 'synthetic bootstrap failure'
+                    return True, ''
+
+                with mock.patch.object(
+                        self.dp, '_pull_project_images',
+                        return_value=(True, '', '')), \
+                        mock.patch.object(
+                            self.dp, '_run_compose_command', side_effect=run), \
+                        mock.patch.object(
+                            self.dp, '_start_project_services') as start, \
+                        mock.patch.object(
+                            self.dp, '_publish_health_status') as health:
+                    result = self.dp._apply_app_project_compose(
+                        project_name, compose, 'synthetic-app', 'app')
+
+                self.assertEqual(result, (False, []))
+                self.assertEqual(init_calls, ['bootstrap'])
+                start.assert_not_called()
+                statuses = self._health_statuses(health)
+                self.assertEqual(statuses.count('failed'), 1)
+                self.assertNotIn('running', statuses)
+
+    def test_optional_pull_failure_does_not_block_required_start(self):
+        compose = {'services': {
+            'app': {'image': 'synthetic/app:1'},
+            'diagnostics': {
+                'image': 'synthetic/diagnostics:1',
+                'labels': {'ai.reefy.optional': 'true'},
+            },
+        }}
+
+        def pull(_path, _project, services, _deadline, **_kwargs):
+            if services == ['diagnostics']:
+                return False, 'temporary registry timeout', (
+                    'docker compose pull failed')
+            return True, '', ''
+
+        with mock.patch.object(
+                self.dp, '_pull_project_images', side_effect=pull), \
+                mock.patch.object(self.dp, '_publish_health_status'):
+            prepared = self.dp._prepare_app_project_compose(
+                'reefy-synthetic-app', compose,
+                'synthetic-app', 'app')
+
+        self.assertTrue(prepared['ok'])
+        self.assertIn('diagnostics', prepared['optional_failures'])
+        marker = self.dp._read_failed_sig_record(os.path.join(
+            self.dp.PROJECTS_DIR, 'reefy-synthetic-app',
+            '.failed-compose-sig.optional-diagnostics'))
+        self.assertEqual(marker['phase'], 'pull')
+        self.assertFalse(os.path.exists(os.path.join(
+            self.dp.PROJECTS_DIR, 'reefy-synthetic-app',
+            '.failed-compose-sig')))
+
+    def test_optional_runtime_does_not_start_after_init_dependency_fails(self):
+        compose = {'services': {
+            'app': {'image': 'synthetic/app:1'},
+            'setup': {
+                'image': 'synthetic/setup:1',
+                'labels': {
+                    'ai.reefy.lifecycle': 'init',
+                    'ai.reefy.optional': 'true',
+                },
+            },
+            'diagnostics': {
+                'image': 'synthetic/diagnostics:1',
+                'labels': {'ai.reefy.optional': 'true'},
+                'depends_on': {
+                    'setup': {
+                        'condition': 'service_completed_successfully'},
+                },
+            },
+        }}
+        starts = []
+
+        def run(_path, _project, args, timeout):
+            self.assertEqual(args[-1], 'setup')
+            return False, 'synthetic setup failure'
+
+        def start(_path, _project, services, **_kwargs):
+            starts.append(services)
+            return True, '', ''
+
+        with mock.patch.object(
+                self.dp, '_pull_project_images',
+                return_value=(True, '', '')), \
+                mock.patch.object(
+                    self.dp, '_run_compose_command', side_effect=run), \
+                mock.patch.object(
+                    self.dp, '_start_project_services', side_effect=start), \
+                mock.patch.object(
+                    self.dp, '_publish_health_status') as health:
+            result = self.dp._apply_app_project_compose(
+                'reefy-synthetic-app', compose,
+                'synthetic-app', 'app')
+
+        self.assertEqual(result, (True, ['diagnostics', 'setup']))
+        self.assertEqual(starts, [['app']])
+        diagnostics_marker = self.dp._read_failed_sig_record(os.path.join(
+            self.dp.PROJECTS_DIR, 'reefy-synthetic-app',
+            '.failed-compose-sig.optional-diagnostics'))
+        self.assertEqual(diagnostics_marker['phase'], 'init')
+        statuses = self._health_statuses(health)
+        self.assertEqual(statuses.count('running'), 1)
+        self.assertEqual(statuses.count('failed'), 0)
+
+    def test_legacy_optional_runtime_marker_still_skips_retry(self):
+        compose = {'services': {
+            'app': {'image': 'synthetic/app:1'},
+            'setup': {
+                'image': 'synthetic/setup:1',
+                'labels': {
+                    'ai.reefy.lifecycle': 'init',
+                    'ai.reefy.optional': 'true',
+                },
+            },
+            'diagnostics': {
+                'image': 'synthetic/diagnostics:1',
+                'labels': {'ai.reefy.optional': 'true'},
+                'depends_on': ['setup'],
+            },
+        }}
+        project_name = 'reefy-synthetic-app'
+        runtime = self.dp._runtime_app_compose(compose)
+        legacy_signature = self.dp._compose_sig({
+            'compose': runtime,
+            'services': ['diagnostics'],
+        })
+        marker_path = Path(self.dp.PROJECTS_DIR) / project_name / (
+            '.failed-compose-sig.optional-diagnostics')
+        marker_path.parent.mkdir(parents=True)
+        marker_path.write_text(
+            legacy_signature + '\nsynthetic legacy optional failure')
+        pulls = []
+        starts = []
+
+        def pull(_path, _project, services, _deadline, **_kwargs):
+            pulls.append(services)
+            return True, '', ''
+
+        def start(_path, _project, services, **_kwargs):
+            starts.append(services)
+            return True, '', ''
+
+        with mock.patch.object(
+                self.dp, '_pull_project_images', side_effect=pull), \
+                mock.patch.object(
+                    self.dp, '_run_compose_command', return_value=(True, '')), \
+                mock.patch.object(
+                    self.dp, '_start_project_services', side_effect=start), \
+                mock.patch.object(self.dp, '_publish_health_status'):
+            result = self.dp._apply_app_project_compose(
+                project_name, compose, 'synthetic-app', 'app')
+
+        self.assertEqual(result, (True, ['diagnostics']))
+        self.assertEqual(pulls, [['app'], ['setup']])
+        self.assertEqual(starts, [['app']])
+        self.assertTrue(marker_path.exists())
+
+    def test_failure_marker_is_atomic_json_and_reads_legacy_format(self):
+        marker_path = os.path.join(
+            self.tempdir, 'project', '.failed-compose-sig')
+        os.makedirs(os.path.dirname(marker_path))
+        Path(marker_path).write_text('legacy-signature\nlegacy reason')
+        legacy = self.dp._read_failed_sig_record(marker_path)
+        self.assertEqual(legacy['version'], 1)
+        self.assertEqual(legacy['phase'], 'legacy')
+        self.assertEqual(legacy['reason'], 'legacy reason')
+
+        with mock.patch.object(
+                dataplane.os, 'replace', wraps=os.replace) as replace:
+            self.dp._write_failed_sig_path(
+                marker_path, 'current-signature',
+                'password=synthetic-private-value',
+                phase='init', services=['setup', 'app'])
+        replace.assert_called_once_with(marker_path + '.tmp', marker_path)
+        current = json.loads(Path(marker_path).read_text())
+        self.assertEqual(current['version'], 2)
+        self.assertEqual(current['phase'], 'init')
+        self.assertEqual(current['services'], ['app', 'setup'])
+        self.assertEqual(current['reason'], 'password=[REDACTED]')
+        self.assertNotIn('synthetic-private-value', Path(marker_path).read_text())
+        self.assertFalse(os.path.exists(marker_path + '.tmp'))
+
+        old_content = Path(marker_path).read_text()
+        with mock.patch.object(
+                dataplane.os, 'replace', side_effect=OSError('synthetic')), \
+                mock.patch.object(dataplane, 'log'):
+            self.dp._write_failed_sig_path(
+                marker_path, 'replacement-signature', 'replacement reason',
+                phase='pull', services=['app'])
+        self.assertEqual(Path(marker_path).read_text(), old_content)
+        self.assertFalse(os.path.exists(marker_path + '.tmp'))
+
+    def test_retry_recovers_each_current_required_failure_phase(self):
+        compose = {'services': {'app': {'image': 'synthetic/app:1'}}}
+        self._write_v2_state(compose)
+        project_name = 'reefy-synthetic-app'
+        context = self.dp._failure_marker_context(
+            project_name, compose, ['app'])
+        other_dir = Path(self.dp.PROJECTS_DIR) / 'reefy-other-app'
+        other_dir.mkdir(parents=True)
+        other_marker = other_dir / '.failed-compose-sig'
+        other_marker.write_text('other-signature\nother reason')
+
+        for phase in ('pull', 'init', 'start'):
+            with self.subTest(phase=phase):
+                self.dp._write_failed_sig_path(
+                    context['path'], context['signature'],
+                    'synthetic required failure', phase=phase,
+                    services=['app'])
+                optional_path = context['path'] + '.optional-diagnostics'
+                self.dp._write_failed_sig_path(
+                    optional_path, 'optional-signature',
+                    'synthetic optional failure', phase='pull',
+                    services=['diagnostics'])
+                with mock.patch.object(
+                        self.dp, '_pull_project_images',
+                        return_value=(True, '', '')), \
+                        mock.patch.object(
+                            self.dp, '_start_project_services',
+                            return_value=(True, '', '')), \
+                        mock.patch.object(
+                            self.dp, '_publish_health_status') as health, \
+                        mock.patch.object(
+                            dataplane.subprocess, 'run') as healthy_restart:
+                    message = self.dp._restart_instance({
+                        'instance_uuid': 'synthetic-app'})
+
+                self.assertEqual(
+                    message, 'Instance synthetic-app restarted')
+                healthy_restart.assert_not_called()
+                self.assertFalse(os.path.exists(context['path']))
+                self.assertFalse(os.path.exists(optional_path))
+                self.assertTrue(other_marker.exists())
+                statuses = [call.args[1] for call in health.call_args_list]
+                self.assertIn('starting', statuses)
+                self.assertEqual(statuses[-1], 'running')
+
+    def test_pending_migration_required_retry_uses_full_serialized_job(self):
+        compose = {'services': {'app': {'image': 'synthetic/app:1'}}}
+        self._write_v2_state(compose)
+        Path(self.dp.DESIRED_STATE_PATH).write_text('{}')
+        project_name = 'reefy-synthetic-app'
+        context = self.dp._required_app_failure_context(
+            project_name, compose, 'app')
+        self.dp._write_failed_sig_path(
+            context['path'], context['signature'], 'synthetic pull failure',
+            phase='pull', services=context['services'])
+        migration_marker = Path(self.tempdir) / 'apps-v2-migrated'
+
+        def wait(_request_id):
+            self.dp._clear_failed_sig_path(context['path'])
+            migration_marker.write_text('2\n')
+            return {
+                'status': 'succeeded',
+                'error': '',
+                'warnings': [],
+            }
+
+        with mock.patch.object(
+                self.dp, '_submit_apply_job',
+                return_value={
+                    'ok': True, 'request_id': 'synthetic-request',
+                    'error': '',
+                }) as submit, \
+                mock.patch.object(
+                    self.dp, '_wait_apply_result', side_effect=wait), \
+                mock.patch.object(
+                    self.dp, '_apply_app_project_compose') as direct_apply, \
+                mock.patch.object(dataplane.subprocess, 'run') as direct_run:
+            message = self.dp._restart_instance({
+                'instance_uuid': 'synthetic-app'})
+
+        self.assertEqual(message, 'Instance synthetic-app restarted')
+        submit.assert_called_once_with(
+            'reconcile',
+            force_retry={
+                'project_name': project_name,
+                'signature': context['signature'],
+            },
+            wait_for_idle=True)
+        direct_apply.assert_not_called()
+        direct_run.assert_not_called()
+
+    def test_pending_migration_healthy_and_optional_restart_reject(self):
+        compose = {'services': {
+            'app': {'image': 'synthetic/app:1'},
+            'diagnostics': {
+                'image': 'synthetic/diagnostics:1',
+                'labels': {'ai.reefy.optional': 'true'},
+            },
+        }}
+        self._write_v2_state(compose)
+        Path(self.dp.DESIRED_STATE_PATH).write_text('{}')
+        project_name = 'reefy-synthetic-app'
+        project_dir = Path(self.dp.PROJECTS_DIR) / project_name
+        project_dir.mkdir(parents=True)
+
+        for optional_marker in (False, True):
+            with self.subTest(optional_marker=optional_marker):
+                optional_path = project_dir / (
+                    '.failed-compose-sig.optional-diagnostics')
+                if optional_marker:
+                    optional_path.write_text(
+                        'synthetic-signature\nsynthetic optional failure')
+                else:
+                    optional_path.unlink(missing_ok=True)
+                with mock.patch.object(
+                        self.dp, '_submit_apply_job') as submit, \
+                        mock.patch.object(
+                            self.dp, '_apply_app_project_compose') as apply, \
+                        mock.patch.object(
+                            dataplane.subprocess, 'run') as run:
+                    with self.assertRaisesRegex(
+                            RuntimeError, 'migration is in progress'):
+                        self.dp._restart_instance({
+                            'instance_uuid': 'synthetic-app'})
+
+                submit.assert_not_called()
+                apply.assert_not_called()
+                run.assert_not_called()
+                if optional_marker:
+                    self.assertTrue(optional_path.exists())
+
+    def test_force_retry_clears_only_matching_current_signature(self):
+        compose = {'services': {'app': {'image': 'synthetic/app:1'}}}
+        project_name = 'reefy-synthetic-app'
+        context = self.dp._required_app_failure_context(
+            project_name, compose, 'app')
+        self.dp._write_failed_sig_path(
+            context['path'], context['signature'], 'synthetic failure',
+            phase='pull', services=context['services'])
+
+        with mock.patch.object(
+                self.dp, '_pull_project_images') as pull, \
+                mock.patch.object(self.dp, '_publish_health_status'):
+            stale = self.dp._prepare_app_project_compose(
+                project_name, compose, 'synthetic-app', 'app',
+                force_retry=True, force_retry_signature='stale-signature')
+        self.assertFalse(stale['ok'])
+        pull.assert_not_called()
+        self.assertTrue(os.path.exists(context['path']))
+
+        with mock.patch.object(
+                self.dp, '_pull_project_images',
+                return_value=(True, '', '')) as pull, \
+                mock.patch.object(self.dp, '_publish_health_status'):
+            current = self.dp._prepare_app_project_compose(
+                project_name, compose, 'synthetic-app', 'app',
+                force_retry=True,
+                force_retry_signature=context['signature'])
+        self.assertTrue(current['ok'])
+        pull.assert_called_once()
+        self.assertFalse(os.path.exists(context['path']))
+
+    def test_optional_marker_keeps_healthy_primary_only_restart(self):
+        compose = {'services': {
+            'app': {'image': 'synthetic/app:1'},
+            'diagnostics': {
+                'image': 'synthetic/diagnostics:1',
+                'labels': {'ai.reefy.optional': 'true'},
+            },
+        }}
+        self._write_v2_state(compose)
+        compose_path = self.dp._write_project_compose(
+            'reefy-synthetic-app', compose)
+        optional_path = os.path.join(
+            os.path.dirname(compose_path),
+            '.failed-compose-sig.optional-diagnostics')
+        Path(optional_path).write_text(
+            'optional-signature\nsynthetic optional failure')
+        result = mock.Mock(returncode=0, stdout='', stderr='')
+
+        with mock.patch.object(
+                dataplane.subprocess, 'run', return_value=result) as run, \
+                mock.patch.object(
+                    self.dp, '_apply_app_project_compose') as recovery:
+            self.dp._restart_instance({'instance_uuid': 'synthetic-app'})
+
+        recovery.assert_not_called()
+        self.assertEqual(run.call_args.args[0], [
+            'docker', 'compose', '-f', compose_path, '-p',
+            'reefy-synthetic-app', 'up', '-d', '--force-recreate',
+            '--no-deps', 'app'])
+        self.assertTrue(os.path.exists(optional_path))
+
+    def test_required_failure_phases_publish_one_terminal_failed(self):
+        for phase in ('pull', 'init', 'start'):
+            with self.subTest(phase=phase):
+                project_name = f'reefy-synthetic-{phase}'
+                compose = {'services': {
+                    'app': {'image': 'synthetic/app:1'},
+                }}
+                if phase == 'init':
+                    compose['services']['setup'] = {
+                        'image': 'synthetic/setup:1',
+                        'labels': {'ai.reefy.lifecycle': 'init'},
+                    }
+
+                def pull(*_args, **_kwargs):
+                    if phase == 'pull':
+                        return False, 'manifest unknown', (
+                            'image not found or access denied')
+                    return True, '', ''
+
+                def run(_path, _project, args, timeout):
+                    if phase == 'init' and args[0] == 'run':
+                        return False, 'synthetic init failure'
+                    return True, ''
+
+                def start(*_args, **_kwargs):
+                    if phase == 'start':
+                        return False, 'synthetic start failure', (
+                            'docker compose up failed')
+                    return True, '', ''
+
+                with mock.patch.object(
+                        self.dp, '_pull_project_images', side_effect=pull), \
+                        mock.patch.object(
+                            self.dp, '_run_compose_command', side_effect=run), \
+                        mock.patch.object(
+                            self.dp, '_start_project_services',
+                            side_effect=start), \
+                        mock.patch.object(
+                            self.dp, '_publish_health_status') as health:
+                    result = self.dp._apply_app_project_compose(
+                        project_name, compose, 'synthetic-app', 'app')
+
+                self.assertEqual(result[0], False)
+                statuses = self._health_statuses(health)
+                self.assertEqual(statuses.count('failed'), 1)
+                self.assertEqual(statuses.count('running'), 0)
+                self.assertEqual(statuses[-1], 'failed')
+
+    def test_optional_failure_success_has_one_running_and_no_failed(self):
+        compose = {'services': {
+            'app': {'image': 'synthetic/app:1'},
+            'diagnostics': {
+                'image': 'synthetic/diagnostics:1',
+                'labels': {'ai.reefy.optional': 'true'},
+            },
+        }}
+
+        def pull(_path, _project, services, _deadline, **_kwargs):
+            if services == ['diagnostics']:
+                return False, 'manifest unknown', (
+                    'image not found or access denied')
+            return True, '', ''
+
+        with mock.patch.object(
+                self.dp, '_pull_project_images', side_effect=pull), \
+                mock.patch.object(
+                    self.dp, '_start_project_services',
+                    return_value=(True, '', '')), \
+                mock.patch.object(
+                    self.dp, '_publish_health_status') as health:
+            result = self.dp._apply_app_project_compose(
+                'reefy-synthetic-app', compose, 'synthetic-app', 'app')
+
+        self.assertEqual(result, (True, ['diagnostics']))
+        statuses = self._health_statuses(health)
+        self.assertEqual(statuses.count('running'), 1)
+        self.assertEqual(statuses.count('failed'), 0)
+        self.assertEqual(statuses[-1], 'running')
+
+    def test_sticky_skip_publishes_failed_without_starting(self):
+        compose = {'services': {'app': {'image': 'synthetic/app:1'}}}
+        project_name = 'reefy-synthetic-app'
+        context = self.dp._required_app_failure_context(
+            project_name, compose, 'app')
+        self.dp._write_failed_sig_path(
+            context['path'], context['signature'], 'synthetic failure',
+            phase='pull', services=context['services'])
+
+        with mock.patch.object(
+                self.dp, '_pull_project_images') as pull, \
+                mock.patch.object(
+                    self.dp, '_publish_health_status') as health:
+            result = self.dp._apply_app_project_compose(
+                project_name, compose, 'synthetic-app', 'app')
+
+        self.assertEqual(result, (False, []))
+        pull.assert_not_called()
+        self.assertEqual(self._health_statuses(health), ['failed'])
+
+    def test_multiple_init_progress_events_end_in_one_running(self):
+        compose = {'services': {
+            'first': {
+                'image': 'synthetic/first:1',
+                'labels': {'ai.reefy.lifecycle': 'init'},
+            },
+            'second': {
+                'image': 'synthetic/second:1',
+                'labels': {'ai.reefy.lifecycle': 'init'},
+                'depends_on': ['first'],
+            },
+            'app': {'image': 'synthetic/app:1'},
+        }}
+        with mock.patch.object(
+                self.dp, '_pull_project_images',
+                return_value=(True, '', '')), \
+                mock.patch.object(
+                    self.dp, '_run_compose_command',
+                    return_value=(True, '')), \
+                mock.patch.object(
+                    self.dp, '_start_project_services',
+                    return_value=(True, '', '')), \
+                mock.patch.object(
+                    self.dp, '_publish_health_status') as health:
+            result = self.dp._apply_app_project_compose(
+                'reefy-synthetic-app', compose,
+                'synthetic-app', 'app')
+
+        self.assertEqual(result, (True, []))
+        statuses = self._health_statuses(health)
+        self.assertEqual(statuses.count('starting'), 3)
+        self.assertEqual(statuses.count('running'), 1)
+        self.assertEqual(statuses.count('failed'), 0)
+
+    def test_different_project_apply_pulls_overlap(self):
+        barrier = threading.Barrier(2)
+        entered = []
+        results = []
+
+        def pull(_path, project_name, *_args, **_kwargs):
+            entered.append(project_name)
+            barrier.wait(timeout=2)
+            return True, '', ''
+
+        def apply(project_name):
+            results.append(self.dp._apply_project_compose(
+                project_name,
+                {'services': {'app': {'image': 'synthetic/app:1'}}}))
+
+        with mock.patch.object(
+                self.dp, '_pull_project_images', side_effect=pull), \
+                mock.patch.object(
+                    self.dp, '_start_project_services',
+                    return_value=(True, '', '')):
+            threads = [
+                threading.Thread(target=apply, args=(project_name,))
+                for project_name in (
+                    'reefy-synthetic-a', 'reefy-synthetic-b')
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=3)
+
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertCountEqual(
+            entered, ['reefy-synthetic-a', 'reefy-synthetic-b'])
+        self.assertEqual(results, [True, True])
+
+    def test_same_project_apply_lock_serializes_pull_and_start(self):
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        calls = []
+
+        def pull(*_args, **_kwargs):
+            calls.append('pull')
+            if len(calls) == 1:
+                first_entered.set()
+                self.assertTrue(release_first.wait(timeout=2))
+            return True, '', ''
+
+        results = []
+
+        def apply():
+            results.append(self.dp._apply_project_compose(
+                'reefy-synthetic-app',
+                {'services': {'app': {'image': 'synthetic/app:1'}}}))
+
+        with mock.patch.object(
+                self.dp, '_pull_project_images', side_effect=pull), \
+                mock.patch.object(
+                    self.dp, '_start_project_services',
+                    return_value=(True, '', '')):
+            first = threading.Thread(target=apply)
+            second = threading.Thread(target=apply)
+            first.start()
+            self.assertTrue(first_entered.wait(timeout=1))
+            second.start()
+            self.assertEqual(calls, ['pull'])
+            release_first.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(calls, ['pull', 'pull'])
+        self.assertEqual(results, [True, True])
+
+    def test_streaming_timeout_keeps_partial_output_and_bounds_tail(self):
+        real_popen = dataplane.subprocess.Popen
+        script = (
+            'import os,time; '
+            'os.write(1, b"partial-output-without-newline" + b"x"*20000); '
+            'time.sleep(5)')
+
+        def popen(_command, **kwargs):
+            return real_popen([sys.executable, '-c', script], **kwargs)
+
+        with mock.patch.object(
+                dataplane.subprocess, 'Popen', side_effect=popen), \
+                mock.patch.object(dataplane, 'log'):
+            ok, output = self.dp._run_compose_command_streaming(
+                '/synthetic/compose.json', 'reefy-synthetic-app',
+                ['pull', '--policy', 'missing', 'app'], timeout=0.5)
+
+        self.assertFalse(ok)
+        self.assertIn('partial-output-without-newline', output)
+        self.assertIn('[truncated]', output)
+        self.assertIn('timed out', output)
+        self.assertLess(
+            len(output),
+            self.dp.COMPOSE_OUTPUT_TAIL_LINES
+            * (self.dp.COMPOSE_OUTPUT_LINE_CHARS + 100))
+
+    def test_streaming_truncation_redacts_boundary_spanning_secret(self):
+        real_popen = dataplane.subprocess.Popen
+        marker = ' [truncated]'
+        retained = self.dp.COMPOSE_OUTPUT_LINE_CHARS - len(marker)
+        secret = 'synthetic-boundary-secret-remainder'
+        line = (
+            'x' * (retained - len(' password=') - 4)
+            + ' password=' + secret)
+        script = (
+            'import os; '
+            f'os.write(1, {line.encode()!r})')
+
+        def popen(_command, **kwargs):
+            return real_popen([sys.executable, '-c', script], **kwargs)
+
+        with mock.patch.object(
+                dataplane.subprocess, 'Popen', side_effect=popen), \
+                mock.patch.object(dataplane, 'log') as logger:
+            ok, output = self.dp._run_compose_command_streaming(
+                '/synthetic/compose.json', 'reefy-synthetic-app',
+                ['pull', '--policy', 'missing', 'app'], timeout=5)
+
+        self.assertTrue(ok)
+        logged = '\n'.join(
+            str(call.args[1]) for call in logger.call_args_list)
+        for rendered in (logged, output):
+            self.assertIn('password=[REDACTED]', rendered)
+            self.assertIn('[truncated]', rendered)
+            self.assertNotIn(secret, rendered)
+            self.assertNotIn('boundary-secret-remainder', rendered)
+
+    def test_streaming_preserves_early_failure_classification_signals(self):
+        real_popen = dataplane.subprocess.Popen
+        cases = (
+            ('manifest unknown', 'image_missing'),
+            ('no space left on device', 'no_space'),
+        )
+        for signal_text, expected in cases:
+            script = (
+                'import sys; '
+                f'print({signal_text!r}); '
+                '[print(f"progress {index}") for index in range(300)]; '
+                'sys.exit(1)')
+
+            def popen(_command, **kwargs):
+                return real_popen([sys.executable, '-c', script], **kwargs)
+
+            with self.subTest(signal=signal_text), \
+                    mock.patch.object(
+                        dataplane.subprocess, 'Popen', side_effect=popen), \
+                    mock.patch.object(dataplane, 'log'):
+                ok, output = self.dp._run_compose_command_streaming(
+                    '/synthetic/compose.json', 'reefy-synthetic-app',
+                    ['pull', '--policy', 'missing', 'app'], timeout=5)
+
+            self.assertFalse(ok)
+            self.assertIn(signal_text, output)
+            self.assertEqual(
+                self.dp._classify_compose_failure(output), expected)
+            self.assertLessEqual(
+                len(output.splitlines()),
+                self.dp.COMPOSE_OUTPUT_TAIL_LINES + 1)
+
+    def test_streaming_classifies_signal_after_truncated_cr_progress(self):
+        real_popen = dataplane.subprocess.Popen
+        script = (
+            'import os,sys; '
+            'os.write(1, b"x"*5000 + b"\\rmanifest unknown\\r"); '
+            'sys.exit(1)')
+
+        def popen(_command, **kwargs):
+            return real_popen([sys.executable, '-c', script], **kwargs)
+
+        with mock.patch.object(
+                dataplane.subprocess, 'Popen', side_effect=popen), \
+                mock.patch.object(dataplane, 'log'):
+            ok, output = self.dp._run_compose_command_streaming(
+                '/synthetic/compose.json', 'reefy-synthetic-app',
+                ['pull', '--policy', 'missing', 'app'], timeout=5)
+
+        self.assertFalse(ok)
+        self.assertIn('manifest unknown', output)
+        self.assertEqual(
+            self.dp._classify_compose_failure(output), 'image_missing')
+        self.assertLessEqual(
+            len(output),
+            self.dp.COMPOSE_OUTPUT_TAIL_LINES
+            * (self.dp.COMPOSE_OUTPUT_LINE_CHARS + 100))
+
+    def test_classified_reason_is_kept_in_published_bounded_tail(self):
+        output = '\n'.join([
+            'manifest unknown',
+            *[f'progress {index}' for index in range(300)],
+        ])
+        rendered = self.dp._bounded_output_tail(
+            output, 'image not found or access denied')
+        self.assertEqual(
+            rendered.splitlines()[0],
+            'image not found or access denied')
+        self.assertLessEqual(len(rendered.splitlines()), 5)
+
+    def test_process_group_termination_escalates_and_waits(self):
+        proc = mock.Mock(pid=43210)
+        proc.wait.side_effect = [
+            dataplane.subprocess.TimeoutExpired(['docker'], 5), None]
+        with mock.patch.object(dataplane.os, 'killpg') as killpg:
+            self.dp._terminate_compose_process(proc)
+
+        self.assertEqual(killpg.call_args_list, [
+            mock.call(43210, dataplane.signal.SIGTERM),
+            mock.call(43210, dataplane.signal.SIGKILL),
+        ])
+        self.assertEqual(proc.wait.call_count, 2)
 
 
 class EventPublishingTests(unittest.TestCase):
@@ -800,6 +2265,79 @@ class ApplyPathTests(unittest.TestCase):
         self.assertEqual(active_result['status'], 'failed')
         self.assertEqual(pending_result['status'], 'succeeded')
         self.assertEqual(applied, ['active', 'pending'])
+
+    def test_wait_for_idle_retry_does_not_supersede_newer_pending_apply(self):
+        dp = _make_dp()
+        active_started = threading.Event()
+        release_active = threading.Event()
+        pending_started = threading.Event()
+        release_pending = threading.Event()
+        order = []
+        retry_submission = []
+
+        def apply(payload):
+            sequence = payload['state']['sequence']
+            order.append(sequence)
+            if sequence == 'active':
+                active_started.set()
+                self.assertTrue(release_active.wait(timeout=5))
+            if sequence == 'newer':
+                pending_started.set()
+                self.assertTrue(release_pending.wait(timeout=5))
+            return True
+
+        def reconcile(old_state=None, force_retry=None):
+            order.append(('retry', force_retry))
+            return True
+
+        def submit_retry():
+            submission = dp._submit_apply_job(
+                'reconcile',
+                force_retry={
+                    'project_name': 'reefy-synthetic-app',
+                    'signature': 'synthetic-signature',
+                },
+                wait_for_idle=True)
+            retry_submission.append(submission)
+
+        with mock.patch.object(dp, '_apply_state', side_effect=apply), \
+                mock.patch.object(
+                    dp, '_apply_desired_state', side_effect=reconcile):
+            active = dp._submit_apply_job(
+                'apply', state={'sequence': 'active'})
+            self.assertTrue(active_started.wait(timeout=5))
+            newer = dp._submit_apply_job(
+                'apply', state={'sequence': 'newer'})
+            retry_thread = threading.Thread(target=submit_retry)
+            retry_thread.start()
+            self.assertEqual(retry_submission, [])
+
+            release_active.set()
+            self.assertTrue(pending_started.wait(timeout=5))
+            self.assertEqual(
+                dp._get_apply_result(newer['request_id'])['status'],
+                'running')
+            self.assertEqual(retry_submission, [])
+            release_pending.set()
+            retry_thread.join(timeout=5)
+
+            active_result = dp._wait_apply_result(active['request_id'])
+            newer_result = dp._wait_apply_result(newer['request_id'])
+            retry_result = dp._wait_apply_result(
+                retry_submission[0]['request_id'])
+
+        self.assertFalse(retry_thread.is_alive())
+        self.assertEqual(active_result['status'], 'succeeded')
+        self.assertEqual(newer_result['status'], 'succeeded')
+        self.assertEqual(retry_result['status'], 'succeeded')
+        self.assertEqual(order, [
+            'active',
+            'newer',
+            ('retry', {
+                'project_name': 'reefy-synthetic-app',
+                'signature': 'synthetic-signature',
+            }),
+        ])
 
     def test_unknown_result_returns_found_false_without_waiting(self):
         dp = _make_dp()
