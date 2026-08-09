@@ -7,6 +7,7 @@ Credentials are provided by user on USB flash or injected by console.
 """
 
 import base64
+from collections import OrderedDict
 import contextlib
 import fcntl
 import hashlib
@@ -26,6 +27,7 @@ from io import BytesIO
 
 # Shared, dependency-free helpers (no paho) used across roles.
 from reefy import shared
+from reefy.compatibility import load_manifest
 from reefy.shared import _part_dev, log
 from reefy.storage import Storage
 
@@ -75,6 +77,33 @@ class ControlPlane:
         # All on-disk state work (LUKS/LVM/XFS/volumes/mount/reclaim) lives
         # in reefy.storage.Storage; this process composes it and delegates.
         self._storage = Storage(self._volume_caps)
+        self._compatibility = self._load_compatibility()
+        self._command_results_lock = threading.Lock()
+        self._command_results = OrderedDict()
+        self._commands_running = set()
+
+    @staticmethod
+    def _load_compatibility():
+        """Load the image-owned report once so every publish is identical."""
+        try:
+            return load_manifest()
+        except FileNotFoundError:
+            log('mqtt',
+                'Compatibility manifest unavailable (FileNotFoundError)')
+            return None
+        except (OSError, ValueError, json.JSONDecodeError) as exception:
+            # Omission means "legacy device" to the cloud. Report an
+            # invalid snapshot so a broken new image cannot fall back to
+            # date-gated capabilities.
+            log('mqtt',
+                f'Compatibility manifest invalid '
+                f'({type(exception).__name__})')
+            return {}
+
+    def _with_compatibility(self, payload):
+        if self._compatibility is not None:
+            payload['compatibility'] = self._compatibility
+        return payload
 
     def wait_for_config(self):
         """Block until MQTT configuration becomes available."""
@@ -283,9 +312,9 @@ class ControlPlane:
             if self.mode == 'bootstrap':
                 # Publish online status (clears retained LWT offline message)
                 status_topic = self._get_status_topic()
-                client.publish(status_topic, json.dumps({
+                client.publish(status_topic, json.dumps(self._with_compatibility({
                     "status": "online", "hostname": self.hostname
-                }), qos=1, retain=True)
+                })), qos=1, retain=True)
                 self._handle_bootstrap_connect(client)
             else:
                 # Subscribe FIRST — before any publishes. This ensures the
@@ -307,11 +336,11 @@ class ControlPlane:
                         os_release = f.read()
                 except OSError:
                     os_release = ''
-                client.publish(status_topic, json.dumps({
+                client.publish(status_topic, json.dumps(self._with_compatibility({
                     "status": "online",
                     "hostname": self.hostname,
                     "hw": {"os_release": os_release},
-                }), qos=1, retain=True)
+                })), qos=1, retain=True)
 
                 self._run_in_background(
                     self._handle_device_connect, args=(client,),
@@ -453,6 +482,7 @@ class ControlPlane:
             "csr": csr,
             "hw": self._get_hw_info(),
         }
+        self._with_compatibility(reg_data)
         device_pw = self._read_device_password()
         if device_pw:
             reg_data["device_password"] = device_pw
@@ -821,8 +851,28 @@ class ControlPlane:
             response['message'] = shared.redact_log_message(message)
         if error:
             response['error'] = shared.redact_log_message(error)
+        if status in ('success', 'error'):
+            with self._command_results_lock:
+                self._commands_running.discard(cmd_id)
+                self._command_results[cmd_id] = dict(response)
+                self._command_results.move_to_end(cmd_id)
+                while len(self._command_results) > 128:
+                    self._command_results.popitem(last=False)
         topic = f"{self.topic_prefix}/devices/{self.current_uuid}/commands/response"
         self.client.publish(topic, json.dumps(response), qos=1)
+
+    def _claim_command(self, cmd_id):
+        """Return a completed response, running marker, or claim the ID."""
+        if cmd_id is None:
+            return None
+        with self._command_results_lock:
+            completed = self._command_results.get(cmd_id)
+            if completed is not None:
+                return dict(completed)
+            if cmd_id in self._commands_running:
+                return {'id': cmd_id, 'status': 'running'}
+            self._commands_running.add(cmd_id)
+        return None
 
     def _run_command(self, handler_name, payload, cmd_id):
         """Run a command handler in a thread with response reporting."""
@@ -850,6 +900,14 @@ class ControlPlane:
         if not handler_name:
             log('mqtt', f'Unknown action: {action}')
             self._send_command_response(cmd_id, status='error', error=f'Unknown action: {action}')
+            return
+
+        duplicate = self._claim_command(cmd_id)
+        if duplicate is not None:
+            topic = (
+                f"{self.topic_prefix}/devices/{self.current_uuid}"
+                "/commands/response")
+            self.client.publish(topic, json.dumps(duplicate), qos=1)
             return
 
         # Run in separate thread for parallel execution
@@ -883,7 +941,8 @@ class ControlPlane:
         """Recreate an app instance container; forwards to the data plane
         over Varlink (which runs docker compose up --force-recreate)."""
         res = self._varlink_call(
-            'RestartInstance', instance_uuid=payload.get('instance_uuid', ''))
+            'RestartInstance', instance_uuid=payload.get('instance_uuid', ''),
+            operation_id=cmd_id or '')
         if not res.get('ok'):
             raise RuntimeError(res.get('error', 'restart failed'))
         return f"Instance {payload.get('instance_uuid')} recreated"
@@ -1698,6 +1757,7 @@ class ControlPlane:
         # Send hardware info and device password on every boot so server stays up to date
         if status == 'online':
             data["hw"] = self._get_hw_info()
+            self._with_compatibility(data)
             device_pw = self._read_device_password()
             if device_pw:
                 data["device_password"] = device_pw

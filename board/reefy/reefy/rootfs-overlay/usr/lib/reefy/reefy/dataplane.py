@@ -12,6 +12,7 @@ a publish failure can never abort the work.
 import base64
 import codecs
 from collections import deque
+import contextlib
 import hashlib
 import json
 import os
@@ -204,6 +205,7 @@ class DataPlane:
     COMPOSE_START_TIMEOUT_SECONDS = 180
     COMPOSE_OUTPUT_TAIL_LINES = 200
     COMPOSE_OUTPUT_LINE_CHARS = 4000
+    APP_RECONCILE_SUPERSEDED = 'app project superseded by newer desired state'
     _DEV_INJECTED_KEY_PATH = '/mnt/reefy/reefy/dev/authorized_keys'
     _FILES_ALLOWED_ROOTS = (
         '/mnt/reefy-data/apps/',
@@ -221,6 +223,10 @@ class DataPlane:
         self._compose_mutation_lock = threading.Lock()
         self._project_locks_guard = threading.Lock()
         self._project_locks = {}
+        self._project_targets_lock = threading.Lock()
+        self._project_targets = {}
+        self._app_reconcile_local = threading.local()
+        self._health_operation_local = threading.local()
         self._artifact_retry_lock = threading.Lock()
         self._artifact_retry_timer = None
         self._artifact_retry_attempt = 0
@@ -274,6 +280,8 @@ class DataPlane:
     def _submit_apply_job(
             self, kind, state=None, force_retry=None, wait_for_idle=False):
         """Persist and enqueue one apply, replacing only the pending job."""
+        if kind == 'apply':
+            self._set_project_targets(state)
         request_id = str(uuid_mod.uuid4())
         job = {
             'request_id': request_id,
@@ -421,15 +429,120 @@ class DataPlane:
             extra['error'] = shared.redact_log_message(error)[:500]
         self._publish_instance_event(iuuid, 'restore', status, extra=extra)
 
-    def _publish_health_status(self, iuuid, status, message=None, image=None):
-        extra = {}
+    @staticmethod
+    def _app_desired_status(app):
+        return (app or {}).get('desired_status') or 'running'
+
+    @staticmethod
+    def _app_desired_generation(app):
+        value = (app or {}).get('desired_generation')
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+        return None
+
+    def _lifecycle_health_fields(self, iuuid):
+        current = getattr(self._app_reconcile_local, 'value', None)
+        if current and current[2] == iuuid and current[1] is not None:
+            return {
+                'desired_status': current[3],
+                'observed_generation': current[1],
+            }
+        state = self._read_json(self._active_state_path())
+        if not self._is_v2_state(state):
+            return {}
+        app = next((candidate for candidate in state.get('apps') or []
+                    if candidate.get('instance_uuid') == iuuid), None)
+        generation = self._app_desired_generation(app)
+        if app is None or generation is None:
+            return {}
+        return {
+            'desired_status': self._app_desired_status(app),
+            'observed_generation': generation,
+        }
+
+    def _publish_health_status(
+            self, iuuid, status, message=None, image=None, phase=None):
+        extra = self._lifecycle_health_fields(iuuid)
         if message:
             extra['message'] = shared.redact_log_message(message)[:500]
         if image:
             # Running image, reported on 'running' so the server can show
             # the version actually on the device (vs the desired one).
             extra['image'] = image
+        if phase:
+            extra['phase'] = phase
+        operation = getattr(self._health_operation_local, 'value', None)
+        if operation and operation[0] == iuuid and operation[1]:
+            extra['operation_id'] = operation[1]
         self._publish_instance_event(iuuid, 'health', status, extra=extra)
+
+    @contextlib.contextmanager
+    def _health_operation(self, instance_uuid, operation_id):
+        previous = getattr(self._health_operation_local, 'value', None)
+        self._health_operation_local.value = (instance_uuid, operation_id)
+        try:
+            yield
+        finally:
+            if previous is None:
+                try:
+                    del self._health_operation_local.value
+                except AttributeError:
+                    pass
+            else:
+                self._health_operation_local.value = previous
+
+    @contextlib.contextmanager
+    def _app_reconcile_context(self, app):
+        previous = getattr(self._app_reconcile_local, 'value', None)
+        self._app_reconcile_local.value = (
+            (app or {}).get('project_name') or '',
+            self._app_desired_generation(app),
+            (app or {}).get('instance_uuid') or '',
+            self._app_desired_status(app),
+        )
+        try:
+            yield
+        finally:
+            if previous is None:
+                try:
+                    del self._app_reconcile_local.value
+                except AttributeError:
+                    pass
+            else:
+                self._app_reconcile_local.value = previous
+
+    def _is_current_app_superseded(self):
+        current = getattr(self._app_reconcile_local, 'value', None)
+        if not current or not current[0]:
+            return False
+        with self._project_targets_lock:
+            target = self._project_targets.get(current[0], current[1])
+        return target != current[1]
+
+    def _set_project_targets(self, state):
+        """Publish the newest per-project generation to running workers."""
+        if not self._is_v2_state(state):
+            return
+        targets = {
+            app.get('project_name'): self._app_desired_generation(app)
+            for app in state.get('apps') or []
+            if app.get('project_name')
+        }
+        with self._project_targets_lock:
+            for project_name in list(self._project_targets):
+                if project_name not in targets:
+                    self._project_targets[project_name] = object()
+            self._project_targets.update(targets)
+
+    def _wait_for_app_supersession(self, timeout):
+        deadline = time.monotonic() + max(0, timeout)
+        while True:
+            if self._is_current_app_superseded():
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.25, remaining))
 
     def _send_command_response(self, cmd_id, status=None, message=None, error=None):
         # Data-plane work is invoked over Varlink (cmd_id is always None);
@@ -440,6 +553,23 @@ class DataPlane:
     def _is_v2_state(state):
         return isinstance(state, dict) and state.get('schema_version') == 2
 
+    def _valid_v2_lifecycle(self, state):
+        """Accept legacy running entries while validating new lifecycle data."""
+        for app in state.get('apps') or []:
+            desired_status = app.get('desired_status')
+            if desired_status is not None and desired_status not in (
+                    'running', 'stopped'):
+                log('mqtt', 'ERROR: invalid app desired_status')
+                return False
+            if 'desired_generation' in app:
+                generation = app.get('desired_generation')
+                if (not isinstance(generation, int)
+                        or isinstance(generation, bool)
+                        or generation <= 0):
+                    log('mqtt', 'ERROR: invalid app desired_generation')
+                    return False
+        return True
+
     def _active_state_path(self):
         if os.path.exists(self.DESIRED_STATE_V2_PATH):
             return self.DESIRED_STATE_V2_PATH
@@ -449,6 +579,13 @@ class DataPlane:
         with self._project_locks_guard:
             return self._project_locks.setdefault(
                 project_name, threading.RLock())
+
+    def _project_is_busy(self, project_name):
+        lock = self._project_lock(project_name)
+        acquired = lock.acquire(blocking=False)
+        if acquired:
+            lock.release()
+        return not acquired
 
     def _project_compose_path(self, project_name):
         return os.path.join(
@@ -577,7 +714,7 @@ class DataPlane:
             result.get('status') in ('succeeded', 'succeeded_with_warnings')
             and not self._v2_migration_pending()
             and latest_app is not None
-            and latest_app.get('desired_status') == 'running'
+            and self._app_desired_status(latest_app) == 'running'
             and not current_failure)
         if retry_succeeded:
             return f'Instance {instance_uuid} restarted'
@@ -589,6 +726,11 @@ class DataPlane:
         raise RuntimeError(reason)
 
     def _restart_instance(self, payload, cmd_id=None):
+        instance_uuid = payload.get('instance_uuid')
+        with self._health_operation(instance_uuid, cmd_id):
+            return self._restart_instance_inner(payload, cmd_id=cmd_id)
+
+    def _restart_instance_inner(self, payload, cmd_id=None):
         """Recreate an app instance container with current config.
 
         Uses `up -d --force-recreate` rather than `restart`. Plain
@@ -615,7 +757,11 @@ class DataPlane:
                        None)
             if app is None:
                 raise RuntimeError('App project not found')
+            if self._app_desired_status(app) == 'stopped':
+                raise RuntimeError('App is stopped')
             project_name = app.get('project_name') or ''
+            if self._project_is_busy(project_name):
+                raise RuntimeError('App lifecycle operation is in progress')
             compose_path = self._project_compose_path(project_name)
             compose = json.loads(json.dumps(app.get('compose') or {}))
             for _service, host_path in _drop_absent_devices(compose):
@@ -667,6 +813,8 @@ class DataPlane:
                         f'App project {project_name} recovered')
                     return f'Instance {svc_id} restarted'
 
+                self._publish_health_status(
+                    instance_uuid, 'starting', phase='start')
                 result = subprocess.run(
                     ['docker', 'compose', '-f', compose_path, '-p',
                      project_name, 'up', '-d', '--force-recreate',
@@ -678,6 +826,11 @@ class DataPlane:
                         result.stderr.strip()
                         or 'docker compose up --force-recreate failed '
                            f'(exit {result.returncode})')
+                image = (((app.get('compose') or {}).get('services') or {})
+                         .get(app.get('primary_service') or 'app') or {}).get(
+                             'image')
+                self._publish_health_status(
+                    instance_uuid, 'running', image=image)
             log('mqtt', f'App project {project_name} recreated')
             return f'Instance {svc_id} restarted'
 
@@ -708,6 +861,8 @@ class DataPlane:
             return False
 
         incoming_v2 = self._is_v2_state(state)
+        if incoming_v2 and not self._valid_v2_lifecycle(state):
+            return False
         if not incoming_v2 and os.path.exists(self.DESIRED_STATE_V2_PATH):
             log('mqtt', 'ERROR: refusing desired-state schema downgrade after '
                 'Apps-v2 migration')
@@ -944,7 +1099,7 @@ class DataPlane:
         for app in state.get('apps') or []:
             instance_uuid = app.get('instance_uuid') or ''
             if (instance_uuid not in instance_uuids
-                    or app.get('desired_status') != 'running'
+                    or self._app_desired_status(app) != 'running'
                     or instance_uuid not in legacy_services):
                 continue
             image = (legacy_services.get(instance_uuid) or {}).get('image')
@@ -957,7 +1112,7 @@ class DataPlane:
             instance_uuid = app.get('instance_uuid') or ''
             prepared = prepared_apps.get(instance_uuid)
             if (prepared is None
-                    or app.get('desired_status') != 'running'):
+                    or self._app_desired_status(app) != 'running'):
                 continue
             terminal = prepared.get('_running_health') or {}
             image = terminal.get('image')
@@ -1049,6 +1204,9 @@ class DataPlane:
                             prepared_apps[
                                 app.get('instance_uuid') or ''] = prepared
                             continue
+                        if code == 'app_project_superseded':
+                            migration_failed = True
+                            continue
                         migration_failed = True
                         failed_app_ids.add(app.get('instance_uuid') or '')
                         warnings.append({
@@ -1124,6 +1282,10 @@ class DataPlane:
                     else:
                         code, optional_failures = outcome, []
                     if not ok:
+                        if code == 'app_project_superseded':
+                            if migration:
+                                migration_failed = True
+                            continue
                         migration_failed = True
                         failed_app_ids.add(
                             app.get('instance_uuid') or '')
@@ -1302,6 +1464,11 @@ class DataPlane:
                 timer.cancel()
 
     def _prepare_v2_app(self, app, restore_failed, force_retry=None):
+        with self._app_reconcile_context(app):
+            return self._prepare_v2_app_inner(
+                app, restore_failed, force_retry=force_retry)
+
+    def _prepare_v2_app_inner(self, app, restore_failed, force_retry=None):
         instance_uuid = app.get('instance_uuid') or ''
         project_name = app.get('project_name') or ''
         if not instance_uuid or not project_name:
@@ -1316,7 +1483,7 @@ class DataPlane:
             log('reconciler',
                 f'{project_name}: skipping absent device {host_path}')
 
-        if app.get('desired_status') == 'stopped':
+        if self._app_desired_status(app) == 'stopped':
             return True, '', {
                 'ok': True,
                 'stopped': True,
@@ -1326,9 +1493,11 @@ class DataPlane:
             }
 
         if not self._prepare_app_artifacts(app):
+            if self._is_current_app_superseded():
+                return False, 'app_project_superseded', None
             self._publish_health_status(
                 instance_uuid, 'failed',
-                message='artifact prepare failed')
+                message='artifact prepare failed', phase='artifact')
             return False, 'artifact_prepare_failed', None
 
         for _service, resource in _drop_unavailable_cdi_devices(compose):
@@ -1348,6 +1517,12 @@ class DataPlane:
 
     def _reconcile_v2_app(
             self, app, migration, restore_failed, prepared=None):
+        with self._app_reconcile_context(app):
+            return self._reconcile_v2_app_inner(
+                app, migration, restore_failed, prepared=prepared)
+
+    def _reconcile_v2_app_inner(
+            self, app, migration, restore_failed, prepared=None):
         instance_uuid = app.get('instance_uuid') or ''
         project_name = app.get('project_name') or ''
         if prepared is None:
@@ -1359,17 +1534,30 @@ class DataPlane:
         with self._project_lock(project_name):
             if prepared.get('stopped'):
                 if migration:
-                    ok, _ = self._run_compose_command(
+                    ok, output = self._run_compose_command(
                         self.COMPOSE_PATH, 'state',
                         ['stop', instance_uuid], timeout=180)
                     if not ok:
+                        self._publish_health_status(
+                            instance_uuid, 'failed',
+                            message=self._bounded_output_tail(
+                                output, 'legacy app stop failed'),
+                            phase='stop')
                         return False, 'app_stop_failed'
                 self._write_project_compose(
                     project_name, prepared['compose'])
-                ok, _ = self._run_compose_command(
+                ok, output = self._run_compose_command(
                     self._project_compose_path(project_name), project_name,
                     ['stop'], timeout=180)
-                return ok, '' if ok else 'app_stop_failed'
+                if not ok:
+                    self._publish_health_status(
+                        instance_uuid, 'failed',
+                        message=self._bounded_output_tail(
+                            output, 'app stop failed'), phase='stop')
+                    return False, 'app_stop_failed'
+                self._clear_project_failed_sigs(project_name)
+                self._publish_health_status(instance_uuid, 'stopped')
+                return True, ''
 
             # Keep a runnable legacy service alive through artifact and image
             # preparation. Stop it only when startup can use cached images.
@@ -1391,6 +1579,8 @@ class DataPlane:
 
             ok, optional_failures = self._start_prepared_app_project(
                 prepared, publish_running=not migration)
+            if prepared.get('_superseded'):
+                return False, 'app_project_superseded'
             if not ok and migration:
                 self._run_compose_command(
                     self.COMPOSE_PATH, 'state', ['start', instance_uuid],
@@ -1403,7 +1593,7 @@ class DataPlane:
         if not artifacts:
             return True
         self._publish_health_status(
-            app.get('instance_uuid') or '', 'waiting_artifacts')
+            app.get('instance_uuid') or '', 'starting', phase='artifact')
         with ThreadPoolExecutor(max_workers=min(2, len(artifacts))) as pool:
             futures = [
                 pool.submit(self._prepare_one_app_artifact, app, artifact)
@@ -1829,20 +2019,27 @@ class DataPlane:
                     'failed_record': failed_record,
                 }
 
-            self._publish_health_status(instance_uuid, 'starting')
+            self._publish_health_status(
+                instance_uuid, 'starting', phase='pull')
             pull_deadline = (
                 time.monotonic() + self.COMPOSE_PULL_BUDGET_SECONDS)
             ok, output, reason = self._pull_project_images(
                 compose_path, project_name, plan['required_services'],
                 pull_deadline, max_retries=self.COMPOSE_PULL_MAX_ATTEMPTS)
             if not ok:
+                if reason == self.APP_RECONCILE_SUPERSEDED:
+                    return {
+                        'ok': False,
+                        'code': 'app_project_superseded',
+                    }
                 self._write_failed_sig_path(
                     required_context['path'], required_context['signature'],
                     reason, phase='pull',
                     services=required_context['services'])
                 self._publish_health_status(
                     instance_uuid, 'failed',
-                    message=self._bounded_output_tail(output, reason))
+                    message=self._bounded_output_tail(output, reason),
+                    phase='pull')
                 return {'ok': False, 'code': 'app_project_failed'}
 
             optional_failures = {}
@@ -1886,6 +2083,11 @@ class DataPlane:
                     compose_path, project_name, optional['services'],
                     pull_deadline, max_retries=1)
                 if not ok:
+                    if reason == self.APP_RECONCILE_SUPERSEDED:
+                        return {
+                            'ok': False,
+                            'code': 'app_project_superseded',
+                        }
                     optional_failures[service_name] = output or reason
                     self._write_failed_sig_path(
                         context['path'], context['signature'], reason,
@@ -1917,6 +2119,11 @@ class DataPlane:
         optional_contexts = prepared['optional_contexts']
         optional_ready = prepared['optional_ready']
         with self._project_lock(project_name):
+            if self._is_current_app_superseded():
+                prepared['_superseded'] = True
+                return False, []
+            self._publish_health_status(
+                instance_uuid, 'starting', phase='init')
             skipped_optional = {
                 optional['name'] for optional in plan['optional']
                 if optional['kind'] == 'init'
@@ -1951,7 +2158,8 @@ class DataPlane:
                     services=required_context['services'])
                 self._publish_health_status(
                     instance_uuid, 'failed',
-                    message=self._bounded_output_tail(output, reason))
+                    message=self._bounded_output_tail(output, reason),
+                    phase='init')
                 return False, sorted(optional_failures)
 
             unavailable_init = skipped_optional | set(init_failures)
@@ -1974,18 +2182,27 @@ class DataPlane:
             runtime = plan['runtime']
             runtime_path = self._write_project_compose(
                 project_name, runtime)
+            if self._is_current_app_superseded():
+                prepared['_superseded'] = True
+                return False, sorted(optional_failures)
+            self._publish_health_status(
+                instance_uuid, 'starting', phase='start')
             ok, output, reason = self._start_project_services(
                 runtime_path, project_name, plan['required_runtime'],
                 remove_orphans=True,
                 max_retries=self.COMPOSE_PULL_MAX_ATTEMPTS)
             if not ok:
+                if reason == self.APP_RECONCILE_SUPERSEDED:
+                    prepared['_superseded'] = True
+                    return False, sorted(optional_failures)
                 self._write_failed_sig_path(
                     required_context['path'],
                     required_context['signature'], reason, phase='start',
                     services=required_context['services'])
                 self._publish_health_status(
                     instance_uuid, 'failed',
-                    message=self._bounded_output_tail(output, reason))
+                    message=self._bounded_output_tail(output, reason),
+                    phase='start')
                 return False, sorted(optional_failures)
             self._clear_failed_sig_path(required_context['path'])
 
@@ -2170,6 +2387,8 @@ class DataPlane:
         last_output = ''
         reason = 'docker compose pull failed'
         for attempt in range(1, max_retries + 1):
+            if self._is_current_app_superseded():
+                return False, '', self.APP_RECONCILE_SUPERSEDED
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 last_output = self._bounded_output_tail(
@@ -2186,6 +2405,8 @@ class DataPlane:
                 timeout=remaining)
             if ok:
                 return True, output, ''
+            if self.APP_RECONCILE_SUPERSEDED in output:
+                return False, output, self.APP_RECONCILE_SUPERSEDED
             last_output = output
             classification = self._classify_compose_failure(output)
             reason = self._failure_reason(
@@ -2200,7 +2421,8 @@ class DataPlane:
             if remaining <= 0:
                 reason = 'docker compose pull timed out'
                 break
-            time.sleep(min(delay, remaining))
+            if self._wait_for_app_supersession(min(delay, remaining)):
+                return False, last_output, self.APP_RECONCILE_SUPERSEDED
         return False, last_output, reason
 
     def _start_project_services(
@@ -2211,6 +2433,8 @@ class DataPlane:
         reason = 'docker compose up failed'
         deadline = time.monotonic() + self.COMPOSE_START_TIMEOUT_SECONDS
         for attempt in range(1, max_retries + 1):
+            if self._is_current_app_superseded():
+                return False, last_output, self.APP_RECONCILE_SUPERSEDED
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return False, last_output, 'docker compose up timed out'
@@ -2235,7 +2459,8 @@ class DataPlane:
                 if remaining <= 0:
                     reason = 'docker compose up timed out'
                     break
-                time.sleep(min(delay, remaining))
+                if self._wait_for_app_supersession(min(delay, remaining)):
+                    return False, last_output, self.APP_RECONCILE_SUPERSEDED
         return False, last_output, reason
 
     def _write_project_compose(self, project_name, compose):
@@ -2369,8 +2594,12 @@ class DataPlane:
             selector.register(output_fd, selectors.EVENT_READ)
             deadline = time.monotonic() + timeout
             timed_out = False
+            superseded = False
             reached_eof = False
             while not reached_eof:
+                if self._is_current_app_superseded():
+                    superseded = True
+                    break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     timed_out = True
@@ -2387,7 +2616,7 @@ class DataPlane:
                     break
                 consume(chunk)
 
-            if timed_out:
+            if timed_out or superseded:
                 self._terminate_compose_process(proc)
                 while True:
                     try:
@@ -2398,6 +2627,9 @@ class DataPlane:
                         break
                     consume(chunk)
                 consume(b'', final=True)
+                if superseded:
+                    tail.append(self.APP_RECONCILE_SUPERSEDED)
+                    return False, rendered_output()
                 tail.append(
                     f'docker compose {args[0]} timed out after '
                     f'{max(1, int(timeout))} seconds')
@@ -2819,7 +3051,7 @@ class DataPlane:
         app = next((candidate for candidate in state.get('apps') or []
                     if (candidate.get('project_name') == project
                         and candidate.get('instance_uuid') == instance_uuid
-                        and candidate.get('desired_status') == 'running')),
+                        and self._app_desired_status(candidate) == 'running')),
                    None)
         if app is None:
             return False
@@ -2868,8 +3100,10 @@ class DataPlane:
             def BackupNow(self, instance_uuid, _more=False):
                 return recon._dp_backup_now(instance_uuid)
 
-            def RestartInstance(self, instance_uuid, _more=False):
-                return recon._dp_restart_instance(instance_uuid)
+            def RestartInstance(
+                    self, instance_uuid, operation_id, _more=False):
+                return recon._dp_restart_instance(
+                    instance_uuid, operation_id=operation_id)
 
         # Bind the service as a class attr after definition: a class body
         # can't see run_data_plane's local `service` (class bodies don't
@@ -2953,9 +3187,11 @@ class DataPlane:
             log('mqtt', f'[data-plane] BackupNow failed: {error}')
             return {'ok': False, 'message': '', 'error': error}
 
-    def _dp_restart_instance(self, instance_uuid):
+    def _dp_restart_instance(self, instance_uuid, operation_id=''):
         try:
-            self._restart_instance({'instance_uuid': instance_uuid}, cmd_id=None)
+            self._restart_instance(
+                {'instance_uuid': instance_uuid},
+                cmd_id=operation_id or None)
             return {'ok': True, 'error': ''}
         except Exception as e:
             error = shared.redact_log_message(e)[:500]

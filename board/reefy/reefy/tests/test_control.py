@@ -5,12 +5,14 @@ with a minimal paho stub so they also run in the paho-less test image."""
 
 import importlib.util
 import json
+from pathlib import Path
 import sys
 import types
 import unittest
 from unittest import mock
 
 import _bootstrap  # noqa: F401  (puts the reefy package on sys.path)
+from reefy import compatibility
 
 
 def _control_src():
@@ -43,6 +45,108 @@ def _load_control_module():
     with mock.patch.dict(sys.modules, modules):
         module_spec.loader.exec_module(module)
     return module
+
+
+class CompatibilityManifestTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.control = _load_control_module()
+
+    def test_image_manifest_is_valid_and_commands_are_implemented(self):
+        manifest_path = (
+            Path(__file__).resolve().parents[1]
+            / 'rootfs-overlay/usr/share/reefy/compatibility.json')
+        manifest = compatibility.load_manifest(str(manifest_path))
+
+        self.assertEqual(manifest['manifest_version'], 1)
+        self.assertEqual(
+            manifest['protocols']['desired_state']['features']
+            ['app_run_state'], 1)
+        self.assertEqual(
+            manifest['protocols']['events']['instance_health'], 2)
+        self.assertEqual(
+            manifest['protocols']['commands']['restart_instance'], 2)
+        self.assertTrue(
+            set(manifest['protocols']['commands'])
+            <= set(self.control.ControlPlane.COMMAND_HANDLERS))
+
+    def test_invalid_image_manifest_is_reported_not_downgraded_to_absent(self):
+        with mock.patch.object(
+                self.control, 'load_manifest',
+                side_effect=ValueError('synthetic invalid manifest')):
+            self.assertEqual(
+                self.control.ControlPlane._load_compatibility(), {})
+
+        with mock.patch.object(
+                self.control, 'load_manifest',
+                side_effect=FileNotFoundError()):
+            self.assertIsNone(
+                self.control.ControlPlane._load_compatibility())
+
+    def test_online_status_contains_the_immutable_snapshot(self):
+        plane = self.control.ControlPlane()
+        plane.mode = 'device'
+        plane.topic_prefix = 'reefy/synthetic-public'
+        plane.device_uuid = 'synthetic-device'
+        plane.client = mock.Mock()
+        plane._compatibility = {
+            'manifest_version': 1,
+            'protocols': {},
+        }
+
+        with mock.patch.object(plane, '_get_hw_info', return_value={}), \
+                mock.patch.object(
+                    plane, '_read_device_password', return_value=None):
+            plane._publish_status('online', 'Synthetic connection')
+
+        payload = json.loads(plane.client.publish.call_args.args[1])
+        self.assertEqual(payload['compatibility'], plane._compatibility)
+
+
+class CommandIdempotencyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.control = _load_control_module()
+
+    def _plane(self):
+        plane = self.control.ControlPlane()
+        plane.mode = 'device'
+        plane.topic_prefix = 'reefy/synthetic-public'
+        plane.current_uuid = 'synthetic-device'
+        plane.client = mock.Mock()
+        return plane
+
+    def test_duplicate_running_command_is_not_dispatched_twice(self):
+        plane = self._plane()
+        thread = mock.Mock()
+        with mock.patch.object(
+                self.control.threading, 'Thread', return_value=thread) as ctor:
+            plane._handle_command({'action': 'reboot', 'id': 'cmd-synthetic'})
+            plane._handle_command({'action': 'reboot', 'id': 'cmd-synthetic'})
+
+        ctor.assert_called_once()
+        thread.start.assert_called_once()
+        replay = json.loads(plane.client.publish.call_args.args[1])
+        self.assertEqual(replay, {
+            'id': 'cmd-synthetic', 'status': 'running'})
+
+    def test_completed_command_response_is_replayed_exactly(self):
+        plane = self._plane()
+        self.assertIsNone(plane._claim_command('cmd-synthetic'))
+        plane._send_command_response(
+            'cmd-synthetic', status='success', message='Synthetic success')
+        plane.client.reset_mock()
+
+        with mock.patch.object(self.control.threading, 'Thread') as ctor:
+            plane._handle_command({'action': 'reboot', 'id': 'cmd-synthetic'})
+
+        ctor.assert_not_called()
+        replay = json.loads(plane.client.publish.call_args.args[1])
+        self.assertEqual(replay, {
+            'id': 'cmd-synthetic',
+            'status': 'success',
+            'message': 'Synthetic success',
+        })
 
 
 class BootApplyRegressionTests(unittest.TestCase):

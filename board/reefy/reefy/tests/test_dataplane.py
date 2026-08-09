@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -1647,7 +1648,10 @@ class AppsV2PullRecoveryTests(unittest.TestCase):
             self.dp._restart_instance({'instance_uuid': 'synthetic-app'})
 
         recovery.assert_not_called()
-        self.assertEqual(run.call_args.args[0], [
+        compose_runs = [
+            call.args[0] for call in run.call_args_list
+            if call.args and call.args[0] and call.args[0][0] == 'docker']
+        self.assertEqual(compose_runs[-1], [
             'docker', 'compose', '-f', compose_path, '-p',
             'reefy-synthetic-app', 'up', '-d', '--force-recreate',
             '--no-deps', 'app'])
@@ -1782,7 +1786,7 @@ class AppsV2PullRecoveryTests(unittest.TestCase):
 
         self.assertEqual(result, (True, []))
         statuses = self._health_statuses(health)
-        self.assertEqual(statuses.count('starting'), 3)
+        self.assertEqual(statuses.count('starting'), 5)
         self.assertEqual(statuses.count('running'), 1)
         self.assertEqual(statuses.count('failed'), 0)
 
@@ -2820,6 +2824,142 @@ class DataSideBehaviorTests(unittest.TestCase):
         # No mqtt.conf on a dev box -> safe defaults, no crash on construct.
         self.assertEqual(self.dp.port, 443)
         self.assertEqual(self.dp.topic_prefix, 'reefy')
+
+
+class AppLifecycleContractTests(unittest.TestCase):
+    def setUp(self):
+        self.dp = _make_dp()
+        self.tempdir = tempfile.mkdtemp()
+        self.dp.DESIRED_STATE_PATH = os.path.join(
+            self.tempdir, 'desired-state.json')
+        self.dp.DESIRED_STATE_V2_PATH = os.path.join(
+            self.tempdir, 'desired-state-v2.json')
+        self.dp.PROJECTS_DIR = os.path.join(self.tempdir, 'projects')
+
+    @staticmethod
+    def _app(status='running', generation=1):
+        return {
+            'instance_uuid': 'synthetic-app',
+            'project_name': 'reefy-synthetic-app',
+            'desired_status': status,
+            'desired_generation': generation,
+            'primary_service': 'app',
+            'compose': {
+                'services': {'app': {'image': 'example.invalid/app:1'}},
+            },
+        }
+
+    def _write_state(self, app):
+        Path(self.dp.DESIRED_STATE_V2_PATH).write_text(json.dumps({
+            'schema_version': 2,
+            'apps': [app],
+        }))
+
+    def test_reconcile_health_keeps_its_captured_generation(self):
+        old_app = self._app(generation=1)
+        self._write_state(self._app(status='stopped', generation=2))
+
+        with self.dp._app_reconcile_context(old_app):
+            fields = self.dp._lifecycle_health_fields('synthetic-app')
+
+        self.assertEqual(fields, {
+            'desired_status': 'running',
+            'observed_generation': 1,
+        })
+
+    def test_stopped_target_stops_project_and_publishes_terminal_status(self):
+        app = self._app(status='stopped', generation=4)
+        self._write_state(app)
+        prepared = {
+            'ok': True,
+            'stopped': True,
+            'project_name': app['project_name'],
+            'compose': app['compose'],
+            'instance_uuid': app['instance_uuid'],
+        }
+
+        with mock.patch.object(self.dp, '_write_project_compose'), \
+                mock.patch.object(
+                    self.dp, '_run_compose_command',
+                    return_value=(True, '')) as compose, \
+                mock.patch.object(
+                    self.dp, '_clear_project_failed_sigs'), \
+                mock.patch.object(
+                    self.dp, '_publish_health_status') as health:
+            result = self.dp._reconcile_v2_app(
+                app, migration=False, restore_failed=False,
+                prepared=prepared)
+
+        self.assertEqual(result, (True, ''))
+        self.assertEqual(compose.call_args.args[2], ['stop'])
+        health.assert_called_once_with('synthetic-app', 'stopped')
+
+    def test_restart_rejects_stopped_or_busy_app(self):
+        stopped = self._app(status='stopped', generation=2)
+        self._write_state(stopped)
+        with self.assertRaisesRegex(RuntimeError, 'App is stopped'):
+            self.dp._restart_instance({
+                'instance_uuid': 'synthetic-app'}, cmd_id='cmd-stopped')
+
+        running = self._app(status='running', generation=3)
+        self._write_state(running)
+        with mock.patch.object(
+                self.dp, '_project_is_busy', return_value=True):
+            with self.assertRaisesRegex(
+                    RuntimeError, 'operation is in progress'):
+                self.dp._restart_instance({
+                    'instance_uuid': 'synthetic-app'}, cmd_id='cmd-busy')
+
+    def test_new_generation_interrupts_a_long_streaming_pull(self):
+        app = self._app(status='running', generation=1)
+        self.dp._set_project_targets({
+            'schema_version': 2, 'apps': [app]})
+        real_popen = dataplane.subprocess.Popen
+
+        def spawn_sleeper(*_args, **kwargs):
+            return real_popen(
+                [sys.executable, '-c', 'import time; time.sleep(30)'],
+                **kwargs)
+
+        timer = threading.Timer(
+            0.1,
+            lambda: self.dp._set_project_targets({
+                'schema_version': 2,
+                'apps': [self._app(status='stopped', generation=2)],
+            }))
+        timer.start()
+        started = time.monotonic()
+        try:
+            with self.dp._app_reconcile_context(app), \
+                    mock.patch.object(
+                        dataplane.subprocess, 'Popen',
+                        side_effect=spawn_sleeper):
+                ok, output = self.dp._run_compose_command_streaming(
+                    '/synthetic/compose.json', app['project_name'],
+                    ['pull', '--policy', 'missing'], timeout=5)
+        finally:
+            timer.join(timeout=1)
+
+        self.assertFalse(ok)
+        self.assertIn(self.dp.APP_RECONCILE_SUPERSEDED, output)
+        self.assertLess(time.monotonic() - started, 2)
+
+    def test_operation_id_and_phase_are_in_health_event(self):
+        app = self._app(status='running', generation=8)
+        self._write_state(app)
+        with self.dp._health_operation('synthetic-app', 'cmd-synthetic'), \
+                mock.patch.object(
+                    self.dp, '_publish_instance_event') as publish:
+            self.dp._publish_health_status(
+                'synthetic-app', 'starting', phase='pull')
+
+        extra = publish.call_args.kwargs['extra']
+        self.assertEqual(extra, {
+            'desired_status': 'running',
+            'observed_generation': 8,
+            'phase': 'pull',
+            'operation_id': 'cmd-synthetic',
+        })
 
 
 class ApplyStorageTests(unittest.TestCase):

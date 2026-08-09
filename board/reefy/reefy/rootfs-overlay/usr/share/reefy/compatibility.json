@@ -1,0 +1,26 @@
+{
+  "manifest_version": 1,
+  "protocols": {
+    "desired_state": {
+      "versions": [
+        2
+      ],
+      "features": {
+        "app_run_state": 1
+      }
+    },
+    "commands": {
+      "reboot": 1,
+      "update_firmware": 1,
+      "apply_state": 1,
+      "backup_now": 1,
+      "restart_instance": 2,
+      "wifi_scan": 1,
+      "wifi_status": 1
+    },
+    "events": {
+      "instance_health": 2,
+      "restore_status": 1
+    }
+  }
+}

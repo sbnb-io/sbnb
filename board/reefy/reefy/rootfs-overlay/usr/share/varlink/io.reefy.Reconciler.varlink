@@ -53,5 +53,6 @@ method Reconcile() -> (ok: bool, applied: bool, error: string)
 # Snapshot + borg-archive one instance's backup volumes.
 method BackupNow(instance_uuid: string) -> (ok: bool, message: string, error: string)
 
-# docker compose up --force-recreate one instance.
-method RestartInstance(instance_uuid: string) -> (ok: bool, error: string)
+# docker compose up --force-recreate one instance. operation_id is echoed by
+# lifecycle health so the cloud can reject late QoS 1 command observations.
+method RestartInstance(instance_uuid: string, operation_id: string) -> (ok: bool, error: string)
