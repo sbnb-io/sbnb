@@ -1,135 +1,345 @@
 <p align="center">
   <img src="images/reefy-logo.png" alt="Reefy" width="120">
-  <h1 align="center">Turn your PC into a Reef</h1>
-  <p align="center">
-    <b>Cloud-like experience on your own hardware. No monthly bills.</b>
-  </p>
+</p>
+
+<h1 align="center">Reefy OS</h1>
+
+<p align="center">
+  <strong>An operating system for the new generation of AI computers.</strong><br>
+  Turn hardware you own into AI infrastructure that is easy to deploy, manage, and recover.
 </p>
 
 <p align="center">
-  <img src="images/reefy-dashboard.png" alt="Reefy Dashboard" width="800">
+  <img src="images/reefy-home-lab.jpg" alt="A Reefy home lab with a stack of mini-PCs and two custom NVIDIA GPU machines" width="900">
 </p>
 
-<p align="center"><i>This repository contains the full source code and build for Reefy OS.</i></p>
+## One OS for AI computers
 
----
+Reefy turns PCs, workstations, edge systems, and datacenter servers into AI
+computers that are easy to operate. AI workloads run directly on hardware you
+own or control, with GPU and NPU acceleration where supported.
 
-## Reimagined OS, built bottom-up for the AI era
+### One platform across diverse hardware
 
-Reefy OS isn't another shell on top of Ubuntu or Debian with a web UI bolted on. We started from Buildroot and hand-picked every package from the kernel up: 15-second cold boot, Nvidia GPU as a first-class citizen, immutable A/B root with auto-rollback, encryption keyed to a USB dongle, and no package manager on the device so the system never drifts. The app catalog is AI-focused from day one - AI agents (OpenClaw, Hermes), local LLM inference (Ollama, vLLM, SGLang), vision pipelines - not retrofitted onto a general-purpose distro. Legacy distros weren't designed to boot fast, run GPU workloads natively, survive bad updates in remote closets, and keep your data on your side of the wire. Reefy OS was.
+Like Android did for phones, Reefy provides a common platform across different
+hardware. Run the same system on an Intel mini-PC, an AMD workstation, or an
+NVIDIA GPU server.
 
-**Security by design.** Reefy OS is built around a minimal host, immutable A/B firmware, a Linux LTS kernel, encrypted storage, containerized applications, and publicly traceable builds. [Read the Reefy OS Security Model →](docs/security-model.md)
+### Accelerator support without driver wrangling
 
-## What you can do with Reefy
+Reefy delivers build-matched accelerator support bundles for NVIDIA, AMD, and
+Intel hardware, including Intel GPUs and NPUs. Drivers and firmware integrate
+with the OS while AI runtimes stay with the applications that use them.
 
-### Control your PC from anywhere
+### An app platform for AI-assisted development
 
-Secure tunnels to every device. No port forwarding, no VPN, no static IP needed. Built-in web terminal with on-screen control buttons gives you a real terminal experience even from your phone.
+Apps declare their services, storage, networking, and accelerator needs. Reefy
+handles the machine-level integration, making apps easier to build, inspect,
+and modify with traditional development tools or AI coding tools.
 
-<p align="center"><img src="images/feature-mobile-terminal.gif" alt="Reefy web terminal on iPhone with on-screen modifier-key buttons" width="480"></p>
+## What Reefy provides
 
-### Run private AI agents
+| Benefit | How Reefy delivers it |
+|---|---|
+| Run AI on hardware you own | Bare-metal containers with build-matched GPU and NPU support for NVIDIA, AMD, and Intel |
+| Deploy applications consistently | Versioned container packages become declarative device state |
+| Manage every machine in one place | Real-time fleet status, metrics, application control, and remote access |
+| Recover from failed OS updates | Health-gated A/B firmware with automatic rollback and hardware-watchdog recovery |
+| Keep running without the cloud | Persisted desired state, cached applications, and local network access |
+| Protect and move application data | LUKS2 encryption, LVM thin snapshots, XFS, and encrypted deduplicated backups |
 
-Run multiple OpenClaw and Hermes agents. Spin them up for different tasks, fully isolated.
+### Every machine in one dashboard
 
-<p align="center"><img src="images/feature-agents.gif" alt="Adding multiple OpenClaw and Hermes agents in the Reefy dashboard" width="480"></p>
-
-### Bring your own OpenAI or xAI subscription
-
-Don't pay per token - point OpenClaw and Hermes at your flat-rate OpenAI Codex or xAI Grok subscription instead. Reefy hides the OAuth dance: a one-time device-code flow attaches your account, and the agents get a local `OPENAI_BASE_URL` to talk to. The proxy refreshes access tokens, persists rotated refresh tokens, and handles 401/403 retry transparently - the agents see nothing but the standard OpenAI HTTP API.
-
-<p align="center"><img src="images/feature-byos.gif" alt="Hermes agent on Reefy calling an OpenAI/xAI subscription through the local LLM proxy" width="480"></p>
-
-The proxy is its own open-source project, MIT-licensed: [**reefyai/reefy-llm-proxy**](https://github.com/reefyai/reefy-llm-proxy).
-
-> Use at your own risk and have a read of your provider's terms - allowed use varies by plan.
-
-### Move to a new PC like it's a new iPhone
-
-Your apps and data are encrypted and backed up to the cloud. Use Adopt & Clone to restore everything and get back to work in minutes.
-
-<p align="center"><img src="images/feature-adopt-clone.gif" alt="Adopt & Clone restoring apps and data on a fresh Reefy device" width="480"></p>
-
-### NVIDIA GPU acceleration, out of the box
-
-Reefy ships with NVIDIA drivers built-in - just start Ollama or any other GPU-aware tool and it works.
-
-<p align="center"><img src="images/feature-ollama-gpu.gif" alt="Ollama running on Reefy with NVIDIA GPU acceleration" width="480"></p>
-
-### Can't brick it
-
-A/B firmware with a hardware watchdog: a bad update auto-rolls back to the previous working version. Critical for devices in closets, attics, and other hard-to-reach places.
-
-<p align="center"><img src="images/feature-ab-updates.gif" alt="Reefy A/B firmware update auto-rolling back after a failed boot" width="480"></p>
-
-## Why Reefy?
-
-**Why rent a cloud VPS for $10/month when the old PC under your desk can do more - for free?** The hardware you already own is more powerful than most people realize. You just need the right software to unlock it.
-
-**Why send your private data to someone else's computer?** Your conversations with AI, your camera feeds, your documents - they don't need to live on a server you don't control.
-
-We're not replacing the cloud - Reefy uses clouds a lot under the hood. We're moving your personal work closer to you.
-
-## Key Features
-
-**Zero-touch setup** - Flash a USB, boot any x86 machine, see it on your [dashboard](https://reefy.ai) in 60 seconds.
-
-**15-second boot** - We optimized the Linux kernel and early boot services to eliminate ugly waits. From power button to running apps - blazing fast.
-
-**Can't brick it** - A/B firmware with hardware watchdog. Bad update? Device automatically rolls back to the previous working version. Critical for devices in closets, attics, and remote locations.
-
-**Works offline** - LAN access to all your apps when internet goes down. Devices issue their own SSL certificates that you can import into your browser for a near-internet experience without real internet. Can run fully air-gapped - think internet on the Moon or Mars when people start building habitats there, or security-sensitive environments with intentionally disconnected networks.
-
-**Nvidia GPU support** - Latest Nvidia drivers included out of the box. Any Reefy app can access the GPU - run LLMs, AI inference, video processing, or CUDA workloads without driver hassles.
-
-**Bare metal performance** - Docker containers run directly on x86 hardware. No hypervisor overhead. Every watt and every megabyte goes to your workload - especially important on small, low-power PCs.
-
-**Encrypted & portable** - Data encrypted on disk with keys on the USB dongle. Pull the USB and the device is a paperweight - safe to give away or sell. Plug the USB into a new PC, restore from backup, and you're back in minutes. Have a spare device? You can achieve 99.9% availability (the cloud gold standard - under 9 hours downtime per year) by switching your workloads to the spare in minutes.
-
-**Automated backups** - Your apps and data are backed up automatically. Restore to any device with one click. Replace a broken machine without losing anything. Pin a backup with a tag and use it as a baseline to multiply your agents - configure your OpenClaw or Hermes Agent once, then clone it to new devices without repeating the initial setup.
-
-**One-click app install** - Deploy apps from the catalog or develop your own Reefy apps based on Docker containers. Each app gets its own isolated environment, accessible from anywhere with a secure link.
-
-## Get Started
-
-### 1. Bring a PC
-Old laptop, mini-PC, used NUC, or a high-end server with GPUs.
-
-<p align="center"><img src="images/start-hero.jpg" alt="Mini-PC on a desk - any x86_64 box works" width="600"></p>
-
-### 2. Sign in and download your Reefy image
-Log in at [reefy.ai](https://reefy.ai) with your Google or GitHub account - one click, no signup forms. Then grab your personalized device image from Settings.
-
-<p align="center"><img src="images/step2-download.jpg" alt="Reefy download dialog showing reefy.raw image" width="600"></p>
-
-### 3. Flash to a USB stick
-Use [Balena Etcher](https://etcher.balena.io/) - cross-platform, drag the `reefy.raw` file in, pick your USB, click flash.
-
-<p align="center"><img src="images/step3-balena.jpg" alt="Balena Etcher mid-flash, writing reefy.raw to a USB drive" width="600"></p>
-
-<details><summary>Command-line (Linux/macOS, no GUI)</summary>
-
-`sudo dd if=reefy.raw of=/dev/sdX bs=4M`
-
-</details>
-
-### 4. Boot the PC from USB
-Plug in the USB, power on, hit `Esc` or `Del` to open the boot menu. Pick the USB. Reefy boots in ~15 seconds.
-
-<details><summary>Optional: if boot is blocked</summary>
-
-Disable Secure Boot in your BIOS. Common path: *Security → Secure Boot → Disabled*.
-
-</details>
-
-### 5. Adopt the device
-Your device shows up automatically in the [Reefy dashboard](https://reefy.ai) once it's online. Click **Adopt**, give it a name. Done.
-
-<p align="center"><img src="images/step5-adopt.gif" alt="Reefy dashboard adopting a new device" width="600"></p>
-
----
+Every Reefy machine and application is managed from one responsive dashboard.
+Device status, system metrics, applications, and remote access remain available
+without managing each box individually.
 
 <p align="center">
-  <b>Ready to turn your PC into a Reef?</b><br>
-  <a href="https://reefy.ai">Get started at reefy.ai →</a>
+  <img src="images/reefy-dashboard.png" alt="Reefy dashboard managing AI applications across a device" width="900">
+</p>
+
+### Built-in monitoring from first boot
+
+After adoption, Reefy publishes CPU, memory, storage, network, and GPU metrics
+automatically. Power, temperatures, fan speeds, and vendor-specific readings
+appear when exposed by supported hardware. Reefy stores the time series for
+live and historical fleet views, with nothing extra to install or wire up.
+
+<p align="center">
+  <img src="images/feature-monitoring.gif" alt="Reefy dashboard showing live system and accelerator monitoring charts" width="600">
+</p>
+
+## Architecture
+
+A Reefy device has a deliberately small host. Reefy brings up the hardware,
+storage, networking, accelerator support bundles, and Docker. Application
+runtimes, frameworks, models, and application code remain in versioned
+container images.
+
+### Architecture at a glance
+
+<p align="center">
+  <img src="images/reefy-os-diagram.png" alt="Reefy architecture: user applications run in Docker containers alongside the control plane and reconciler, above the Linux kernel and PC hardware" width="760">
+</p>
+
+### Clear layer boundaries
+
+| Layer | Responsibility |
+|---|---|
+| Firmware and boot | Unified Kernel Image, A/B slots, health-gated updates, and watchdog recovery |
+| Control plane | Authenticated MQTT connection, desired-state delivery, commands, and device status |
+| Reconciler | Storage, networking, accelerator preparation, and Compose application lifecycle |
+| Accelerator support bundles | OS-matched drivers, firmware, activation, diagnostics, and CDI publication |
+| Application images | AI runtimes, frameworks, models, and application code |
+
+### Applications start without the cloud
+
+The control plane comes up early so a machine remains visible even when an
+application or storage operation fails. The reconciler persists the last
+applied state and re-applies it on every boot. Applications therefore do not
+wait for a cloud connection before starting.
+
+Read the full [operating system overview](https://reefy.ai/docs) and
+[desired-state architecture](docs/desired-state.md).
+
+## GPU and NPU hardware support
+
+Reefy supports the three major accelerator ecosystems through separately
+delivered, build-matched driver and firmware bundles. Internally, Reefy calls
+these artifacts host providers.
+
+<p align="center">
+  <img src="images/gpus-in-reefy-os-architecture.png" alt="NVIDIA, AMD, and Intel GPU or NPU hardware connected through the Linux kernel and vendor support bundles to accelerator-enabled application images" width="900">
+</p>
+
+### Host support stays separate from AI runtimes
+
+A support bundle contains only the host components needed to make an
+accelerator usable. Frameworks and development libraries stay with the
+application that uses them.
+
+| Hardware | Support bundle supplies | Application image supplies |
+|---|---|---|
+| NVIDIA GPU | Kernel modules, matching firmware, host integration, diagnostics, and CDI devices | CUDA, TensorRT, PyTorch, inference servers, and application code |
+| AMD GPU | Kernel modules, matching firmware, host integration, diagnostics, and CDI devices | ROCm, HIP, PyTorch, inference frameworks, and application code |
+| Intel GPU and NPU | GPU and NPU activation, matching firmware, host integration, and CDI devices | OpenVINO, oneAPI libraries, models, and application code |
+
+### Driver support stays in sync with the OS
+
+Each support bundle is built for an exact Reefy OS and kernel version. Reefy
+rejects incompatible bundles, preventing driver mismatches during updates and
+rollbacks.
+
+### Common delivery, vendor-specific runtimes
+
+This common architecture does not pretend that vendor software is
+interchangeable. CUDA, ROCm, and OpenVINO applications retain their own runtime
+requirements. Reefy standardizes how the matching host support is delivered,
+verified, activated, and exposed to containers.
+
+See the
+[detailed accelerator architecture](https://reefy.ai/docs/internals/accelerator-providers).
+
+## An application layer for AI software
+
+### Describe the application, not the machine
+
+A Reefy app is a versioned container package rather than a machine-specific
+installation procedure. Its manifest can describe:
+
+- the container image, version, launch command, and container listener port;
+- persistent volumes, ownership, capacity, backup, and restore behavior;
+- environment defaults and generated configuration files;
+- accelerator, device, memory, process, and networking requirements; and
+- Reefy platform capabilities used by the application.
+
+### Reefy turns the manifest into running infrastructure
+
+Reefy combines that package with the user's instance settings and turns it
+into desired state. The device prepares storage, configures the requested
+hardware, renders a Compose project, starts the application, and reports its
+lifecycle events.
+
+### Built for humans and AI coding tools
+
+The app definition is compact, declarative, and reviewable. Specialized code
+stays in a conventional container image, while Reefy supplies the repeatable
+host integration beneath it.
+
+Read [How Reefy apps work](docs/reefy-apps.md).
+
+## Designed for unattended machines
+
+### Boot and storage layout
+
+A common Reefy layout separates the portable OS and encryption key from
+internal application data. Two EFI slots provide A/B firmware, while the key
+partition unlocks the LUKS2-encrypted LVM and XFS storage stack.
+
+<p align="center">
+  <img src="images/reefy-os-disks.png" alt="Reefy boot and storage layout: A/B EFI slots and an encryption-key partition on a USB drive unlock LUKS2, LVM, XFS, application data, and snapshots on internal storage" width="900">
+</p>
+
+### Recoverable firmware updates
+
+Reefy boots from a Unified Kernel Image and maintains two firmware slots. An
+update fully recreates the inactive slot, writes the new image there, and asks
+UEFI to try it once. Reefy commits the slot only after storage and the control
+plane become healthy.
+
+If the new system cannot reach that health check, UEFI returns to the previous
+slot. On systems with a supported hardware watchdog, Reefy has a second
+recovery path if the kernel hangs before userspace can report failure.
+
+Read [A/B firmware updates](docs/a-b-firmware-updates.md) and the
+[watchdog architecture](docs/watchdog-architecture.md).
+
+### Offline by default after configuration
+
+The reconciler saves desired state and application images locally. On boot it
+restores storage, networking, cached accelerator support bundles, and
+applications without waiting for MQTT or internet access. The control plane
+reconnects asynchronously when a network becomes available.
+
+Applications are also reachable on the local network. Remote management and
+authenticated tunnels add convenience, but they are not part of the
+application boot dependency chain.
+
+### Encrypted, snapshot-ready storage
+
+Internal application storage uses the following data path:
+
+```text
+LUKS2 encryption -> LVM thin pool -> per-application thin volumes -> XFS
+```
+
+Thin volumes provide fast, space-efficient, crash-consistent snapshot backups.
+Selected application data is deduplicated and encrypted before it leaves the
+device. A restored application can be brought up on another Reefy machine from
+the same desired state and backup archive.
+
+Read the [storage architecture](docs/storage-architecture.md) and
+[security model](docs/security-model.md).
+
+## Security model
+
+Reefy reduces the trusted computing base instead of relying on any single
+security feature.
+
+- **Traceable firmware:** Public source, automated builds, artifact digests,
+  and signed provenance connect firmware to its source revision.
+- **Minimal immutable host:** Buildroot includes an explicit package set, with
+  no general-purpose system package manager such as apt or dnf and a read-only
+  SquashFS base.
+- **Recoverable updates:** Health-gated A/B firmware and watchdog rollback
+  reduce the risk of failed remote updates.
+- **Separated workloads and data:** Applications run in containers, while
+  persistent storage is encrypted with LUKS2.
+
+These controls reduce attack surface, configuration drift, and recovery risk.
+They do not make containers perfect isolation or protect mounted data after a
+privileged host compromise.
+
+Read the full [Reefy OS security model](docs/security-model.md).
+
+## Release validation
+
+An official Reefy release is promoted only after automated unit and
+integration tests, the complete end-to-end promotion suite, and real-hardware
+validation pass.
+
+The end-to-end suite exercises firmware builds, boot and adoption, the
+dashboard, API, MQTT, application lifecycle, storage, backup and restore,
+offline operation, A/B updates, rollback, and failure recovery. Protected lab
+systems validate real NVIDIA, AMD, Intel GPU, and Intel NPU execution using
+functional CUDA, HIP, and OpenVINO probes.
+
+QEMU provides repeatable failure and migration testing. The hardware fleet
+confirms that drivers, firmware, accelerators, and applications work together
+on physical machines before release.
+
+## Benchmarking AI hardware in the real world
+
+Reefy is developed through hands-on research and benchmarking on real
+hardware. We publish the workload, system configuration, measurement method,
+telemetry, results, and known gaps so each study can be inspected and
+reproduced.
+
+<p align="center">
+  <img src="images/intel-core-ultra-wall-meter-idle.jpeg" alt="Intel Core Ultra Reefy system drawing 4.3 watts at idle on a wall-power meter" width="600"><br>
+  <em>Intel Core Ultra test system at idle: 4.3 W measured at the wall.</em>
+</p>
+
+### One example: video AI inference
+
+We compared Intel integrated GPU and NPU inference with an NVIDIA GPU using a
+complete YOLO-NAS video pipeline. The study measured H.264 decode,
+preprocessing, object detection, and total wall power across three accelerator
+paths:
+
+| Device path | Maximum FPS | System FPS/W |
+|---|---:|---:|
+| NVIDIA GeForce RTX 5060 Ti system | 143.8 | 0.81 |
+| Intel Core Ultra integrated GPU | 96.6 | 3.85 |
+| Intel Core Ultra NPU | 133.2 | 9.00 |
+
+These results are specific to the tested workload and complete system
+configurations. See the
+[complete AI video inference benchmark](https://reefy.ai/benchmarks/ai-video-inference)
+for methodology, hardware details, telemetry, reproduction steps, and known
+gaps.
+
+## Get started
+
+1. Bring an x86-64 PC, mini-PC, workstation, or GPU server.
+2. Sign in at [reefy.ai](https://reefy.ai) and download your personalized image.
+3. Flash the downloaded `.raw` image to a USB drive and boot the machine.
+4. Adopt the device from the Reefy dashboard and start an application.
+
+The USB drive contains the operating system and can also hold the encryption
+key, leaving internal NVMe or SSD capacity available for encrypted application
+data. Reefy can also be flashed to an internal drive.
+
+## Build from source
+
+Official Reefy firmware builds are automated with GitHub Actions. The workflow
+builds production and development firmware images and publishes them as CI
+artifacts.
+
+To reproduce or modify the firmware locally, use Ubuntu 24.04, install the
+[same build prerequisites as CI](.github/workflows/firmware-build.yml), and run:
+
+```bash
+git clone --recurse-submodules https://github.com/reefyai/reefy.git
+cd reefy/buildroot
+make BR2_EXTERNAL=.. reefy_defconfig
+make -j"$(nproc)"
+```
+
+The resulting artifacts are written to `buildroot/output/images/`:
+
+| Artifact | Description |
+|---|---|
+| `reefy-prod.{efi,raw}` | Production Unified Kernel Image and flashable disk image |
+| `reefy-dev.{efi,raw}` | Development images with the diagnostic shell enabled |
+| `reefy-debug-shell.{efi,raw}` | Verbose local debugging images |
+
+For local QEMU testing from the repository root:
+
+```bash
+./scripts/reefy-local-boot.sh \
+  -i buildroot/output/images/reefy-dev.raw -r
+```
+
+## Open source
+
+Reefy-authored source is developed in the open under the [MIT license](LICENSE).
+Built firmware also contains third-party components under their respective
+licenses. Issues, technical feedback, benchmark improvements, and hardware
+validation reports are welcome.
+
+<p align="center">
+  <strong>Make the hardware yours. Let Reefy manage the machine.</strong><br>
+  <a href="https://reefy.ai">Get started</a> ·
+  <a href="https://reefy.ai/docs">Read the documentation</a>
 </p>
