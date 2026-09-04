@@ -19,7 +19,11 @@ THIN_PROVISIONING_TOOLS_CARGO_INSTALL_OPTS = \
 	--features devicemapper/disable_cargo_metadata
 
 define THIN_PROVISIONING_TOOLS_INSTALL_COMMAND_LINKS
-	$(foreach tool,thin_check thin_dump thin_repair thin_restore,\
+	$(foreach tool,cache_check cache_dump cache_metadata_size cache_repair \
+		cache_restore cache_writeback era_check era_dump era_invalidate \
+		era_repair era_restore thin_check thin_delta thin_dump thin_ls \
+		thin_metadata_pack thin_metadata_size thin_metadata_unpack \
+		thin_migrate thin_repair thin_restore thin_rmap thin_shrink thin_trim,\
 		ln -sf ../bin/pdata_tools $(TARGET_DIR)/usr/sbin/$(tool)$(sep))
 endef
 THIN_PROVISIONING_TOOLS_POST_INSTALL_TARGET_HOOKS += THIN_PROVISIONING_TOOLS_INSTALL_COMMAND_LINKS
