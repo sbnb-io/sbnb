@@ -115,6 +115,10 @@ jobs:
         working-directory: buildroot
         run: make O="$BR_OUTPUT" linux-firmware-dirclean
 
+      - name: Refresh thin-provisioning-tools package
+        working-directory: buildroot
+        run: make O="$BR_OUTPUT" thin-provisioning-tools-dirclean
+
       - name: Heal stale kernel module cache
         working-directory: buildroot
         run: |
