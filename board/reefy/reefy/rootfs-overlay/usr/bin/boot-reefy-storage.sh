@@ -189,14 +189,20 @@ setup_data_partition() {
                         LV_FS=$(blkid -o value -s TYPE "${lv_path}" 2>/dev/null)
                         if [ "${LV_FS}" = "xfs" ]; then
                             LV_OPTS="noatime,discard"
+                            if mount_primary_xfs "${lv_path}" \
+                                    "${REEFY_DATA_MNT}" "${LV_OPTS}"; then
+                                echo "[reefy] Mounted LVM LV ${lv} (${LV_FS}) at ${REEFY_DATA_MNT}"
+                                mount_state_lv
+                                return 0
+                            fi
                         else
                             LV_OPTS="${REEFY_DATA_MOUNT_OPTS}"
-                        fi
-                        if mount -o "${LV_OPTS}" "${lv_path}" \
-                                "${REEFY_DATA_MNT}" 2>/dev/null; then
-                            echo "[reefy] Mounted LVM LV ${lv} (${LV_FS:-ext4}) at ${REEFY_DATA_MNT}"
-                            mount_state_lv
-                            return 0
+                            if mount -o "${LV_OPTS}" "${lv_path}" \
+                                    "${REEFY_DATA_MNT}" 2>/dev/null; then
+                                echo "[reefy] Mounted LVM LV ${lv} (${LV_FS:-ext4}) at ${REEFY_DATA_MNT}"
+                                mount_state_lv
+                                return 0
+                            fi
                         fi
                     done
                     echo "[reefy] LVM on USB p4 but no mountable LV found"
@@ -231,6 +237,85 @@ STORAGE_LV="reefy_default"
 LEGACY_STORAGE_LV="data"
 THIN_POOL_LV="reefy_pool"
 LVM_THIN_TOOLS_CONFIG='global { thin_check_executable="/usr/sbin/thin_check" thin_repair_executable="/usr/sbin/thin_repair" }'
+
+# Mount the primary Reefy XFS data LV, repairing only the specific failure
+# where kernel log recovery rejects corrupt metadata with EUCLEAN. A generic
+# mount error must never trigger repair: it could be a bad option, missing
+# driver, transient I/O failure, or operator configuration problem.
+#
+# xfs_repair without -L is always attempted first. Exit 2 means the dirty log
+# cannot be replayed in userspace. The kernel mount already tried and failed
+# to replay that log, so -L is the documented last-resort path. This discards
+# pending metadata updates and can move or remove damaged files, but restores
+# the filesystem structures that remain recoverable.
+mount_primary_xfs() {
+    XFS_LV="$1"
+    XFS_TARGET="$2"
+    XFS_OPTS="$3"
+    XFS_REPAIR_MARKER="/run/reefy-xfs-repair-attempted"
+    XFS_MOUNT_ERROR="/run/reefy-xfs-mount.$$.err"
+
+    if mount -o "${XFS_OPTS}" "${XFS_LV}" "${XFS_TARGET}" \
+            2>"${XFS_MOUNT_ERROR}"; then
+        rm -f "${XFS_MOUNT_ERROR}"
+        return 0
+    fi
+    cat "${XFS_MOUNT_ERROR}" >&2
+
+    # Keep the automatic, destructive path deliberately narrow.
+    [ "${XFS_LV}" = "/dev/${STORAGE_VG}/${STORAGE_LV}" ] || {
+        rm -f "${XFS_MOUNT_ERROR}"
+        return 1
+    }
+    grep -Fq "Structure needs cleaning" "${XFS_MOUNT_ERROR}" || {
+        rm -f "${XFS_MOUNT_ERROR}"
+        return 1
+    }
+    [ ! -e "${XFS_REPAIR_MARKER}" ] || {
+        rm -f "${XFS_MOUNT_ERROR}"
+        return 1
+    }
+    [ "$(blkid -o value -s TYPE "${XFS_LV}" 2>/dev/null)" = "xfs" ] || {
+        rm -f "${XFS_MOUNT_ERROR}"
+        return 1
+    }
+    ! mountpoint -q "${XFS_TARGET}" 2>/dev/null || {
+        rm -f "${XFS_MOUNT_ERROR}"
+        return 1
+    }
+    command -v xfs_repair >/dev/null 2>&1 || {
+        rm -f "${XFS_MOUNT_ERROR}"
+        return 1
+    }
+    : > "${XFS_REPAIR_MARKER}"
+
+    echo "[reefy] XFS mount failed with EUCLEAN; attempting offline repair"
+    if xfs_repair "${XFS_LV}"; then
+        echo "[reefy] XFS filesystem repaired without log reset"
+    else
+        XFS_REPAIR_RC=$?
+        if [ "${XFS_REPAIR_RC}" -ne 2 ]; then
+            echo "[reefy] WARNING: XFS repair failed with exit ${XFS_REPAIR_RC}"
+            rm -f "${XFS_MOUNT_ERROR}"
+            return 1
+        fi
+        echo "[reefy] WARNING: XFS log cannot be replayed; forcing log reset"
+        if ! xfs_repair -L "${XFS_LV}"; then
+            echo "[reefy] WARNING: XFS repair with log reset failed"
+            rm -f "${XFS_MOUNT_ERROR}"
+            return 1
+        fi
+        echo "[reefy] XFS filesystem repaired after unreplayable log"
+    fi
+
+    if mount -o "${XFS_OPTS}" "${XFS_LV}" "${XFS_TARGET}"; then
+        rm -f "${XFS_MOUNT_ERROR}"
+        return 0
+    fi
+    echo "[reefy] WARNING: XFS mount still fails after repair"
+    rm -f "${XFS_MOUNT_ERROR}"
+    return 1
+}
 
 # Repair an inactive Reefy thin pool after normal activation has failed.
 # LVM invokes the upstream thin_repair tool, writes its output to the spare
@@ -354,13 +439,18 @@ setup_internal_storage() {
     LV_FS=$(blkid -o value -s TYPE "${lv_path}" 2>/dev/null)
     if [ "${LV_FS}" = "xfs" ]; then
         INTERNAL_OPTS="noatime,discard"
+        mount_primary_xfs "${lv_path}" "${REEFY_DATA_MNT}" \
+            "${INTERNAL_OPTS}" || {
+            echo "[reefy] WARNING: Internal drive mount failed"
+            return 0
+        }
     else
         INTERNAL_OPTS="${REEFY_DATA_MOUNT_OPTS}"
+        mount -o "${INTERNAL_OPTS}" "${lv_path}" "${REEFY_DATA_MNT}" || {
+            echo "[reefy] WARNING: Internal drive mount failed"
+            return 0
+        }
     fi
-    mount -o "${INTERNAL_OPTS}" "${lv_path}" "${REEFY_DATA_MNT}" || {
-        echo "[reefy] WARNING: Internal drive mount failed"
-        return 0
-    }
 
     # Ensure required directories exist (first time on internal drive)
     mkdir -p "${REEFY_DATA_MNT}/state/lan"
