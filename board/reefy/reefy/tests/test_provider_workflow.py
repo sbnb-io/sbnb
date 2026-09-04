@@ -30,7 +30,7 @@ class ProviderWorkflowTests(unittest.TestCase):
             'reefyai/reefy-nvidia':
                 'bae37235695f797f86c05efc06daa0b927752a19',
             'reefyai/reefy-intel':
-                '03b2e8fbaab93a7523613b08d237737e50a5e5ad',
+                '98248c519ceb64a0ae78af3b0395851ce711a154',
             'reefyai/reefy-amd':
                 'ccaf743c5dd77af5aaab91ee8300d1d5402ee1f9',
             'reefyai/reefy-artifact-fixtures':
@@ -68,3 +68,19 @@ class ProviderWorkflowTests(unittest.TestCase):
         self.assertIn("-name 'i915.ko*'", workflow)
         self.assertIn("-name 'xe.ko*'", workflow)
         self.assertIn("-name 'intel_vpu.ko*'", workflow)
+
+    def test_release_ready_requires_every_provider_and_catalog(self):
+        workflow = WORKFLOW.read_text()
+        release_ready = workflow.split('\n  release-ready:\n', 1)[1]
+
+        self.assertIn('if: ${{ always() }}', release_ready)
+        for dependency in (
+                'publish-nvidia-provider',
+                'publish-amd-provider',
+                'publish-intel-provider',
+                'provider-catalog'):
+            self.assertIn(f'      - {dependency}\n', release_ready)
+        self.assertIn(
+            'for dependency in BUILD NVIDIA AMD INTEL FIXTURE CATALOG',
+            release_ready)
+        self.assertIn('name: reefy-release-ready', release_ready)

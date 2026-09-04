@@ -465,7 +465,7 @@ jobs:
 
   publish-intel-provider:
     needs: build
-    uses: reefyai/reefy-intel/.github/workflows/publish.yml@03b2e8fbaab93a7523613b08d237737e50a5e5ad
+    uses: reefyai/reefy-intel/.github/workflows/publish.yml@98248c519ceb64a0ae78af3b0395851ce711a154
     with:
       input_artifact: reefy-intel-inputs
     secrets: inherit
@@ -550,3 +550,50 @@ jobs:
         with:
           name: reefy-provider-catalog
           path: provider-artifacts.json
+
+  release-ready:
+    if: ${{ always() }}
+    needs:
+      - build
+      - publish-nvidia-provider
+      - publish-amd-provider
+      - publish-intel-provider
+      - publish-artifact-fixture
+      - provider-catalog
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require complete firmware and provider release
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          NVIDIA_RESULT: ${{ needs.publish-nvidia-provider.result }}
+          AMD_RESULT: ${{ needs.publish-amd-provider.result }}
+          INTEL_RESULT: ${{ needs.publish-intel-provider.result }}
+          FIXTURE_RESULT: ${{ needs.publish-artifact-fixture.result }}
+          CATALOG_RESULT: ${{ needs.provider-catalog.result }}
+          REEFY_BUILD_ID: ${{ needs.build.outputs.reefy_build_id }}
+          KERNEL_ABI_SHA256: ${{ needs.build.outputs.kernel_abi_sha256 }}
+          IMAGE_VERSION: ${{ needs.build.outputs.image_version }}
+        run: |
+          for dependency in BUILD NVIDIA AMD INTEL FIXTURE CATALOG; do
+            result_name="${dependency}_RESULT"
+            result="${!result_name}"
+            if [ "$result" != success ]; then
+              echo "$dependency release dependency is $result"
+              exit 1
+            fi
+          done
+          jq -n \
+            --arg build_id "$REEFY_BUILD_ID" \
+            --arg abi "sha256:$KERNEL_ABI_SHA256" \
+            --arg image_version "$IMAGE_VERSION" \
+            '{schema_version: 1,
+              reefy_build_id: $build_id,
+              kernel_abi_digest: $abi,
+              image_version: $image_version,
+              status: "release-ready"}' > release-ready.json
+
+      - name: Publish release-ready marker
+        uses: actions/upload-artifact@v4
+        with:
+          name: reefy-release-ready
+          path: release-ready.json
