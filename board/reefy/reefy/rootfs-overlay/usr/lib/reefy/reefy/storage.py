@@ -45,6 +45,9 @@ class Storage:
     MANAGED_VOLUME_TAG = 'reefy_managed_app_volume'
     OWNER_TAG_PREFIX = 'reefy_owner_'
     MANAGED_VOLUME_RE = re.compile(r'^reefy_backup_[0-9a-f]{12}$')
+    XFS_REPAIR_MARKER_DIR = '/run/reefy/app-xfs-repair'
+    APP_VOLUME_RECOVERY_DIR = (
+        f'{shared.REEFY_DATA_MNT}/recovery/app-volume-shadow')
     LUKS_SECTOR_SIZES = (4096, 2048, 1024, 512)
 
     def __init__(self, volume_caps=None):
@@ -853,18 +856,140 @@ class Storage:
             fcntl.flock(lock, fcntl.LOCK_UN)
             lock.close()
 
+    @staticmethod
+    def _fs_type(dev):
+        return subprocess.run(
+            ['blkid', '-o', 'value', '-s', 'TYPE', dev],
+            capture_output=True, text=True, timeout=5).stdout.strip()
+
     def _fs_mount_opts(self, dev):
         """Mount options for an LV, by detected filesystem. ext4 wants
         `commit=60`; XFS *rejects* it (mount fails), so XFS must not get
         it. Both keep noatime + discard (the FS half of the TRIM
         passthrough chain). Unknown/blank type -> ext4 opts, since our
         existing per-app LVs are ext4."""
-        fstype = subprocess.run(
-            ['blkid', '-o', 'value', '-s', 'TYPE', dev],
-            capture_output=True, text=True, timeout=5).stdout.strip()
+        fstype = self._fs_type(dev)
         if fstype == 'xfs':
             return 'noatime,discard'
         return self.REEFY_DATA_MOUNT_OPTS
+
+    def _repair_owned_xfs_volume(self, path, lv_name, lv_path):
+        """Repair one existing, unmounted, deterministic app XFS LV.
+
+        A normal repair is always attempted first. Exit 2 means XFS found a
+        dirty log that cannot be replayed while mounting, so reset that log
+        with ``-L`` as the guarded last resort. A tmpfs marker permits only
+        one attempt per LV per boot, whether this is called by the pre-Docker
+        boot oneshot or by a later reconciler pass.
+
+        Return True only when repair completed and the caller may retry the
+        mount. Never repair a mounted filesystem, an unknown filesystem, or
+        an LV whose deterministic name does not match the owned app path.
+        """
+        if (not self._valid_owned_volume_path(path)
+                or not self.MANAGED_VOLUME_RE.fullmatch(lv_name)
+                or self._volume_lv_name(path) != lv_name
+                or not os.path.exists(lv_path)
+                or shutil.which('xfs_repair') is None):
+            return False
+
+        try:
+            mounted = subprocess.run(
+                ['findmnt', '-n', '-o', 'SOURCE', path],
+                capture_output=True, text=True, timeout=5)
+            if mounted.returncode != 1 or self._fs_type(lv_path) != 'xfs':
+                return False
+        except (subprocess.SubprocessError, OSError):
+            return False
+
+        marker = os.path.join(self.XFS_REPAIR_MARKER_DIR, lv_name)
+        try:
+            os.makedirs(self.XFS_REPAIR_MARKER_DIR, mode=0o700, exist_ok=True)
+            marker_fd = os.open(
+                marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(marker_fd)
+        except FileExistsError:
+            return False
+        except OSError:
+            return False
+
+        log('mqtt', f'Attempting offline XFS repair for owned volume {lv_name}')
+        try:
+            result = subprocess.run(
+                ['xfs_repair', lv_path],
+                capture_output=True, text=True, timeout=90)
+            if result.returncode == 2:
+                log('mqtt',
+                    'Owned app XFS log cannot be replayed; forcing log '
+                    f'reset for {lv_name}')
+                result = subprocess.run(
+                    ['xfs_repair', '-L', lv_path],
+                    capture_output=True, text=True, timeout=90)
+        except (subprocess.SubprocessError, OSError):
+            log('mqtt', f'Offline XFS repair failed for owned volume {lv_name}')
+            return False
+        if result.returncode != 0:
+            log('mqtt', f'Offline XFS repair failed for owned volume {lv_name}')
+            return False
+        log('mqtt', f'Repaired owned app XFS volume {lv_name}')
+        return True
+
+    def _preserve_owned_volume_fallback(self, path, lv_name):
+        """Move boot-time fallback data aside without deleting or merging it.
+
+        When an owned LV failed to mount on an earlier boot, a container may
+        have written into the underlying primary-filesystem directory. Hiding
+        those divergent files with the repaired LV would lose access to them,
+        while merging automatically could overwrite authoritative data. At the
+        pre-Docker boot boundary only, atomically rename the directory into a
+        recovery area on the same filesystem and recreate an empty mountpoint.
+
+        Ownership tags must match the deterministic app path. Legacy untagged
+        LVs and symlinked paths retain the existing fail-safe refusal.
+        """
+        if (not self._valid_owned_volume_path(path)
+                or not self.MANAGED_VOLUME_RE.fullmatch(lv_name)
+                or self._volume_lv_name(path) != lv_name
+                or os.path.islink(path)):
+            return False
+        try:
+            docker_state = subprocess.run(
+                ['systemctl', 'is-active', 'docker.service'],
+                capture_output=True, text=True, timeout=5)
+        except (subprocess.SubprocessError, OSError):
+            return False
+        if docker_state.stdout.strip() not in ('inactive', 'failed'):
+            return False
+        required_tags = {
+            self.MANAGED_VOLUME_TAG,
+            self._owner_tag_for_path(path),
+        }
+        tags = self._volume_tags(lv_name)
+        if tags is None or not required_tags.issubset(tags):
+            return False
+
+        quarantine = os.path.join(
+            self.APP_VOLUME_RECOVERY_DIR,
+            f'{lv_name}-{uuid_mod.uuid4().hex}')
+        moved = False
+        try:
+            os.makedirs(
+                self.APP_VOLUME_RECOVERY_DIR, mode=0o700, exist_ok=True)
+            os.rename(path, quarantine)
+            moved = True
+            os.makedirs(path, mode=0o755, exist_ok=False)
+        except OSError:
+            if moved:
+                try:
+                    os.rename(quarantine, path)
+                except OSError:
+                    log('mqtt',
+                        'WARNING: fallback data was preserved but its owned '
+                        f'volume mountpoint could not be restored for {lv_name}')
+            return False
+
+        log('mqtt', f'Preserved fallback data for owned volume {lv_name}')
+        return True
 
     @staticmethod
     def _valid_owned_volume_path(path):
@@ -1202,7 +1327,7 @@ class Storage:
         return True
 
     def _ensure_volume_lv(self, path, allow_create=True,
-                          expect_existing=False):
+                          expect_existing=False, recover_fallback=False):
         """Provision + mount a per-volume thin LV at `path` if not
         already in place. No-op if:
           - the device has no thin pool (legacy storage), OR
@@ -1303,11 +1428,16 @@ class Storage:
             # Never hide divergent default-LV data with an owned LV.
             if os.path.isdir(path) and os.listdir(path):
                 if lv_exists:
-                    raise ExistingVolumeUnavailableError(
-                        'Owned app volume conflicts with data at its mount path')
-                log('mqtt',
-                    f'Legacy data at {path}, skipping per-volume LV mount')
-                return False
+                    if (not recover_fallback
+                            or not self._preserve_owned_volume_fallback(
+                                path, lv_name)):
+                        raise ExistingVolumeUnavailableError(
+                            'Owned app volume conflicts with data at its '
+                            'mount path')
+                else:
+                    log('mqtt',
+                        f'Legacy data at {path}, skipping per-volume LV mount')
+                    return False
 
             if not lv_exists and not allow_create:
                 return False
@@ -1409,8 +1539,25 @@ class Storage:
                     if mounted:
                         return cap_enforced
                     return False
-                raise ExistingVolumeUnavailableError(
-                    'Owned app volume could not be mounted')
+                if self._repair_owned_xfs_volume(path, lv_name, lv_path):
+                    try:
+                        r = subprocess.run(
+                            ['mount', '-o', mount_opts, lv_path, path],
+                            capture_output=True, text=True, timeout=60)
+                    except (subprocess.SubprocessError, OSError) as e:
+                        raise ExistingVolumeUnavailableError(
+                            'Owned app volume could not be mounted after '
+                            'repair') from e
+                    if r.returncode != 0:
+                        log('mqtt',
+                            f'mount {lv_path} -> {path} failed after repair: '
+                            f'{r.stderr}')
+                        raise ExistingVolumeUnavailableError(
+                            'Owned app volume could not be mounted after '
+                            'repair')
+                else:
+                    raise ExistingVolumeUnavailableError(
+                        'Owned app volume could not be mounted')
             log('mqtt', f'Mounted {lv_name} at {path}')
             if not self._remember_owned_volume(path):
                 if created_here:
@@ -1505,7 +1652,8 @@ class Storage:
                 prepared = self._ensure_volume_lv(
                     p, allow_create=managed and metadata_available,
                     expect_existing=(
-                        existing_lv if metadata_available else False))
+                        existing_lv if metadata_available else False),
+                    recover_fallback=True)
                 if (not prepared and p in backup_paths
                         and thin_pool_available
                         and self._dedicated_volume_mount_status(p) is not True):
