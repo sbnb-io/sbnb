@@ -3276,6 +3276,96 @@ class DropAbsentDevicesTests(unittest.TestCase):
 
 
 class BestEffortCdiTests(unittest.TestCase):
+    def test_waits_until_all_requested_provider_resources_are_ready(self):
+        compose = {'services': {'app': {'devices': [
+            'intel.com/gpu=all',
+            'intel.com/npu=all',
+        ]}}}
+        observations = [
+            set(),
+            {'intel.com/gpu=all'},
+            {'intel.com/gpu=all', 'intel.com/npu=all'},
+        ]
+        now = [0.0]
+
+        def resources():
+            if len(observations) > 1:
+                return observations.pop(0)
+            return observations[0]
+
+        def sleep(seconds):
+            now[0] += seconds
+
+        missing = dataplane._wait_for_requested_devices(
+            compose, timeout=1.0, interval=0.1,
+            cdi_resources=resources, monotonic=lambda: now[0], sleep=sleep)
+
+        self.assertEqual(missing, [])
+        self.assertEqual(now[0], 0.2)
+
+    def test_provider_activation_precedes_optional_device_filtering(self):
+        dp = _make_dp()
+        ready = {'value': False}
+        app = {
+            'project_name': 'reefy-app-synthetic',
+            'instance_uuid': 'synthetic',
+            'compose': {'services': {'app': {
+                'image': 'example.invalid/app:1',
+                'devices': [
+                    '/dev/dri:/dev/dri',
+                    'intel.com/gpu=all',
+                ],
+            }}},
+            'artifacts': [{
+                'name': 'intel-accelerator',
+                'kind': 'host-extension',
+                'ref': 'example.invalid/provider@sha256:' + ('a' * 64),
+                'required': False,
+            }],
+        }
+
+        def prepare(_app):
+            ready['value'] = True
+            return True
+
+        drop_absent_devices = dataplane._drop_absent_devices
+        drop_unavailable_cdi_devices = (
+            dataplane._drop_unavailable_cdi_devices)
+
+        def drop_paths(compose):
+            return drop_absent_devices(
+                compose, exists=lambda _path: ready['value'])
+
+        def drop_cdi(compose):
+            available = {'intel.com/gpu=all'} if ready['value'] else set()
+            return drop_unavailable_cdi_devices(
+                compose, available)
+
+        with mock.patch.object(
+                dp, '_prepare_app_artifacts', side_effect=prepare), \
+                mock.patch.object(
+                    dataplane, '_missing_requested_devices',
+                    return_value=[]), \
+                mock.patch.object(
+                    dataplane, '_drop_absent_devices',
+                    side_effect=drop_paths), \
+                mock.patch.object(
+                    dataplane, '_drop_unavailable_cdi_devices',
+                    side_effect=drop_cdi), \
+                mock.patch.object(
+                    dp, '_prepare_app_project_compose',
+                    return_value={'ok': True}) as project:
+            ok, code, _prepared = dp._prepare_v2_app_inner(
+                app, restore_failed=False)
+
+        self.assertTrue(ok)
+        self.assertEqual(code, '')
+        prepared_compose = project.call_args.args[1]
+        self.assertEqual(prepared_compose['services']['app']['devices'], [
+            '/dev/dri:/dev/dri',
+            'intel.com/gpu=all',
+        ])
+
     def test_reads_json_and_yaml_provider_resources(self):
         with tempfile.TemporaryDirectory() as directory:
             Path(directory, 'intel.json').write_text(json.dumps({

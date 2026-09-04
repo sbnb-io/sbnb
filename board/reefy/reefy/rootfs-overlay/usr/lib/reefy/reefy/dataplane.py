@@ -39,6 +39,8 @@ from reefy.storage import Storage
 CDI_SPEC_DIRS = ('/etc/cdi', '/var/run/cdi', '/run/cdi')
 _CDI_REQUEST = re.compile(
     r'^[a-z0-9][a-z0-9.-]*/[a-z0-9][a-z0-9_.-]*=[^=]+$')
+PROVIDER_DEVICE_SETTLE_TIMEOUT = 5.0
+PROVIDER_DEVICE_SETTLE_INTERVAL = 0.1
 
 
 def _drop_absent_devices(compose, exists=os.path.exists):
@@ -149,6 +151,50 @@ def _drop_unavailable_cdi_devices(compose, available=None):
             kept.append(device)
         service['devices'] = kept
     return skipped
+
+
+def _missing_requested_devices(
+        compose, exists=os.path.exists, available_cdi=None):
+    """Return requested host paths and CDI resources not ready yet."""
+    available = (
+        _cdi_resources() if available_cdi is None else set(available_cdi))
+    missing = set()
+    for service in (compose.get('services') or {}).values():
+        for device in service.get('devices') or []:
+            if not isinstance(device, str):
+                continue
+            host_path = device.split(':', 1)[0]
+            if host_path.startswith('/dev/'):
+                if not exists(host_path):
+                    missing.add(host_path)
+            elif (_CDI_REQUEST.fullmatch(device)
+                  and device not in available):
+                missing.add(device)
+    return sorted(missing)
+
+
+def _wait_for_requested_devices(
+        compose, timeout=PROVIDER_DEVICE_SETTLE_TIMEOUT,
+        interval=PROVIDER_DEVICE_SETTLE_INTERVAL, exists=os.path.exists,
+        cdi_resources=_cdi_resources, monotonic=time.monotonic,
+        sleep=time.sleep):
+    """Wait briefly for provider-created nodes and CDI specs to settle.
+
+    Host-extension activation is synchronous, but driver probing and udev may
+    finish just after its hook exits. Poll readiness up to a fixed deadline;
+    callers still remove anything unavailable after the deadline so optional
+    acceleration never prevents the application from starting.
+    """
+    deadline = monotonic() + timeout
+    while True:
+        missing = _missing_requested_devices(
+            compose, exists=exists, available_cdi=cdi_resources())
+        if not missing:
+            return []
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            return missing
+        sleep(min(interval, remaining))
 
 
 def _desired_state_log_summary(state):
@@ -1479,11 +1525,10 @@ class DataPlane:
             return False, 'restore_failed', None
 
         compose = json.loads(json.dumps(app.get('compose') or {}))
-        for _service, host_path in _drop_absent_devices(compose):
-            log('reconciler',
-                f'{project_name}: skipping absent device {host_path}')
-
         if self._app_desired_status(app) == 'stopped':
+            for _service, host_path in _drop_absent_devices(compose):
+                log('reconciler',
+                    f'{project_name}: skipping absent device {host_path}')
             return True, '', {
                 'ok': True,
                 'stopped': True,
@@ -1499,6 +1544,22 @@ class DataPlane:
                 instance_uuid, 'failed',
                 message='artifact prepare failed', phase='artifact')
             return False, 'artifact_prepare_failed', None
+
+        if app.get('artifacts'):
+            initially_missing = _missing_requested_devices(compose)
+            if initially_missing:
+                log('reconciler',
+                    f'{project_name}: waiting for provider devices: '
+                    + ', '.join(initially_missing))
+                still_missing = _wait_for_requested_devices(compose)
+                if still_missing:
+                    log('reconciler',
+                        f'{project_name}: provider device settle timed out: '
+                        + ', '.join(still_missing))
+
+        for _service, host_path in _drop_absent_devices(compose):
+            log('reconciler',
+                f'{project_name}: skipping absent device {host_path}')
 
         for _service, resource in _drop_unavailable_cdi_devices(compose):
             log('reconciler',
