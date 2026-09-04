@@ -115,6 +115,10 @@ jobs:
         working-directory: buildroot
         run: make O="$BR_OUTPUT" linux-firmware-dirclean
 
+      - name: Refresh thin-provisioning-tools package
+        working-directory: buildroot
+        run: make O="$BR_OUTPUT" thin-provisioning-tools-dirclean
+
       - name: Heal stale kernel module cache
         working-directory: buildroot
         run: |
@@ -461,7 +465,7 @@ jobs:
 
   publish-intel-provider:
     needs: build
-    uses: reefyai/reefy-intel/.github/workflows/publish.yml@2b3a2a5db74bc28758a03b7cde82525d6d521bdf
+    uses: reefyai/reefy-intel/.github/workflows/publish.yml@ce5cc66ea2dcb7b2ff50bb2955b54c2cd3cfb3b5
     with:
       input_artifact: reefy-intel-inputs
     secrets: inherit
