@@ -95,6 +95,26 @@ class ProviderWorkflowTests(unittest.TestCase):
         for repository, commit in expected.items():
             self.assertEqual(_workflow_ref(workflow, repository), commit)
 
+    def test_release_ready_marker_requires_every_provider(self):
+        workflow = WORKFLOW.read_text()
+        marker = re.search(
+            r'^  release-ready:\n(?P<body>.*)\Z', workflow,
+            re.MULTILINE | re.DOTALL)
+
+        self.assertIsNotNone(marker)
+        body = marker.group('body')
+        dependencies = body.split('    steps:', 1)[0]
+        for job in (
+                'build',
+                'publish-nvidia-provider',
+                'publish-intel-provider',
+                'publish-amd-provider',
+                'publish-artifact-fixture',
+                'provider-catalog'):
+            self.assertIn(f'      - {job}\n', dependencies)
+        self.assertIn('    if: ${{ success() }}', dependencies)
+        self.assertIn('          name: reefy-release-ready', body)
+
     def test_checked_out_sources_match_publisher_commits(self):
         workflow = WORKFLOW.read_text()
         for repository in (
