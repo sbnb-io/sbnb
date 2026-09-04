@@ -1,0 +1,118 @@
+From: Reefy Maintainers <maintainers@reefy.ai>
+Subject: [PATCH] Build only required thin metadata commands
+
+Reefy needs thin_check, thin_dump, thin_repair, and thin_restore. Exclude the
+other multicall commands so the linker can discard their command frontends.
+Removing thin_migrate also drops the only devicemapper and udev Rust crate
+dependencies, avoiding unused target libraries and bindgen/Clang at build time.
+
+Signed-off-by: Reefy Maintainers <maintainers@reefy.ai>
+---
+ Cargo.toml             |  2 --
+ src/bin/pdata_tools.rs | 20 --------------------
+ src/commands/mod.rs    | 20 --------------------
+ src/thin/mod.rs        |  1 -
+ 4 files changed, 43 deletions(-)
+
+diff --git a/Cargo.toml b/Cargo.toml
+index 6bb2004..5f236c9 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -18,7 +18,6 @@ clap = { version = "4.5", default-features = false, features = [
+ ] }
+ crc32c = "0.6"
+ data-encoding = "2.9"
+-devicemapper = "0.34"
+ exitcode = "1.1.2"
+ fixedbitset = "0.5"
+ flate2 = "1.1"
+@@ -39,7 +38,6 @@ ratatui = { version = "0.30", default-features = false, features = [
+   "termion",
+ ], optional = true }
+ termion = { version = "4.0", optional = true }
+-udev = "0.9"
+ 
+ [dev-dependencies]
+ duct = "1.1"
+diff --git a/src/bin/pdata_tools.rs b/src/bin/pdata_tools.rs
+index c288fe0..d1f1884 100644
+--- a/src/bin/pdata_tools.rs
++++ b/src/bin/pdata_tools.rs
+@@ -11,30 +11,10 @@ fn get_basename(path: &OsStr) -> &Path {
+ 
+ fn register_commands<'a>() -> Vec<Box<dyn Command<'a>>> {
+     vec![
+-        Box::new(cache_check::CacheCheckCommand),
+-        Box::new(cache_dump::CacheDumpCommand),
+-        Box::new(cache_metadata_size::CacheMetadataSizeCommand),
+-        Box::new(cache_repair::CacheRepairCommand),
+-        Box::new(cache_restore::CacheRestoreCommand),
+-        Box::new(cache_writeback::CacheWritebackCommand),
+-        Box::new(era_check::EraCheckCommand),
+-        Box::new(era_dump::EraDumpCommand),
+-        Box::new(era_invalidate::EraInvalidateCommand),
+-        Box::new(era_repair::EraRepairCommand),
+-        Box::new(era_restore::EraRestoreCommand),
+         Box::new(thin_check::ThinCheckCommand),
+-        Box::new(thin_delta::ThinDeltaCommand),
+         Box::new(thin_dump::ThinDumpCommand),
+-        Box::new(thin_ls::ThinLsCommand),
+-        Box::new(thin_metadata_pack::ThinMetadataPackCommand),
+-        Box::new(thin_metadata_size::ThinMetadataSizeCommand),
+-        Box::new(thin_metadata_unpack::ThinMetadataUnpackCommand),
+-        Box::new(thin_migrate::ThinMigrateCommand),
+         Box::new(thin_repair::ThinRepairCommand),
+         Box::new(thin_restore::ThinRestoreCommand),
+-        Box::new(thin_rmap::ThinRmapCommand),
+-        Box::new(thin_shrink::ThinShrinkCommand),
+-        Box::new(thin_trim::ThinTrimCommand),
+     ]
+ }
+ 
+diff --git a/src/commands/mod.rs b/src/commands/mod.rs
+index 5eeb66a..02fadcc 100644
+--- a/src/commands/mod.rs
++++ b/src/commands/mod.rs
+@@ -1,28 +1,8 @@
+-pub mod cache_check;
+-pub mod cache_dump;
+-pub mod cache_metadata_size;
+-pub mod cache_repair;
+-pub mod cache_restore;
+-pub mod cache_writeback;
+ pub mod engine;
+-pub mod era_check;
+-pub mod era_dump;
+-pub mod era_invalidate;
+-pub mod era_repair;
+-pub mod era_restore;
+ pub mod thin_check;
+-pub mod thin_delta;
+ pub mod thin_dump;
+-pub mod thin_ls;
+-pub mod thin_metadata_pack;
+-pub mod thin_metadata_size;
+-pub mod thin_metadata_unpack;
+-pub mod thin_migrate;
+ pub mod thin_repair;
+ pub mod thin_restore;
+-pub mod thin_rmap;
+-pub mod thin_shrink;
+-pub mod thin_trim;
+ pub mod utils;
+ 
+ #[cfg(feature = "devtools")]
+diff --git a/src/thin/mod.rs b/src/thin/mod.rs
+index 1ef0e1b..b83a889 100644
+--- a/src/thin/mod.rs
++++ b/src/thin/mod.rs
+@@ -10,7 +10,6 @@ pub mod ls;
+ pub mod metadata;
+ pub mod metadata_repair;
+ pub mod metadata_size;
+-pub mod migrate;
+ pub mod repair;
+ pub mod restore;
+ pub mod rmap;
+-- 
+2.51.0
