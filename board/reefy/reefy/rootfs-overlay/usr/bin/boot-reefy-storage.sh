@@ -253,7 +253,9 @@ repair_thin_pool() {
     [ -x /usr/sbin/thin_check ] || return 1
     [ -x /usr/sbin/thin_repair ] || return 1
     [ "$(lvs --noheadings -o segtype "${POOL}" 2>/dev/null | xargs)" = "thin-pool" ] || return 1
-    [ "$(lvs --noheadings -o lv_active "${POOL}" 2>/dev/null | xargs)" = "inactive" ] || return 1
+    # LVM prints an empty lv_active field when corrupt metadata prevents the
+    # thin-pool device from being created. Reject only a pool that is active.
+    [ "$(lvs --noheadings -o lv_active "${POOL}" 2>/dev/null | xargs)" != "active" ] || return 1
 
     TMETA_SECTORS=$(lvs --noheadings --units s --nosuffix -o lv_size \
         "${TMETA}" 2>/dev/null | xargs)
