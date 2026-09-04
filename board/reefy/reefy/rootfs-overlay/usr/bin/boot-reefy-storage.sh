@@ -229,6 +229,60 @@ STORAGE_VG="reefy"
 # a flat `data` LV. Mount whichever one is actually present.
 STORAGE_LV="reefy_default"
 LEGACY_STORAGE_LV="data"
+THIN_POOL_LV="reefy_pool"
+
+# Repair an inactive Reefy thin pool after normal activation has failed.
+# The repair tool writes rebuilt metadata to LVM's spare metadata LV and
+# lvconvert swaps it into the pool. LVM keeps the damaged metadata as a
+# visible *_metaN LV, so this operation does not overwrite the only copy.
+#
+# A completely overwritten superblock cannot provide its data block size.
+# That geometry is also stored in the LVM VG metadata, so pass it explicitly
+# along with the transaction ID and number of data blocks. This is the same
+# failure shape produced when unrelated data replaces metadata block zero.
+repair_thin_pool() {
+    REPAIR_MARKER="/run/reefy-thin-pool-repaired"
+    POOL="${STORAGE_VG}/${THIN_POOL_LV}"
+    TMETA="${STORAGE_VG}/${THIN_POOL_LV}_tmeta"
+    PMSPARE="${STORAGE_VG}/lvol0_pmspare"
+
+    [ ! -e "${REPAIR_MARKER}" ] || return 1
+    : > "${REPAIR_MARKER}"
+
+    command -v thin_check >/dev/null 2>&1 || return 1
+    command -v thin_repair >/dev/null 2>&1 || return 1
+    [ "$(lvs --noheadings -o segtype "${POOL}" 2>/dev/null | xargs)" = "thin-pool" ] || return 1
+    [ "$(lvs --noheadings -o lv_active "${POOL}" 2>/dev/null | xargs)" = "inactive" ] || return 1
+
+    TMETA_SECTORS=$(lvs --noheadings --units s --nosuffix -o lv_size \
+        "${TMETA}" 2>/dev/null | xargs)
+    PMSPARE_SECTORS=$(lvs --noheadings --units s --nosuffix -o lv_size \
+        "${PMSPARE}" 2>/dev/null | xargs)
+    CHUNK_SECTORS=$(lvs --noheadings --units s --nosuffix -o chunksize \
+        "${POOL}" 2>/dev/null | xargs)
+    DATA_SECTORS=$(lvs --noheadings --units s --nosuffix -o lv_size \
+        "${TMETA%_tmeta}_tdata" 2>/dev/null | xargs)
+    TRANSACTION_ID=$(lvs --noheadings -o transaction_id \
+        "${POOL}" 2>/dev/null | xargs)
+
+    case "${TMETA_SECTORS}:${PMSPARE_SECTORS}:${CHUNK_SECTORS}:${DATA_SECTORS}:${TRANSACTION_ID}" in
+        *[!0-9:]*|*::*|:*|*:) return 1 ;;
+    esac
+    [ "${PMSPARE_SECTORS}" -ge "${TMETA_SECTORS}" ] || return 1
+    [ "${CHUNK_SECTORS}" -gt 0 ] || return 1
+    [ $((DATA_SECTORS % CHUNK_SECTORS)) -eq 0 ] || return 1
+    NR_DATA_BLOCKS=$((DATA_SECTORS / CHUNK_SECTORS))
+
+    echo "[reefy] Thin-pool activation failed; attempting guarded metadata repair"
+    REPAIR_CONFIG="global { thin_repair_options=[\"--data-block-size\",\"${CHUNK_SECTORS}\",\"--transaction-id\",\"${TRANSACTION_ID}\",\"--nr-data-blocks\",\"${NR_DATA_BLOCKS}\"] }"
+    if lvconvert --config "${REPAIR_CONFIG}" --repair --yes "${POOL}"; then
+        echo "[reefy] Thin-pool metadata repaired; damaged metadata retained by LVM"
+        return 0
+    fi
+
+    echo "[reefy] WARNING: Thin-pool metadata repair failed"
+    return 1
+}
 
 # Try to use internal drive as /mnt/reefy-data instead of slow USB.
 # Opens LUKS on all internal drives with our key, activates LVM VG,
@@ -261,7 +315,19 @@ setup_internal_storage() {
     # Scan for LVM and activate VG
     vgscan >/dev/null 2>&1
     vgs "${STORAGE_VG}" >/dev/null 2>&1 || return 0
-    vgchange -ay "${STORAGE_VG}" >/dev/null 2>&1
+    if ! vgchange -ay "${STORAGE_VG}" >/dev/null 2>&1; then
+        if repair_thin_pool && \
+                vgchange -ay "${STORAGE_VG}" >/dev/null 2>&1; then
+            echo "[reefy] Activated repaired thin pool"
+        else
+            # Keep the thick identity LV available even when app storage is
+            # unrecoverable. This prevents a storage failure from making an
+            # adopted device appear factory-fresh to the control plane.
+            lvchange -ay "${STORAGE_VG}/reefy_state" >/dev/null 2>&1 || true
+            mount_state_lv
+            return 0
+        fi
+    fi
     lv_path=""
     for lv in "${STORAGE_LV}" "${LEGACY_STORAGE_LV}"; do
         if [ -e "/dev/${STORAGE_VG}/${lv}" ]; then
