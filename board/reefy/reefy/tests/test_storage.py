@@ -200,6 +200,114 @@ class OwnedXfsRepairTests(unittest.TestCase):
                 self.path, self.lv_name, self.lv_path))
 
 
+class OwnedVolumeFallbackTests(unittest.TestCase):
+    def setUp(self):
+        self.s = storage.Storage()
+        self.path = '/mnt/reefy-data/apps/synthetic/config'
+        self.lv_name = self.s._volume_lv_name(self.path)
+
+    @staticmethod
+    def _docker_stopped(command, **kwargs):
+        return types.SimpleNamespace(
+            returncode=3, stdout='inactive\n', stderr='')
+
+    def test_preserves_tagged_fallback_with_atomic_rename(self):
+        required_tags = {
+            self.s.MANAGED_VOLUME_TAG,
+            self.s._owner_tag_for_path(self.path),
+        }
+        with mock.patch.object(storage.os.path, 'islink', return_value=False), \
+                mock.patch.object(
+                    storage.subprocess, 'run', side_effect=self._docker_stopped), \
+                mock.patch.object(
+                    self.s, '_volume_tags', return_value=required_tags), \
+                mock.patch.object(storage.uuid_mod, 'uuid4') as uuid4, \
+                mock.patch.object(storage.os, 'makedirs') as makedirs, \
+                mock.patch.object(storage.os, 'rename') as rename, \
+                mock.patch.object(storage, 'log') as write_log:
+            uuid4.return_value.hex = 'synthetic'
+            self.assertTrue(self.s._preserve_owned_volume_fallback(
+                self.path, self.lv_name))
+
+        quarantine = (
+            f'{self.s.APP_VOLUME_RECOVERY_DIR}/'
+            f'{self.lv_name}-synthetic')
+        rename.assert_called_once_with(self.path, quarantine)
+        self.assertEqual(makedirs.call_args_list, [
+            mock.call(
+                self.s.APP_VOLUME_RECOVERY_DIR,
+                mode=0o700, exist_ok=True),
+            mock.call(self.path, mode=0o755, exist_ok=False),
+        ])
+        write_log.assert_called_once_with(
+            'mqtt', f'Preserved fallback data for owned volume {self.lv_name}')
+
+    def test_never_moves_untagged_or_wrongly_owned_data(self):
+        cases = [set(), {self.s.MANAGED_VOLUME_TAG}]
+        for tags in cases:
+            with self.subTest(tags=tags), \
+                    mock.patch.object(
+                        storage.os.path, 'islink', return_value=False), \
+                    mock.patch.object(
+                        storage.subprocess, 'run',
+                        side_effect=self._docker_stopped), \
+                    mock.patch.object(
+                        self.s, '_volume_tags', return_value=tags), \
+                    mock.patch.object(storage.os, 'rename') as rename:
+                self.assertFalse(self.s._preserve_owned_volume_fallback(
+                    self.path, self.lv_name))
+                rename.assert_not_called()
+
+    def test_recreate_failure_restores_original_directory(self):
+        required_tags = {
+            self.s.MANAGED_VOLUME_TAG,
+            self.s._owner_tag_for_path(self.path),
+        }
+        rename_calls = []
+
+        def rename(source, destination):
+            rename_calls.append((source, destination))
+
+        def makedirs(path, **kwargs):
+            if path == self.path:
+                raise OSError('synthetic recreate failure')
+
+        with mock.patch.object(storage.os.path, 'islink', return_value=False), \
+                mock.patch.object(
+                    storage.subprocess, 'run', side_effect=self._docker_stopped), \
+                mock.patch.object(
+                    self.s, '_volume_tags', return_value=required_tags), \
+                mock.patch.object(storage.uuid_mod, 'uuid4') as uuid4, \
+                mock.patch.object(
+                    storage.os, 'makedirs', side_effect=makedirs), \
+                mock.patch.object(storage.os, 'rename', side_effect=rename), \
+                mock.patch.object(storage, 'log'):
+            uuid4.return_value.hex = 'synthetic'
+            self.assertFalse(self.s._preserve_owned_volume_fallback(
+                self.path, self.lv_name))
+
+        quarantine = (
+            f'{self.s.APP_VOLUME_RECOVERY_DIR}/'
+            f'{self.lv_name}-synthetic')
+        self.assertEqual(rename_calls, [
+            (self.path, quarantine),
+            (quarantine, self.path),
+        ])
+
+    def test_never_moves_fallback_while_docker_is_active(self):
+        active = types.SimpleNamespace(
+            returncode=0, stdout='active\n', stderr='')
+        with mock.patch.object(storage.os.path, 'islink', return_value=False), \
+                mock.patch.object(
+                    storage.subprocess, 'run', return_value=active), \
+                mock.patch.object(self.s, '_volume_tags') as tags, \
+                mock.patch.object(storage.os, 'rename') as rename:
+            self.assertFalse(self.s._preserve_owned_volume_fallback(
+                self.path, self.lv_name))
+        tags.assert_not_called()
+        rename.assert_not_called()
+
+
 class VolumeCapsTests(unittest.TestCase):
     def test_block_device_aliases_compare_by_kernel_device_identity(self):
         s = storage.Storage()
@@ -1356,7 +1464,8 @@ class OwnedVolumeMetadataTests(unittest.TestCase):
             self.s.boot_mount()
 
         ensure.assert_called_once_with(
-            path, allow_create=False, expect_existing=True)
+            path, allow_create=False, expect_existing=True,
+            recover_fallback=True)
         reclaim.assert_not_called()
 
     def test_boot_inventory_failure_mounts_apps_independently(self):
@@ -1393,6 +1502,7 @@ class OwnedVolumeMetadataTests(unittest.TestCase):
         for _, kwargs in attempts:
             self.assertFalse(kwargs['allow_create'])
             self.assertFalse(kwargs['expect_existing'])
+            self.assertTrue(kwargs['recover_fallback'])
 
 
 class LuksSectorPolicyTests(unittest.TestCase):
