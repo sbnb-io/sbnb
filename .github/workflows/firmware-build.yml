@@ -546,3 +546,23 @@ jobs:
         with:
           name: reefy-provider-catalog
           path: provider-artifacts.json
+
+  release-ready:
+    needs:
+      - build
+      - publish-nvidia-provider
+      - publish-intel-provider
+      - publish-amd-provider
+      - publish-artifact-fixture
+      - provider-catalog
+    if: ${{ success() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Record complete release
+        run: printf '%s\n' "$GITHUB_SHA" > reefy-release-ready
+
+      - name: Upload release-ready marker
+        uses: actions/upload-artifact@v4
+        with:
+          name: reefy-release-ready
+          path: reefy-release-ready
