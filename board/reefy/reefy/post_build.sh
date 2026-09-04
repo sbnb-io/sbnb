@@ -26,8 +26,9 @@ echo "REEFY_DESIRED_STATE_SCHEMA=2" >> "${OS_RELEASE}"
 
 # Internal exact-build identity for externally packaged kernel modules. Keep
 # the public IMAGE_VERSION format unchanged. Hash the actual kernel image,
-# configuration, and exported symbol CRCs so an incremental rebuild cannot
-# accidentally select modules from different bytes with the same uname -r.
+# configuration, exported symbol CRCs, and immutable provider publisher pins
+# so an incremental rebuild or provider change cannot reuse an incompatible
+# cached provider with the same uname -r.
 PINNED_KERNEL=$(sed -n 's/^BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION="v\([0-9.]*\)"$/\1/p' "${BR2_CONFIG}")
 LINUX_BUILD_DIR=''
 for candidate in "${BUILD_DIR}"/linux-*; do
@@ -49,6 +50,11 @@ if [ -n "${LINUX_BUILD_DIR}" ] \
   KERNEL_ABI_SHA256=$(sha256sum \
     "${LINUX_BUILD_DIR}/.config" "${LINUX_BUILD_DIR}/Module.symvers" \
     | sha256sum | awk '{print $1}')
+  PROVIDER_PINS="${BR2_EXTERNAL_REEFY_PATH}/board/reefy/reefy/provider-publisher-pins"
+  if [ ! -f "${PROVIDER_PINS}" ]; then
+    echo "ERROR: missing provider publisher pins" >&2
+    exit 1
+  fi
   BUILD_IDENTITY_SALT=${REEFY_E2E_BUILD_IDENTITY_SALT:-}
   if [ -n "${BUILD_IDENTITY_SALT}" ] \
       && [[ ! "${BUILD_IDENTITY_SALT}" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
@@ -61,16 +67,12 @@ if [ -n "${LINUX_BUILD_DIR}" ] \
       "${LINUX_BUILD_DIR}/.config" \
       "${LINUX_BUILD_DIR}/Module.symvers" \
       | sha256sum | awk '{print $1}')
-    REEFY_BUILD_ID=${BASE_REEFY_BUILD_ID}
-    if [ -n "${BUILD_IDENTITY_SALT}" ]; then
-      REEFY_BUILD_ID=$(printf '%s\0%s\0%s\0' \
-        reefy-e2e-build-id-v1 "${BASE_REEFY_BUILD_ID}" \
-        "${BUILD_IDENTITY_SALT}" | sha256sum | awk '{print $1}')
-    fi
-  elif [ -n "${BUILD_IDENTITY_SALT}" ]; then
-    echo "ERROR: cannot combine REEFY_BUILD_ID with an E2E identity salt" >&2
-    exit 1
+  else
+    BASE_REEFY_BUILD_ID=${REEFY_BUILD_ID}
   fi
+  REEFY_BUILD_ID=$(bash \
+    "${BR2_EXTERNAL_REEFY_PATH}/board/reefy/reefy/scripts/calculate_build_id.sh" \
+    "${BASE_REEFY_BUILD_ID}" "${PROVIDER_PINS}" "${BUILD_IDENTITY_SALT}")
   echo "REEFY_BUILD_ID=${REEFY_BUILD_ID}" >> "${OS_RELEASE}"
   echo "REEFY_KERNEL_ABI_SHA256=${KERNEL_ABI_SHA256}" >> "${OS_RELEASE}"
 else
