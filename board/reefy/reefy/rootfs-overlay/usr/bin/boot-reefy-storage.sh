@@ -230,11 +230,12 @@ STORAGE_VG="reefy"
 STORAGE_LV="reefy_default"
 LEGACY_STORAGE_LV="data"
 THIN_POOL_LV="reefy_pool"
+LVM_THIN_TOOLS_CONFIG='global { thin_check_executable="/usr/sbin/thin_check" thin_repair_executable="/usr/sbin/thin_repair" }'
 
 # Repair an inactive Reefy thin pool after normal activation has failed.
-# The repair tool writes rebuilt metadata to LVM's spare metadata LV and
-# lvconvert swaps it into the pool. LVM keeps the damaged metadata as a
-# visible *_metaN LV, so this operation does not overwrite the only copy.
+# LVM invokes the upstream thin_repair tool, writes its output to the spare
+# metadata LV, and swaps that LV into the pool. LVM keeps the damaged metadata
+# as a visible *_metaN LV, so this does not overwrite the only damaged copy.
 #
 # A completely overwritten superblock cannot provide its data block size.
 # That geometry is also stored in the LVM VG metadata, so pass it explicitly
@@ -249,8 +250,8 @@ repair_thin_pool() {
     [ ! -e "${REPAIR_MARKER}" ] || return 1
     : > "${REPAIR_MARKER}"
 
-    command -v thin_check >/dev/null 2>&1 || return 1
-    command -v thin_repair >/dev/null 2>&1 || return 1
+    [ -x /usr/sbin/thin_check ] || return 1
+    [ -x /usr/sbin/thin_repair ] || return 1
     [ "$(lvs --noheadings -o segtype "${POOL}" 2>/dev/null | xargs)" = "thin-pool" ] || return 1
     [ "$(lvs --noheadings -o lv_active "${POOL}" 2>/dev/null | xargs)" = "inactive" ] || return 1
 
@@ -274,7 +275,7 @@ repair_thin_pool() {
     NR_DATA_BLOCKS=$((DATA_SECTORS / CHUNK_SECTORS))
 
     echo "[reefy] Thin-pool activation failed; attempting guarded metadata repair"
-    REPAIR_CONFIG="global { thin_repair_options=[\"--data-block-size\",\"${CHUNK_SECTORS}\",\"--transaction-id\",\"${TRANSACTION_ID}\",\"--nr-data-blocks\",\"${NR_DATA_BLOCKS}\"] }"
+    REPAIR_CONFIG="global { thin_check_executable=\"/usr/sbin/thin_check\" thin_repair_executable=\"/usr/sbin/thin_repair\" thin_repair_options=[\"--data-block-size\",\"${CHUNK_SECTORS}\",\"--transaction-id\",\"${TRANSACTION_ID}\",\"--nr-data-blocks\",\"${NR_DATA_BLOCKS}\"] }"
     if lvconvert --config "${REPAIR_CONFIG}" --repair --yes "${POOL}"; then
         echo "[reefy] Thin-pool metadata repaired; damaged metadata retained by LVM"
         return 0
@@ -315,9 +316,12 @@ setup_internal_storage() {
     # Scan for LVM and activate VG
     vgscan >/dev/null 2>&1
     vgs "${STORAGE_VG}" >/dev/null 2>&1 || return 0
-    if ! vgchange -ay "${STORAGE_VG}" >/dev/null 2>&1; then
+    # vgchange asks LVM to run upstream thin_check before pool activation.
+    if ! vgchange --config "${LVM_THIN_TOOLS_CONFIG}" \
+            -ay "${STORAGE_VG}" >/dev/null 2>&1; then
         if repair_thin_pool && \
-                vgchange -ay "${STORAGE_VG}" >/dev/null 2>&1; then
+                vgchange --config "${LVM_THIN_TOOLS_CONFIG}" \
+                    -ay "${STORAGE_VG}" >/dev/null 2>&1; then
             echo "[reefy] Activated repaired thin pool"
         else
             # Keep the thick identity LV available even when app storage is
