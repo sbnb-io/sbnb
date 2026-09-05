@@ -14,8 +14,8 @@ set -euxo pipefail
 # up new flavors automatically via the `reefy-*.efi` glob.
 # Kernel boot args shared by every flavor. Per-flavor extras (e.g.
 # reefy.dev_shell=1) get appended below.
-COMMON_CMDLINE="console=tty0 panic=10 intel_iommu=on module_blacklist=nouveau,nvidiafb,snd_hda_intel,r8169"
-DEBUG_SHELL_CMDLINE="console=tty0 panic=10 intel_iommu=on module_blacklist=nouveau,nvidiafb,snd_hda_intel,r8169"
+COMMON_CMDLINE="console=tty0 panic=10 oops=panic intel_iommu=on module_blacklist=nouveau,nvidiafb,snd_hda_intel,r8169"
+DEBUG_SHELL_CMDLINE="console=tty0 panic=10 oops=panic intel_iommu=on module_blacklist=nouveau,nvidiafb,snd_hda_intel,r8169"
 
 # prod: `quiet` for a silent boot - kernel log messages stay off the
 #   monitor; the device-state banner still shows at the login prompt via

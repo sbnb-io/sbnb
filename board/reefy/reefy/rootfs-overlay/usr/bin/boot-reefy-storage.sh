@@ -189,14 +189,20 @@ setup_data_partition() {
                         LV_FS=$(blkid -o value -s TYPE "${lv_path}" 2>/dev/null)
                         if [ "${LV_FS}" = "xfs" ]; then
                             LV_OPTS="noatime,discard"
+                            if mount_primary_xfs "${lv_path}" \
+                                    "${REEFY_DATA_MNT}" "${LV_OPTS}"; then
+                                echo "[reefy] Mounted LVM LV ${lv} (${LV_FS}) at ${REEFY_DATA_MNT}"
+                                mount_state_lv
+                                return 0
+                            fi
                         else
                             LV_OPTS="${REEFY_DATA_MOUNT_OPTS}"
-                        fi
-                        if mount -o "${LV_OPTS}" "${lv_path}" \
-                                "${REEFY_DATA_MNT}" 2>/dev/null; then
-                            echo "[reefy] Mounted LVM LV ${lv} (${LV_FS:-ext4}) at ${REEFY_DATA_MNT}"
-                            mount_state_lv
-                            return 0
+                            if mount -o "${LV_OPTS}" "${lv_path}" \
+                                    "${REEFY_DATA_MNT}" 2>/dev/null; then
+                                echo "[reefy] Mounted LVM LV ${lv} (${LV_FS:-ext4}) at ${REEFY_DATA_MNT}"
+                                mount_state_lv
+                                return 0
+                            fi
                         fi
                     done
                     echo "[reefy] LVM on USB p4 but no mountable LV found"
@@ -229,6 +235,142 @@ STORAGE_VG="reefy"
 # a flat `data` LV. Mount whichever one is actually present.
 STORAGE_LV="reefy_default"
 LEGACY_STORAGE_LV="data"
+THIN_POOL_LV="reefy_pool"
+LVM_THIN_TOOLS_CONFIG='global { thin_check_executable="/usr/sbin/thin_check" thin_repair_executable="/usr/sbin/thin_repair" }'
+
+# Mount the primary Reefy XFS data LV, repairing only the specific failure
+# where kernel log recovery rejects corrupt metadata with EUCLEAN. A generic
+# mount error must never trigger repair: it could be a bad option, missing
+# driver, transient I/O failure, or operator configuration problem.
+#
+# xfs_repair without -L is always attempted first. Exit 2 means the dirty log
+# cannot be replayed in userspace. The kernel mount already tried and failed
+# to replay that log, so -L is the documented last-resort path. This discards
+# pending metadata updates and can move or remove damaged files, but restores
+# the filesystem structures that remain recoverable.
+mount_primary_xfs() {
+    XFS_LV="$1"
+    XFS_TARGET="$2"
+    XFS_OPTS="$3"
+    XFS_REPAIR_MARKER="/run/reefy-xfs-repair-attempted"
+    XFS_MOUNT_ERROR="/run/reefy-xfs-mount.$$.err"
+
+    if mount -o "${XFS_OPTS}" "${XFS_LV}" "${XFS_TARGET}" \
+            2>"${XFS_MOUNT_ERROR}"; then
+        rm -f "${XFS_MOUNT_ERROR}"
+        return 0
+    fi
+    cat "${XFS_MOUNT_ERROR}" >&2
+
+    # Keep the automatic, destructive path deliberately narrow.
+    [ "${XFS_LV}" = "/dev/${STORAGE_VG}/${STORAGE_LV}" ] || {
+        rm -f "${XFS_MOUNT_ERROR}"
+        return 1
+    }
+    grep -Fq "Structure needs cleaning" "${XFS_MOUNT_ERROR}" || {
+        rm -f "${XFS_MOUNT_ERROR}"
+        return 1
+    }
+    [ ! -e "${XFS_REPAIR_MARKER}" ] || {
+        rm -f "${XFS_MOUNT_ERROR}"
+        return 1
+    }
+    [ "$(blkid -o value -s TYPE "${XFS_LV}" 2>/dev/null)" = "xfs" ] || {
+        rm -f "${XFS_MOUNT_ERROR}"
+        return 1
+    }
+    ! mountpoint -q "${XFS_TARGET}" 2>/dev/null || {
+        rm -f "${XFS_MOUNT_ERROR}"
+        return 1
+    }
+    command -v xfs_repair >/dev/null 2>&1 || {
+        rm -f "${XFS_MOUNT_ERROR}"
+        return 1
+    }
+    : > "${XFS_REPAIR_MARKER}"
+
+    echo "[reefy] XFS mount failed with EUCLEAN; attempting offline repair"
+    if xfs_repair "${XFS_LV}"; then
+        echo "[reefy] XFS filesystem repaired without log reset"
+    else
+        XFS_REPAIR_RC=$?
+        if [ "${XFS_REPAIR_RC}" -ne 2 ]; then
+            echo "[reefy] WARNING: XFS repair failed with exit ${XFS_REPAIR_RC}"
+            rm -f "${XFS_MOUNT_ERROR}"
+            return 1
+        fi
+        echo "[reefy] WARNING: XFS log cannot be replayed; forcing log reset"
+        if ! xfs_repair -L "${XFS_LV}"; then
+            echo "[reefy] WARNING: XFS repair with log reset failed"
+            rm -f "${XFS_MOUNT_ERROR}"
+            return 1
+        fi
+        echo "[reefy] XFS filesystem repaired after unreplayable log"
+    fi
+
+    if mount -o "${XFS_OPTS}" "${XFS_LV}" "${XFS_TARGET}"; then
+        rm -f "${XFS_MOUNT_ERROR}"
+        return 0
+    fi
+    echo "[reefy] WARNING: XFS mount still fails after repair"
+    rm -f "${XFS_MOUNT_ERROR}"
+    return 1
+}
+
+# Repair an inactive Reefy thin pool after normal activation has failed.
+# LVM invokes the upstream thin_repair tool, writes its output to the spare
+# metadata LV, and swaps that LV into the pool. LVM keeps the damaged metadata
+# as a visible *_metaN LV, so this does not overwrite the only damaged copy.
+#
+# A completely overwritten superblock cannot provide its data block size.
+# That geometry is also stored in the LVM VG metadata, so pass it explicitly
+# along with the transaction ID and number of data blocks. This is the same
+# failure shape produced when unrelated data replaces metadata block zero.
+repair_thin_pool() {
+    REPAIR_MARKER="/run/reefy-thin-pool-repaired"
+    POOL="${STORAGE_VG}/${THIN_POOL_LV}"
+    TMETA="${STORAGE_VG}/${THIN_POOL_LV}_tmeta"
+    PMSPARE="${STORAGE_VG}/lvol0_pmspare"
+
+    [ ! -e "${REPAIR_MARKER}" ] || return 1
+    : > "${REPAIR_MARKER}"
+
+    [ -x /usr/sbin/thin_check ] || return 1
+    [ -x /usr/sbin/thin_repair ] || return 1
+    [ "$(lvs --noheadings -o segtype "${POOL}" 2>/dev/null | xargs)" = "thin-pool" ] || return 1
+    # LVM prints an empty lv_active field when corrupt metadata prevents the
+    # thin-pool device from being created. Reject only a pool that is active.
+    [ "$(lvs --noheadings -o lv_active "${POOL}" 2>/dev/null | xargs)" != "active" ] || return 1
+
+    TMETA_SECTORS=$(lvs --noheadings --units s --nosuffix -o lv_size \
+        "${TMETA}" 2>/dev/null | xargs)
+    PMSPARE_SECTORS=$(lvs --noheadings --units s --nosuffix -o lv_size \
+        "${PMSPARE}" 2>/dev/null | xargs)
+    CHUNK_SECTORS=$(lvs --noheadings --units s --nosuffix -o chunksize \
+        "${POOL}" 2>/dev/null | xargs)
+    DATA_SECTORS=$(lvs --noheadings --units s --nosuffix -o lv_size \
+        "${TMETA%_tmeta}_tdata" 2>/dev/null | xargs)
+    TRANSACTION_ID=$(lvs --noheadings -o transaction_id \
+        "${POOL}" 2>/dev/null | xargs)
+
+    case "${TMETA_SECTORS}:${PMSPARE_SECTORS}:${CHUNK_SECTORS}:${DATA_SECTORS}:${TRANSACTION_ID}" in
+        *[!0-9:]*|*::*|:*|*:) return 1 ;;
+    esac
+    [ "${PMSPARE_SECTORS}" -ge "${TMETA_SECTORS}" ] || return 1
+    [ "${CHUNK_SECTORS}" -gt 0 ] || return 1
+    [ $((DATA_SECTORS % CHUNK_SECTORS)) -eq 0 ] || return 1
+    NR_DATA_BLOCKS=$((DATA_SECTORS / CHUNK_SECTORS))
+
+    echo "[reefy] Thin-pool activation failed; attempting guarded metadata repair"
+    REPAIR_CONFIG="global { thin_check_executable=\"/usr/sbin/thin_check\" thin_repair_executable=\"/usr/sbin/thin_repair\" thin_repair_options=[\"--data-block-size\",\"${CHUNK_SECTORS}\",\"--transaction-id\",\"${TRANSACTION_ID}\",\"--nr-data-blocks\",\"${NR_DATA_BLOCKS}\"] }"
+    if lvconvert --config "${REPAIR_CONFIG}" --repair --yes "${POOL}"; then
+        echo "[reefy] Thin-pool metadata repaired; damaged metadata retained by LVM"
+        return 0
+    fi
+
+    echo "[reefy] WARNING: Thin-pool metadata repair failed"
+    return 1
+}
 
 # Try to use internal drive as /mnt/reefy-data instead of slow USB.
 # Opens LUKS on all internal drives with our key, activates LVM VG,
@@ -261,7 +403,22 @@ setup_internal_storage() {
     # Scan for LVM and activate VG
     vgscan >/dev/null 2>&1
     vgs "${STORAGE_VG}" >/dev/null 2>&1 || return 0
-    vgchange -ay "${STORAGE_VG}" >/dev/null 2>&1
+    # vgchange asks LVM to run upstream thin_check before pool activation.
+    if ! vgchange --config "${LVM_THIN_TOOLS_CONFIG}" \
+            -ay "${STORAGE_VG}" >/dev/null 2>&1; then
+        if repair_thin_pool && \
+                vgchange --config "${LVM_THIN_TOOLS_CONFIG}" \
+                    -ay "${STORAGE_VG}" >/dev/null 2>&1; then
+            echo "[reefy] Activated repaired thin pool"
+        else
+            # Keep the thick identity LV available even when app storage is
+            # unrecoverable. This prevents a storage failure from making an
+            # adopted device appear factory-fresh to the control plane.
+            lvchange -ay "${STORAGE_VG}/reefy_state" >/dev/null 2>&1 || true
+            mount_state_lv
+            return 0
+        fi
+    fi
     lv_path=""
     for lv in "${STORAGE_LV}" "${LEGACY_STORAGE_LV}"; do
         if [ -e "/dev/${STORAGE_VG}/${lv}" ]; then
@@ -282,13 +439,18 @@ setup_internal_storage() {
     LV_FS=$(blkid -o value -s TYPE "${lv_path}" 2>/dev/null)
     if [ "${LV_FS}" = "xfs" ]; then
         INTERNAL_OPTS="noatime,discard"
+        mount_primary_xfs "${lv_path}" "${REEFY_DATA_MNT}" \
+            "${INTERNAL_OPTS}" || {
+            echo "[reefy] WARNING: Internal drive mount failed"
+            return 0
+        }
     else
         INTERNAL_OPTS="${REEFY_DATA_MOUNT_OPTS}"
+        mount -o "${INTERNAL_OPTS}" "${lv_path}" "${REEFY_DATA_MNT}" || {
+            echo "[reefy] WARNING: Internal drive mount failed"
+            return 0
+        }
     fi
-    mount -o "${INTERNAL_OPTS}" "${lv_path}" "${REEFY_DATA_MNT}" || {
-        echo "[reefy] WARNING: Internal drive mount failed"
-        return 0
-    }
 
     # Ensure required directories exist (first time on internal drive)
     mkdir -p "${REEFY_DATA_MNT}/state/lan"

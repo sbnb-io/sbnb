@@ -14,7 +14,7 @@ OS_RELEASE="${TARGET_DIR}/etc/os-release"
 # boot via VGA). Override for debugging:
 #   CMDLINE_OVERRIDE="console=ttyS0,115200 debug" make
 #   CMDLINE_EXTRA="debug loglevel=8"             make   # appended to default
-DEFAULT_CMDLINE="console=tty0 quiet panic=10 intel_iommu=on module_blacklist=nouveau,nvidiafb,snd_hda_intel,r8169"
+DEFAULT_CMDLINE="console=tty0 quiet panic=10 oops=panic intel_iommu=on module_blacklist=nouveau,nvidiafb,snd_hda_intel,r8169"
 if [[ -n "${CMDLINE_OVERRIDE:-}" ]]; then
     CMDLINE="${CMDLINE_OVERRIDE}"
 else
