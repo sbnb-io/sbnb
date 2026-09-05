@@ -22,6 +22,10 @@ import unittest
 
 REEFY_EFI = os.path.join(os.path.dirname(__file__), '..', 'rootfs-overlay',
                          'usr', 'bin', 'reefy-efi')
+BOARD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+POST_IMAGE = os.path.join(BOARD_DIR, 'post_image.sh')
+CREATE_EFI = os.path.join(BOARD_DIR, 'scripts', 'create_efi.sh')
+KERNEL_CONFIG = os.path.join(BOARD_DIR, 'kernel-config')
 
 
 def _trap_line():
@@ -37,6 +41,28 @@ def _trap_line():
 def _source():
     with open(REEFY_EFI) as f:
         return f.read()
+
+
+class KernelPanicPolicyTests(unittest.TestCase):
+    def test_every_firmware_cmdline_panics_on_oops_after_ten_seconds(self):
+        for path in (POST_IMAGE, CREATE_EFI):
+            with open(path) as f:
+                source = f.read()
+            cmdline_lines = [
+                line for line in source.splitlines()
+                if line.startswith(('COMMON_CMDLINE=',
+                                    'DEBUG_SHELL_CMDLINE=',
+                                    'DEFAULT_CMDLINE='))
+            ]
+            self.assertTrue(cmdline_lines, path)
+            for line in cmdline_lines:
+                self.assertIn('panic=10', line, f'{path}: {line}')
+                self.assertIn('oops=panic', line, f'{path}: {line}')
+
+    def test_lkdtm_module_is_available_for_end_to_end_validation(self):
+        with open(KERNEL_CONFIG) as f:
+            kernel_config = f.read()
+        self.assertIn('CONFIG_LKDTM=m\n', kernel_config)
 
 
 class ExitTrapErrexitSafetyTests(unittest.TestCase):
